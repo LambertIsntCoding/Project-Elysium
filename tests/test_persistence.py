@@ -6,15 +6,15 @@ from unittest.mock import MagicMock
 
 import requests
 
-from memory_store import TripleMemoryStore
-from orchestrator import (
+from astra.memory import TripleMemoryStore
+from astra.orchestrator import (
     CompanionOrchestrator,
     BehavioralAdaptationCompiler,
     DeterministicLexicalRetriever,
 )
 
 TEST_DIR = "./test_storage_behavior_final"
-BEHAVIOR_HEADER = "=== LEARNED BEHAVIORAL ADAPTATIONS (EXECUTION DIRECTIVES) ==="
+GOVERNING_HEADER = "=== GOVERNING MEMORIES (ALWAYS APPLY) ==="
 FACT_HEADER = "=== FACTUAL CONTEXT ==="
 
 
@@ -32,10 +32,6 @@ def snapshot_store_hashes(directory: str) -> dict:
             path = os.path.join(root, name)
             hashes[os.path.relpath(path, directory)] = calculate_file_hash(path)
     return hashes
-
-
-def behavioral_section(prompt: str) -> str:
-    return prompt.split(BEHAVIOR_HEADER)[1].split(FACT_HEADER)[0]
 
 
 class _StubStore:
@@ -76,19 +72,19 @@ def run_integration_tests():
     hashes_before = snapshot_store_hashes(TEST_DIR)
     assert hashes_before, "Expected the store to have written files to disk."
 
-    # TEST A: zero lexical overlap behavioral adaptation
+    # TEST A: an explicit preference is governing (always applied) even when the
+    # user's question shares no tokens with it.
     orchestrator_s1 = CompanionOrchestrator(store_session1)
     prompt_a = orchestrator_s1.build_prompt("How was your day?", [])
 
-    assert BEHAVIOR_HEADER in prompt_a
-    section_a = behavioral_section(prompt_a)
-    assert "EXECUTION DIRECTIVE" in section_a
-    assert "narrate internal processing" in section_a.lower()
-    print("✓ Test A: behavioral memory becomes an execution directive with zero token overlap.")
+    assert GOVERNING_HEADER in prompt_a
+    governing_a = prompt_a.split(GOVERNING_HEADER)[1].split(FACT_HEADER)[0]
+    assert "narrate internal processing" in governing_a.lower()
+    print("✓ Test A: explicit preference becomes a governing memory with zero token overlap.")
 
-    # TEST B: self_observation is NOT compiled as a behavioral rule
-    assert "felt nervous" not in section_a
-    print("✓ Test B: self_observation is excluded from execution directives.")
+    # TEST B: self_observation is NOT treated as a governing/behavioral rule
+    assert "felt nervous" not in governing_a
+    print("✓ Test B: self_observation is excluded from governing memories.")
 
     # TEST C: byte-for-byte preservation across ALL store files
     hashes_after = snapshot_store_hashes(TEST_DIR)
@@ -106,11 +102,10 @@ def run_integration_tests():
     orchestrator_s2 = CompanionOrchestrator(store_session2)
     prompt_s2 = orchestrator_s2.build_prompt("What is the capital of France?", [])
 
-    section_s2 = behavioral_section(prompt_s2)
-    assert "narrate internal processing" in section_s2.lower()
-    assert "EXECUTION DIRECTIVE" in section_s2
+    governing_s2 = prompt_s2.split(GOVERNING_HEADER)[1].split(FACT_HEADER)[0]
+    assert "narrate internal processing" in governing_s2.lower()
     assert snapshot_store_hashes(TEST_DIR) == hashes_before
-    print("✓ Test D: behavioral adaptation persists into a fresh session, and files are still unchanged.")
+    print("✓ Test D: governing memory persists into a fresh session, and files are still unchanged.")
 
 
 # ---------------------------------------------------------------------
@@ -195,11 +190,51 @@ def run_unit_tests():
     print("✓ Test H: query_gemma sends stop sequences and reports connection errors.")
 
 
+def run_config_robustness_tests():
+    import tempfile
+    import textwrap
+
+    with tempfile.TemporaryDirectory() as cfg:
+        with open(os.path.join(cfg, "identity.yaml"), "w", encoding="utf-8") as f:
+            f.write(textwrap.dedent("""
+                identity: just a string
+                behavioral_rules: "not a list"
+                speech_style:
+                  core_style: [" calm ", null, ""]
+                  language:
+                    preferred: "plain string"
+                    avoid: ["corporate speak"]
+            """))
+        with open(os.path.join(cfg, "behavior_examples.yaml"), "w", encoding="utf-8") as f:
+            f.write("examples:\n  - situation: hi\n    good_response: hello\n  - not a dict\n")
+
+        class Store:
+            def get_active_memories(self, model: str):
+                return [{"content": None, "keywords": ["hello"],
+                         "type": "explicit_fact", "status": "active"}]
+
+        orch = CompanionOrchestrator(Store(), config_dir=cfg)
+        history = [{"role": "user", "content": None}, {"role": "assistant", "content": "hi"}]
+        prompt = orch.build_prompt("hello", history)
+
+    assert "Name: Astra" in prompt, "Non-dict identity should fall back to defaults."
+    assert "- calm" in prompt and "- corporate speak" in prompt
+    assert "Preferred:" not in prompt and "plain string" not in prompt, \
+        "String-valued list fields should be ignored, not iterated per character."
+    assert "BASE BEHAVIORAL RULES" not in prompt
+    assert "LEARNED BEHAVIORAL ADAPTATIONS" not in prompt, "Empty adaptations section should be omitted."
+    assert "No query-relevant background facts" in prompt, "None-content memory should not render."
+    assert "Good Response: hello" in prompt
+    assert "ASTRA: hi" in prompt and prompt.count("ROUM:") == 1, "Empty history turns should be skipped."
+    print("✓ Test I: malformed config, None memory content and empty history turns are handled cleanly.")
+
+
 def run_tests():
     print("=== RUNNING PERSISTENCE, INTEGRATION & UNIT TESTS ===")
     try:
         run_integration_tests()
         run_unit_tests()
+        run_config_robustness_tests()
     finally:
         if os.path.exists(TEST_DIR):
             shutil.rmtree(TEST_DIR)

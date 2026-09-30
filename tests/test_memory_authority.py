@@ -11,9 +11,9 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 
-import memory_authority as authority
-from memory_store import TripleMemoryStore
-from orchestrator import CompanionOrchestrator, DeterministicLexicalRetriever
+import astra.authority as authority
+from astra.memory import TripleMemoryStore
+from astra.orchestrator import CompanionOrchestrator, DeterministicLexicalRetriever
 
 CONFIG_DIR = "./config"
 

@@ -4,8 +4,8 @@ import os
 import tempfile
 import threading
 
-import memory_store as ms
-from memory_store import (
+import astra.memory as ms
+from astra.memory import (
     CommandStore,
     MemoryNotFoundError,
     TripleMemoryStore,

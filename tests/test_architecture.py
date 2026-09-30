@@ -16,9 +16,9 @@ import tempfile
 import unittest
 from datetime import datetime
 
-from elysium import ElysiumOrchestrator
-from memory_store import CommandStore, TripleMemoryStore, atomic_save
-from orchestrator import CompanionOrchestrator
+from astra.elysium import ElysiumOrchestrator
+from astra.memory import CommandStore, TripleMemoryStore, atomic_save
+from astra.orchestrator import CompanionOrchestrator
 
 
 class TestArchitecture(unittest.TestCase):

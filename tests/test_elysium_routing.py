@@ -11,10 +11,10 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 
-from elysium import ElysiumCommandHandler
+from astra.elysium import ElysiumCommandHandler
 from main import ChatSession
-from memory_store import CommandStore, TripleMemoryStore
-from orchestrator import CompanionOrchestrator
+from astra.memory import CommandStore, TripleMemoryStore
+from astra.orchestrator import CompanionOrchestrator
 
 _FIXED_NOW = datetime(2026, 1, 2, 15, 4, tzinfo=timezone.utc)
 _ASTRA_ROLEPLAY_MARKERS = (

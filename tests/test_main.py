@@ -12,15 +12,15 @@ import unittest
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from elysium import (
+from astra.elysium import (
     CommandExtractor,
     ElysiumCommandHandler,
     ElysiumCommandRecorder,
     ElysiumOrchestrator,
 )
 from main import ChatSession, build_session, looks_like_command_request
-from memory_store import CommandStore, TripleMemoryStore
-from orchestrator import CompanionOrchestrator
+from astra.memory import CommandStore, TripleMemoryStore
+from astra.orchestrator import CompanionOrchestrator
 
 
 class _FakeOllama(BaseHTTPRequestHandler):
