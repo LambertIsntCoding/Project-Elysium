@@ -206,6 +206,109 @@ class TestSlashCommands(_DriverFixture):
         self.assertEqual([m["content"] for m in active], ["Roum likes tea."])
 
 
+class TestNewSlashCommands(_DriverFixture):
+    def test_help_lists_every_command(self):
+        self.session._handle_slash("/help")
+        text = "\n".join(self.emitted)
+        for cmd in ("/search", "/governing", "/temporary", "/contradictions",
+                    "/dormant", "/stats", "/forget", "/restore"):
+            self.assertIn(cmd, text)
+
+    def test_search_finds_by_content_and_keyword(self):
+        self.store.add_memory("roum", "Roum likes tea.", "explicit_fact",
+                              "explicit_user_statement", keywords=["beverage"])
+        self.session._handle_slash("/search tea")
+        self.assertTrue(any("Roum likes tea." in line for line in self.emitted))
+
+        self.emitted.clear()
+        self.session._handle_slash("/search beverage")
+        self.assertTrue(any("Roum likes tea." in line for line in self.emitted))
+
+    def test_search_without_query_shows_usage(self):
+        self.session._handle_slash("/search")
+        self.assertTrue(any("Usage: /search" in line for line in self.emitted))
+
+    def test_search_no_match(self):
+        self.session._handle_slash("/search unicorn")
+        self.assertTrue(any("Nothing matched" in line for line in self.emitted))
+
+    def test_governing_lists_always_applied_memories(self):
+        self.store.add_memory("roum", "Roum dislikes being narrated to.",
+                              "explicit_preference", "explicit_user_statement")
+        self.session._handle_slash("/governing")
+        text = "\n".join(self.emitted)
+        self.assertIn("GOVERNING MEMORIES", text)
+        self.assertIn("narrated to", text)
+
+    def test_temporary_context_displayed_and_flagged_as_not_stored(self):
+        self.store.add_temporary_context("we are talking about memory")
+        self.session._handle_slash("/temporary")
+        text = "\n".join(self.emitted)
+        self.assertIn("TEMPORARY CONTEXT", text)
+        self.assertIn("we are talking about memory", text)
+        self.assertIn("NOT stored", text)
+
+    def test_contradictions_lists_superseded(self):
+        old = self.store.add_memory("roum", "Roum likes being called Bryson.",
+                                    "explicit_preference", "explicit_user_statement")
+        self.store.supersede_memory("roum", old, "Roum does not like being called Bryson.",
+                                    source="user_correction")
+        self.session._handle_slash("/contradictions")
+        text = "\n".join(self.emitted)
+        self.assertIn("CONTRADICTIONS", text)
+        self.assertIn("superseded by", text)
+
+    def test_stats_reports_counts(self):
+        self.store.add_memory("roum", "Roum likes tea.", "explicit_fact",
+                              "explicit_user_statement")
+        self.session._handle_slash("/stats")
+        text = "\n".join(self.emitted)
+        self.assertIn("MEMORY STATS", text)
+        self.assertIn("roum", text)
+        self.assertIn("journal entries", text)
+
+    def test_forget_archives_without_deleting(self):
+        mem_id = self.store.add_memory("roum", "Roum once said something odd.",
+                                       "uncertain_inference", "ai_inference")
+        self.session._handle_slash(f"/forget {mem_id}")
+        self.assertTrue(any("archived" in line for line in self.emitted))
+        # Still on disk, just not active.
+        self.assertEqual(self.store.get_memory("roum", mem_id)["status"], "archived")
+        self.assertEqual(self.store.get_memories("roum", status=None).__len__(), 1)
+
+    def test_restore_brings_back_archived_memory(self):
+        mem_id = self.store.add_memory("roum", "Roum once said something odd.",
+                                       "uncertain_inference", "ai_inference")
+        self.store.archive_memory("roum", mem_id, reason="noise")
+        self.session._handle_slash(f"/restore {mem_id}")
+        self.assertTrue(any("restored to active" in line for line in self.emitted))
+        self.assertEqual(self.store.get_memory("roum", mem_id)["status"], "active")
+
+    def test_forget_and_restore_unknown_id(self):
+        self.session._handle_slash("/forget nope")
+        self.assertTrue(any("not found" in line for line in self.emitted))
+        self.emitted.clear()
+        self.session._handle_slash("/restore nope")
+        self.assertTrue(any("not found" in line for line in self.emitted))
+
+    def test_forget_requires_id(self):
+        self.session._handle_slash("/forget")
+        self.assertTrue(any("Usage: /forget" in line for line in self.emitted))
+
+    def test_dormant_lists_stale_memories(self):
+        from datetime import timedelta
+
+        old = (datetime.now(timezone.utc) - timedelta(days=120)).isoformat()
+        self.store.add_memory("roum", "Roum mentioned a random indie game once.",
+                              "uncertain_inference", "ai_inference",
+                              confidence=0.25, timestamp=old)
+        self.store.apply_utility_decay()
+        self.session._handle_slash("/dormant")
+        text = "\n".join(self.emitted)
+        self.assertIn("DORMANT MEMORIES", text)
+        self.assertIn("random indie game", text)
+
+
 class TestSessionLoop(_DriverFixture):
     def test_exit_stops_loop(self):
         self.session.input_fn = lambda _: "/exit"
