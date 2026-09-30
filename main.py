@@ -25,9 +25,9 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from elysium import ElysiumCommandHandler, ElysiumCommandRecorder, is_elysium_invocation
-from memory_store import CommandStore, TripleMemoryStore
-from orchestrator import CompanionOrchestrator
+from astra.elysium import ElysiumCommandHandler, ElysiumCommandRecorder, is_elysium_invocation
+from astra.memory import CommandStore, TripleMemoryStore
+from astra.orchestrator import CompanionOrchestrator
 
 # Phrases that indicate the user is *asking* to register a command. Kept
 # deliberately narrow: a bare word like "command" fires on ordinary sentences
@@ -64,7 +64,7 @@ def _default_consolidator(
 ) -> None:
     """Post-turn memory extraction. Failures never interrupt the conversation."""
     try:
-        from consolidator import consolidate_turn
+        from astra.consolidator import consolidate_turn
 
         consolidate_turn(user_input, ai_response, store, conversation_id, turn_num)
     except Exception as exc:  # missing/broken consolidator must not crash the loop
@@ -341,13 +341,13 @@ def build_session(
 
     elysium = None
     if os.path.exists(os.path.join(config_dir, "elysium_state.json")):
-        from elysium import ElysiumOrchestrator
+        from astra.elysium import ElysiumOrchestrator
 
         elysium = ElysiumOrchestrator(config_dir=config_dir)
 
     recorder = None
     if enable_command_extraction:
-        from elysium import CommandExtractor
+        from astra.elysium import CommandExtractor
 
         recorder = ElysiumCommandRecorder(cmd_store, CommandExtractor())
 

@@ -15,8 +15,8 @@ import unittest
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import elysium
-from elysium import (
+import astra.elysium as elysium
+from astra.elysium import (
     CommandExtractor,
     ElysiumCommandHandler,
     ElysiumCommandRecorder,
@@ -27,8 +27,8 @@ from elysium import (
     is_elysium_invocation,
     validate_command,
 )
-from memory_store import CommandStore, atomic_save
-from orchestrator import CompanionOrchestrator
+from astra.memory import CommandStore, atomic_save
+from astra.orchestrator import CompanionOrchestrator
 
 
 class _FakeOllama(BaseHTTPRequestHandler):
