@@ -46,6 +46,7 @@ HELP_TEXT = """
  /memory <id>       : Display full record and provenance for a memory
  /correct           : Interactive workflow to supersede an incorrect memory
  /journal           : Display AI journal reflections
+ /debug <message>   : Show memory retrieval diagnostics for a message
  /exit              : Save session and exit
 --------------------
 """
@@ -128,7 +129,16 @@ class ChatSession:
         prompt = self.orchestrator.build_prompt(user_input, self.history)
         response = self.orchestrator.query_gemma(prompt)
         self._record_turn(user_input, response, consolidate=not response.startswith("[Error"))
+        # Maintenance runs after the turn's memory writes, never during prompt
+        # building (which must stay read-only). It is throttled internally.
+        self._run_maintenance()
         return response
+
+    def _run_maintenance(self) -> None:
+        """Apply decay/archival between turns, if the store supports it."""
+        maintain = getattr(self.orchestrator.store, "maybe_maintain", None)
+        if callable(maintain):
+            maintain()
 
     def _handle_elysium(self, user_input: str) -> str:
         """Answer a root invocation without touching Astra or her memory."""
@@ -174,6 +184,8 @@ class ChatSession:
                 self._emit("Usage: /memory <mem_id>")
         elif command == "/journal":
             self._display_journal()
+        elif command == "/debug":
+            self._display_debug(" ".join(parts[1:]))
         elif command == "/correct":
             self._correct_memory()
         else:
@@ -227,6 +239,43 @@ class ChatSession:
             self._emit(f"[{entry.get('timestamp')}] {entry.get('title')}")
             self._emit(f"  {entry.get('observation')}\n")
 
+    def _display_debug(self, message: str) -> None:
+        """Show which memories were candidates, retrieved, and injected (section 15)."""
+        if not message.strip():
+            self._emit("Usage: /debug <message>")
+            return
+        builder = getattr(self.orchestrator, "build_prompt_with_diagnostics", None)
+        if not callable(builder):
+            self._emit("Diagnostics unavailable: orchestrator does not expose them.")
+            return
+
+        _, diag = builder(message, self.history)
+        self._emit(f"\n=== MEMORY DIAGNOSTICS for {message!r} ===")
+        self._emit(
+            f"Boundaries injected: {len(diag['boundaries'])} | "
+            f"Governing: {len(diag['governing_ids'])} | "
+            f"Current-state slots: {diag['current_state_slots']}"
+        )
+        self._emit(
+            f"Retrieved: {len(diag['retrieved_ids'])} | "
+            f"Injected: {len(diag['injected_ids'])} | "
+            f"Omitted: {len(diag['omitted_ids'])} | "
+            f"Non-retrievable: {len(diag['non_retrievable_ids'])}"
+        )
+        self._emit("\nCandidates (by score):")
+        for cand in diag["candidates"]:
+            mark = "INJECTED" if cand["id"] in diag["injected_ids"] else "omitted"
+            if not cand["retrievable"]:
+                mark = f"non-retrievable ({cand['status']})"
+            self._emit(
+                f"  [{mark}] {cand['id']} | score={cand['score']} "
+                f"| rel={cand['relevance']} | strength={cand['effective_strength']} "
+                f"| conf={cand['confidence']} | imp={cand['importance']} "
+                f"| src={cand['source']} | status={cand['status']} "
+                f"| contradicted={cand['contradicted']}"
+            )
+            self._emit(f"        {cand['content']}")
+
     def _correct_memory(self) -> None:
         self._emit("\n--- MEMORY CORRECTION WORKFLOW ---")
         mem_id = self.input_fn("Enter Memory ID to correct: ").strip()
@@ -248,7 +297,7 @@ class ChatSession:
             old_id=mem_id,
             content=new_content,
             source="user_correction",
-            supersession_reason=reason,
+            reason=reason,
         )
         self._emit("\n✓ Memory corrected successfully!")
         self._emit(f"  Old Memory '{mem_id}' -> Marked as 'superseded'")

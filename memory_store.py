@@ -27,7 +27,9 @@ import uuid
 from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
+
+import memory_authority as _authority
 
 logger = logging.getLogger("astra.memory")
 
@@ -36,13 +38,22 @@ VALID_MEMORY_TYPES = {
     "explicit_fact", "explicit_preference", "explicit_project_information",
     "behavioral_pattern", "uncertain_inference", "self_fact",
     "self_observation", "self_belief", "self_preference",
-    "relationship_event", "decision", "correction",
+    "relationship_event", "relationship_observation", "relationship_boundary",
+    "decision", "correction",
 }
-VALID_STATUSES = {"active", "archived", "superseded"}
+# "weakened" joins the existing statuses: a memory contradicted by a stronger
+# one stays readable but is no longer authoritative.
+VALID_STATUSES = {"active", "weakened", "archived", "superseded"}
 
 MAX_COMMAND_HISTORY = 500
 REINFORCE_STEP = 0.05          # confidence bump when a memory is re-learned
+WEAKEN_FACTOR = 0.6            # multiplier applied to the weaker side of a contradiction
 _STORE_MANAGED_FIELDS = {"id", "target_model", "content", "type", "source"}
+
+# How many times one prompt build may record usage / apply decay before it
+# starts throttling, so a tight loop can't rewrite the store every turn.
+DEFAULT_MAINTENANCE_EVERY = 1
+DEFAULT_DECAY_EVERY = 5
 
 
 class MemoryNotFoundError(LookupError):
@@ -94,6 +105,23 @@ def _check_timestamp(value: Any) -> str:
     except ValueError:
         raise ValueError(f"timestamp must be ISO-8601, got {value!r}") from None
     return str(value)
+
+
+def _parse_iso(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
+def _days_since(value: Any, now: Optional[datetime] = None) -> Optional[float]:
+    ts = _parse_iso(value)
+    if ts is None:
+        return None
+    return max(0.0, ((now or datetime.now(timezone.utc)) - ts).total_seconds() / 86400.0)
 
 
 # ---------------------------------------------------------------------
@@ -287,7 +315,9 @@ class CommandStore:
 # Triple memory store
 # ---------------------------------------------------------------------
 class TripleMemoryStore:
-    def __init__(self, data_dir: str = "./storage"):
+    def __init__(self, data_dir: str = "./storage", *,
+                 maintenance_every: int = DEFAULT_MAINTENANCE_EVERY,
+                 decay_every: int = DEFAULT_DECAY_EVERY):
         self.data_dir = data_dir
         os.makedirs(data_dir, exist_ok=True)
         self.files = {
@@ -297,6 +327,11 @@ class TripleMemoryStore:
         }
         self.journal_file = os.path.join(data_dir, "ai_journal.json")
         self._lock = threading.RLock()
+        # Maintenance throttles: usage recording / decay run on the prompt path
+        # (a read that must sometimes write) but not on every single turn.
+        self.maintenance_every = max(1, int(maintenance_every))
+        self.decay_every = max(1, int(decay_every))
+        self._maintenance_counter = 0
 
         self.memories = {name: self._load_file(path) for name, path in self.files.items()}
         self.journal = self._load_file(self.journal_file)
@@ -379,6 +414,7 @@ class TripleMemoryStore:
 
     def _build_memory(self, target_model, content, mem_type, source,
                       keywords, tags, confidence, extra) -> Dict[str, Any]:
+        now = _now()
         memory: Dict[str, Any] = {
             "id": _new_id("mem"),
             "target_model": target_model,
@@ -386,9 +422,27 @@ class TripleMemoryStore:
             "type": mem_type,
             "source": source,
             "status": "active",
-            "timestamp": _now(),
+            "timestamp": now,
             "confidence": _clamp_confidence(confidence),
+            # --- reliability metadata (sections 1, 4, 13) ----------------
+            # All optional on disk: a memory written before this change simply
+            # loads without them and the readers fall back to safe defaults.
+            # ``importance`` is only stored when given; otherwise it is derived
+            # from the memory type at read time.
+            "created_at": now,
+            "last_used": now,
+            "use_count": 0,
+            "contradiction_count": 0,
+            "contradicts": [],
+            "supersedes": None,
+            "superseded_by": None,
+            "source_type": _authority.source_tier(source),
+            "reinforcement_count": 1,
+            "last_reinforced": now,
         }
+        importance = extra.pop("importance", None)
+        if importance is not None:
+            memory["importance"] = _clamp_confidence(importance, 0.5)
         if _clean_str_list(keywords):
             memory["keywords"] = _clean_str_list(keywords)
         if _clean_str_list(tags):
@@ -400,7 +454,22 @@ class TripleMemoryStore:
                 raise ValueError(f"Invalid status {value!r}")
             if field == "timestamp":
                 value = _check_timestamp(value)  # allows backdating imported memories
+                # A freshly created memory's lifetime starts at its timestamp.
+                memory["timestamp"] = value
+                memory["created_at"] = value
+                memory["last_used"] = value
+                memory["last_reinforced"] = value
+                continue
             memory[field] = value
+        # Provenance guard (section 14): Astra's own inference can never be
+        # stored as a confirmed user fact.
+        if _authority.is_astra_source(source) and memory.get("type") in {
+            "explicit_fact", "explicit_preference", "explicit_project_information",
+        }:
+            memory["type"] = "uncertain_inference"
+        # Relationship guard (sections 8-10): ordinary affection must never
+        # become a romantic instruction.
+        _authority.apply_relationship_guard(memory)
         return memory
 
     @staticmethod
@@ -437,7 +506,194 @@ class TripleMemoryStore:
                                         keywords, tags, confidence, extra)
             with self._transaction(target_model):
                 self.memories[target_model].append(memory)
+                self._resolve_contradictions(target_model, memory)
             return memory["id"]
+
+    # ---- contradiction resolution & decay (sections 3, 4, 5, 13) ------
+    def _authority_key(self, mem: Dict[str, Any]) -> tuple:
+        """Sort key: source tier first, then effective strength, then recency.
+
+        Tier-first means an explicit user statement always beats an inference,
+        even a fresh, confident one (section 2).
+        """
+        return (
+            _authority.source_tier(mem.get("source")),
+            _authority.effective_strength(mem),
+            str(mem.get("last_used") or mem.get("timestamp") or ""),
+        )
+
+    def _resolve_contradictions(self, target_model: str, new_mem: Dict[str, Any]) -> List[str]:
+        """Weaken older memories the new one contradicts. Never deletes them.
+
+        Returns the ids of the memories that were weakened. The weaker side
+        keeps its content (history is preserved) but loses authority, gains a
+        ``contradiction_reason`` and a ``superseded_by`` pointer.
+        """
+        weakened: List[str] = []
+        for old in self.memories[target_model]:
+            if old is new_mem or old.get("status") in ("superseded", "archived"):
+                continue
+            if old.get("id") == new_mem.get("id"):
+                continue
+            reason = _authority.detect_contradiction(old, new_mem)
+            if not reason:
+                continue
+
+            old_key, new_key = self._authority_key(old), self._authority_key(new_mem)
+            loser, winner = (old, new_mem) if old_key < new_key else (new_mem, old)
+
+            loser["contradiction_count"] = int(loser.get("contradiction_count", 0)) + 1
+            loser["confidence"] = round(
+                _clamp_confidence(loser.get("confidence", 1.0)) * WEAKEN_FACTOR, 4
+            )
+            loser["contradicts"] = _clean_str_list(
+                list(loser.get("contradicts") or []) + [winner.get("id")]
+            )
+            loser["contradiction_reason"] = (
+                f"Contradicted by {winner.get('id')}: {reason}"
+            )
+            if loser is old:
+                loser["status"] = "weakened"
+                loser["superseded_by"] = winner.get("id")
+                loser["superseded_at"] = _now()
+                weakened.append(old["id"])
+                winner["supersedes"] = loser.get("id")
+            else:
+                # The new memory is the weaker side: keep it, but not as a fact.
+                loser["status"] = "weakened"
+        return weakened
+
+    def record_use(self, mem_ids: List[str]) -> None:
+        """Mark memories as retrieved (``last_used``, ``use_count``).
+
+        This is what makes decay depend on *use* rather than mere age: a memory
+        that keeps being retrieved keeps its recency factor.
+        """
+        ids = {i for i in (mem_ids or []) if i}
+        if not ids:
+            return
+        for target_model in sorted(VALID_TARGET_MODELS):
+            touched = [m for m in self.memories[target_model] if m.get("id") in ids]
+            if not touched:
+                continue
+            with self._transaction(target_model):
+                for mem in touched:
+                    mem["last_used"] = _now()
+                    mem["use_count"] = int(mem.get("use_count", 0)) + 1
+
+    def apply_decay(self, now: Optional[datetime] = None) -> Dict[str, int]:
+        """Recompute decay for every memory and archive the clearly worthless.
+
+        A memory is archived only when it is low-value (low confidence, low
+        importance, not an explicit user fact, not a governing boundary, not an
+        active contradiction) AND has gone unused for a long time. Age alone is
+        never sufficient. Superseded memories are left alone - they are already
+        history and their decay factor is applied at read time.
+        """
+        now = now or datetime.now(timezone.utc)
+        archived = 0
+        for target_model in sorted(VALID_TARGET_MODELS):
+            with self._transaction(target_model):
+                for mem in self.memories[target_model]:
+                    status = mem.get("status")
+                    if status not in ("active", "weakened"):
+                        continue
+                    strength = _authority.effective_strength(mem, now)
+                    mem["effective_strength"] = round(strength, 4)
+
+                    if _authority.is_governing_eligible(mem):
+                        continue  # core boundaries never decay into worthlessness
+
+                    age = _days_since(mem.get("created_at") or mem.get("timestamp"), now)
+                    unused = _days_since(mem.get("last_used") or mem.get("timestamp"), now)
+                    if age is None or unused is None:
+                        continue
+                    # Archiving needs ALL of: weak, low confidence, old, unused.
+                    # Age alone is never enough, and nothing is deleted outright.
+                    if (strength < _authority.ARCHIVE_STRENGTH_THRESHOLD
+                            and _clamp_confidence(mem.get("confidence"), 0.0) < _authority.ARCHIVE_CONFIDENCE_THRESHOLD
+                            and age >= _authority.ARCHIVE_MIN_AGE_DAYS
+                            and unused >= _authority.ARCHIVE_UNUSED_DAYS):
+                        mem["status"] = "archived"
+                        mem["archived_at"] = _now()
+                        mem["archive_reason"] = (
+                            f"decayed (strength={strength:.3f}, unused={unused:.0f}d)"
+                        )
+                        archived += 1
+        return {"archived": archived}
+
+    def maybe_maintain(self, *, force: bool = False) -> bool:
+        """Run periodic maintenance (decay + archival) on the prompt path.
+
+        Throttled by ``decay_every`` so it does not rewrite files every turn.
+        Returns True when maintenance actually ran.
+        """
+        self._maintenance_counter += 1
+        if not force and (self._maintenance_counter % self.decay_every) != 0:
+            return False
+        self.expire_governing_slots()
+        self.apply_decay()
+        return True
+
+    def expire_governing_slots(self) -> int:
+        """Supersede stale 'current state' memories within each slot.
+
+        Slot memories (e.g. how Roum wants to be addressed) are mutually
+        exclusive: only the newest active one stays authoritative, older ones
+        are marked superseded so the model never has to pick between them.
+        """
+        expired = 0
+        for target_model in sorted(VALID_TARGET_MODELS):
+            slots: Dict[str, Dict[str, Any]] = {}
+            for mem in self.memories[target_model]:
+                slot = mem.get("slot")
+                if not slot or mem.get("status") != "active":
+                    continue
+                current = slots.get(slot)
+                if current is None or str(mem.get("timestamp", "")) > str(current.get("timestamp", "")):
+                    slots[slot] = mem
+            if not slots:
+                continue
+            with self._transaction(target_model):
+                for mem in self.memories[target_model]:
+                    slot = mem.get("slot")
+                    if not slot or mem.get("status") != "active":
+                        continue
+                    winner = slots.get(slot)
+                    if winner is not None and mem.get("id") != winner.get("id"):
+                        mem["status"] = "superseded"
+                        mem["superseded_by"] = winner.get("id")
+                        mem["superseded_at"] = _now()
+                        mem["supersession_reason"] = f"stale slot '{slot}' value"
+                        expired += 1
+        return expired
+
+    # ---- current state & governing reads ------------------------------
+    def get_governing_memories(self, target_model: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Active memories that must always apply, regardless of the query."""
+        models = [target_model] if target_model else sorted(VALID_TARGET_MODELS)
+        out: List[Dict[str, Any]] = []
+        with self._lock:
+            for name in models:
+                for mem in self.memories[name]:
+                    if _authority.is_governing(mem) and mem.get("content"):
+                        out.append(copy.deepcopy(mem))
+        out.sort(key=self._authority_key, reverse=True)
+        return out
+
+    def get_current_state(self) -> List[Dict[str, Any]]:
+        """The single authoritative active memory per slot (e.g. current address)."""
+        state: Dict[str, Dict[str, Any]] = {}
+        with self._lock:
+            for name in sorted(VALID_TARGET_MODELS):
+                for mem in self.memories[name]:
+                    slot = mem.get("slot")
+                    if not slot or mem.get("status") != "active":
+                        continue
+                    current = state.get(slot)
+                    if current is None or str(mem.get("timestamp", "")) > str(current.get("timestamp", "")):
+                        state[slot] = copy.deepcopy(mem)
+        return [state[k] for k in sorted(state)]
 
     def update_memory(self, target_model: str, mem_id: str, *, content: Optional[str] = None,
                       confidence: Optional[float] = None, keywords: Optional[List[str]] = None,
@@ -496,7 +752,8 @@ class TripleMemoryStore:
     def supersede_memory(self, target_model: str, old_id: str, content: str, *,
                          mem_type: Optional[str] = None, source: str = "supersession",
                          keywords: Optional[List[str]] = None, tags: Optional[List[str]] = None,
-                         confidence: float = 1.0, **extra) -> str:
+                         confidence: float = 1.0, reason: str = "Explicit user correction",
+                         **extra) -> str:
         """
         Replace an active memory with a corrected one while keeping the history:
         the old memory is marked "superseded" and linked to the new one.
@@ -511,6 +768,10 @@ class TripleMemoryStore:
             new_type = mem_type or old.get("type")
             self._check_type(new_type)
 
+            # A correction inherits the corrected memory's slot, so the new
+            # value becomes the current state for that slot (section 12).
+            extra.setdefault("slot", old.get("slot"))
+
             new_mem = self._build_memory(target_model, content, new_type, source,
                                          keywords, tags, confidence, extra)
             new_mem["supersedes"] = old_id
@@ -518,6 +779,14 @@ class TripleMemoryStore:
                 old["status"] = "superseded"
                 old["superseded_by"] = new_mem["id"]
                 old["superseded_at"] = _now()
+                old["supersession_reason"] = str(reason)
+                old["contradicts"] = _clean_str_list(
+                    list(old.get("contradicts") or []) + [new_mem["id"]]
+                )
+                old["contradiction_count"] = int(old.get("contradiction_count", 0)) + 1
+                old["confidence"] = round(
+                    _clamp_confidence(old.get("confidence", 1.0)) * WEAKEN_FACTOR, 4
+                )
                 self.memories[target_model].append(new_mem)
             return new_mem["id"]
 
@@ -541,6 +810,19 @@ class TripleMemoryStore:
     def get_active_memories(self, target_model: str) -> List[Dict[str, Any]]:
         return self.get_memories(target_model, status="active")
 
+    def get_retrievable_memories(self, target_model: str) -> List[Dict[str, Any]]:
+        """Active + weakened memories: usable context, ranked by strength later.
+
+        Superseded and archived memories are excluded, so a stale value can
+        never be injected as an instruction.
+        """
+        self._check_target(target_model)
+        with self._lock:
+            return [
+                copy.deepcopy(m) for m in self.memories[target_model]
+                if m.get("status") in ("active", "weakened")
+            ]
+
     def stats(self) -> Dict[str, Any]:
         with self._lock:
             result: Dict[str, Any] = {}
@@ -551,6 +833,7 @@ class TripleMemoryStore:
                     "total": len(items),
                     "active": len(active),
                     "by_type": dict(Counter(m.get("type", "unknown") for m in active)),
+                    "by_status": dict(Counter(m.get("status", "unknown") for m in items)),
                 }
             result["journal_entries"] = len(self.journal)
             return result
