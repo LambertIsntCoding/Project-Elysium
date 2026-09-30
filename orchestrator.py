@@ -8,6 +8,13 @@ import requests
 import yaml
 
 import elysium as _elysium
+from elysium import (  # noqa: F401 - re-exported for import compatibility
+    CommandExtractor,
+    ElysiumCommandRecorder,
+    ElysiumDirective,
+    ElysiumOrchestrator,
+    validate_command,
+)
 from memory_store import CommandStore, TripleMemoryStore, load_json
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
@@ -171,9 +178,16 @@ class CompanionOrchestrator:
     MAX_STYLE_EXAMPLES = 4   # set higher (or None) to include every example
     MAX_HISTORY_TURNS = 6
 
-    def __init__(self, store: TripleMemoryStore, config_dir: str = "./config", *,
+    def __init__(self, store: TripleMemoryStore, config_dir: Any = "./config", *,
                  elysium: Any = None, cmd_store: Optional[CommandStore] = None,
                  enable_elysium_commands: bool = False):
+        # Compatibility: the original proposal called
+        # ``CompanionOrchestrator(store, cmd_store)``. Accept a CommandStore in
+        # the second positional slot and keep the default config dir, so that
+        # call form works without silently treating the store as a path.
+        if isinstance(config_dir, CommandStore):
+            cmd_store = config_dir
+            config_dir = "./config"
         self.store = store
         self.config_dir = os.path.abspath(config_dir)
         self._yaml_cache: Dict[str, tuple] = {}  # filename -> (mtime, data)
