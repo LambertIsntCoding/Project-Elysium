@@ -349,6 +349,27 @@ class CompanionOrchestrator:
         )
         parts.extend(f"- {a}" for a in adaptations)
 
+    def _append_temporary_context(self, parts: List[str]) -> None:
+        """Short-term conversation scratch (section 5).
+
+        Explicitly labelled as *this session only* so the model uses it for
+        continuity without treating it as a durable fact about Roum.
+        """
+        getter = getattr(self.store, "get_temporary_context", None)
+        if not callable(getter):
+            return
+        items = getter(limit=5)
+        if not items:
+            return
+        parts.append("\n=== TEMPORARY CONTEXT (THIS SESSION ONLY) ===")
+        parts.append(
+            "Transient context for the current conversation. Use it for "
+            "continuity, but do not treat it as a permanent fact about Roum "
+            "and do not record it as one."
+        )
+        for item in items:
+            parts.append(f"- {item.get('content')}")
+
     def _append_examples(self, parts: List[str], examples_data: Dict[str, Any]) -> None:
         raw = examples_data.get("examples")
         examples = [
@@ -501,6 +522,7 @@ class CompanionOrchestrator:
         self._append_current_state(parts, current_state)
         self._append_governing(parts, governing, total_governing)
         self._append_adaptations(parts, active_adaptations)
+        self._append_temporary_context(parts)
 
         parts.append("\n=== FACTUAL CONTEXT ===")
         has_facts = False

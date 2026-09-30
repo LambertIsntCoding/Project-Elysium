@@ -225,6 +225,10 @@ def effective_strength(mem: Dict[str, Any], now: Optional[datetime] = None) -> f
 
     if status in ("superseded", "archived"):
         strength *= 0.05
+    # A dormant memory is still retrievable, but only weakly: it can wake up if
+    # it turns out to be relevant, yet it never governs (section 6).
+    if is_dormant(mem):
+        strength *= 0.5
     return _clamp01(strength)
 
 
@@ -307,6 +311,12 @@ def detect_contradiction(
     if overlap < min_overlap:
         return None
 
+    # Explicitly stated as temporary ("right now", "today"): a passing state,
+    # not a durable claim, so it never contradicts a standing fact.
+    if _matches(_TEMPORARY_PATTERNS, str(a.get("content") or "").casefold()) or \
+            _matches(_TEMPORARY_PATTERNS, str(b.get("content") or "").casefold()):
+        return None
+
     if _negated(a.get("content")) != _negated(b.get("content")):
         return "opposite polarity (one is negated)"
 
@@ -350,6 +360,9 @@ SLOT_TYPES = {"relationship_boundary", "explicit_preference", "correction", "dec
 def is_governing(mem: Dict[str, Any]) -> bool:
     """True when a memory must always influence behaviour, not just when relevant."""
     if mem.get("status") != "active":
+        return False
+    # Dormant memories are soft-demoted: still retrievable, but never governing.
+    if is_dormant(mem):
         return False
     if mem.get("governing") is True:
         return True
@@ -496,6 +509,244 @@ def boundary_memories() -> List[Dict[str, Any]]:
 logger = logging.getLogger("astra.memory")
 
 VALID_TARGET_MODELS = {"roum", "self", "relationship"}
+
+# --- Phase 1 memory governance -----------------------------------------
+# Every candidate must land in exactly one bucket. Only PERSISTENT_* become
+# durable memories; everything else stays out of the memory files.
+CLASSIFICATION_PERSISTENT = {
+    "persistent_user_fact", "persistent_user_preference",
+    "persistent_project_information", "behavioral_pattern",
+    "uncertain_inference", "self_fact", "self_preference", "self_observation",
+    "self_belief", "relationship_event", "relationship_observation", "decision",
+}
+CLASSIFICATION_TRANSIENT = {"temporary_context", "no_memory"}
+VALID_CLASSIFICATIONS = CLASSIFICATION_PERSISTENT | CLASSIFICATION_TRANSIENT
+
+# Classification -> (target model, stored memory type).
+CLASSIFICATION_TYPES: Dict[str, Tuple[str, str]] = {
+    "persistent_user_fact": ("roum", "explicit_fact"),
+    "persistent_user_preference": ("roum", "explicit_preference"),
+    "persistent_project_information": ("roum", "explicit_project_information"),
+    "behavioral_pattern": ("roum", "behavioral_pattern"),
+    "uncertain_inference": ("roum", "uncertain_inference"),
+    "self_fact": ("self", "self_fact"),
+    "self_preference": ("self", "self_preference"),
+    "self_observation": ("self", "self_observation"),
+    "self_belief": ("self", "self_belief"),
+    "relationship_event": ("relationship", "relationship_event"),
+    "relationship_observation": ("relationship", "relationship_observation"),
+    "decision": ("roum", "decision"),
+}
+
+# A self-memory may only be durable when the declaration was deliberate
+# (Astra's governing system) or backed by repetition. A single generated
+# sentence can never establish a self-preference (sections 4).
+SELF_DURABLE_CLASSIFICATIONS = {"self_fact", "self_preference"}
+DELIBERATE_SELF_SOURCES = {"governing_declaration", "explicit_declaration", "user_correction"}
+SELF_DURABLE_MIN_EVIDENCE = 3
+
+# Only an explicit current user statement (or correction) may supersede.
+EXPLICIT_USER_SOURCES = {"explicit_user_statement", "user_correction", "user_correction_implicit"}
+
+# Temporary context defaults: how long a scratch item stays available, and how
+# many turns of scratch are kept at once.
+DEFAULT_TEMPORARY_TTL_SECONDS = 3600
+DEFAULT_TEMPORARY_CAP = 20
+
+# Utility buckets (section 6). Dormant is a *soft* demotion: a dormant memory
+# is still retrievable (so it can wake up) but never governing.
+UTILITY_ACTIVE = "active"
+UTILITY_DORMANT = "dormant"
+VALID_UTILITIES = {UTILITY_ACTIVE, UTILITY_DORMANT}
+DORMANT_MIN_AGE_DAYS = 45
+DORMANT_UNUSED_DAYS = 45
+DORMANT_STRENGTH_THRESHOLD = 0.18
+# A governing memory stays active unless its confidence has fallen below this,
+# so a low-confidence user preference can go dormant but a firm one cannot.
+GOVERNING_ACTIVE_MIN_CONFIDENCE = 0.5
+
+
+def classification_to_type(classification: str) -> Tuple[str, str]:
+    """Map a classification label to ``(target_model, memory_type)``.
+
+    Unknown or transient labels resolve to ``("roum", "uncertain_inference")``
+    so a classifier that drifts can never create an explicit user fact.
+    """
+    return CLASSIFICATION_TYPES.get(classification, ("roum", "uncertain_inference"))
+
+
+def is_persistent_classification(classification: str) -> bool:
+    return classification in CLASSIFICATION_PERSISTENT
+
+
+def classify_candidate(content: str, *, explicit: bool, mem_type: str,
+                       target_model: str, source: str, confidence: float = 0.7) -> str:
+    """Decide which bucket a candidate memory belongs in.
+
+    Deterministic and model-independent: this is the *policy* layer, and it
+    exists so the system decides what to remember rather than the generator.
+    """
+    text = str(content or "").strip()
+    if not text:
+        return "no_memory"
+    lowered = text.casefold()
+
+    # A question, or a one-off activity report, is context rather than a fact -
+    # unless the wording itself establishes a recurring trait ("I always...").
+    if text.endswith("?") or (_matches(_TEMPORARY_PATTERNS, lowered)
+                              and not _matches(_PREFERENCE_PATTERNS, lowered)):
+        return "temporary_context"
+
+    if explicit:
+        if _matches(_DECISION_PATTERNS, lowered):
+            return "decision"
+        if mem_type == "explicit_project_information":
+            return "persistent_project_information"
+        if mem_type in ("explicit_preference", "correction"):
+            return "persistent_user_preference"
+        # A trait stated in preference terms is a preference even when the
+        # caller labelled it a plain fact.
+        if _matches(_PREFERENCE_PATTERNS, lowered):
+            return "persistent_user_preference"
+        if mem_type == "explicit_fact":
+            return "persistent_user_fact"
+        # An explicit statement is trusted; route by the model it targets.
+        return {
+            "self": "self_fact",
+            "relationship": "relationship_event",
+        }.get(target_model, "persistent_user_fact")
+
+    # Non-explicit: never allowed to become an explicit fact (provenance guard).
+    if source in ("behavioral_pattern",):
+        return "behavioral_pattern"
+    if target_model == "self":
+        return "self_observation"
+    if target_model == "relationship":
+        return "relationship_observation"
+    return "uncertain_inference"
+
+
+def is_durable_self_memory(classification: str, source: str,
+                           reinforcement_count: int) -> bool:
+    """Gate for self-model protection (section 4).
+
+    A self-preference/fact is durable only when Astra's governing system
+    declared it deliberately or it has been reinforced across conversations.
+    """
+    if classification not in SELF_DURABLE_CLASSIFICATIONS:
+        return True
+    if source in DELIBERATE_SELF_SOURCES:
+        return True
+    return int(reinforcement_count or 1) >= SELF_DURABLE_MIN_EVIDENCE
+
+
+def may_supersede(new_source: str, new_classification: str) -> bool:
+    """Only an explicit user statement/correction may supersede a memory."""
+    return new_source in EXPLICIT_USER_SOURCES and new_classification != "temporary_context"
+
+
+def mark_dormant(mem: Dict[str, Any], reason: str) -> None:
+    """Soft-demote a stale, low-value memory in place (never deletes it)."""
+    mem["utility"] = UTILITY_DORMANT
+    mem["dormant_at"] = _now()
+    mem["dormant_reason"] = str(reason)
+    mem["governing"] = False
+
+
+def is_dormant(mem: Dict[str, Any]) -> bool:
+    return str(mem.get("utility") or UTILITY_ACTIVE) == UTILITY_DORMANT
+
+
+def memory_utility(mem: Dict[str, Any]) -> str:
+    """Classify a memory as ``active`` or ``dormant`` from its metadata.
+
+    ``old but important`` (recently used, high confidence, governing) stays
+    active; ``old and irrelevant`` (weak, unused, low confidence) is dormant.
+    """
+    if is_dormant(mem):
+        return UTILITY_DORMANT
+    if mem.get("status") not in ("active", "weakened"):
+        return UTILITY_DORMANT
+    # Genuinely important memories stay active: a governing memory that still
+    # carries reasonable confidence, or one that has actually been used.
+    if int(mem.get("use_count", 0)) > 0:
+        return UTILITY_ACTIVE
+    if (is_governing_eligible(mem)
+            and _coerce_float(mem.get("confidence"), 1.0) >= GOVERNING_ACTIVE_MIN_CONFIDENCE):
+        return UTILITY_ACTIVE
+    now = datetime.now(timezone.utc)
+    age = _age_days(mem.get("created_at") or mem.get("timestamp"), now)
+    unused = _age_days(mem.get("last_used") or mem.get("timestamp"), now)
+    if age is None or unused is None:
+        return UTILITY_ACTIVE
+    if (unused >= DORMANT_UNUSED_DAYS
+            and effective_strength(mem, now) < DORMANT_STRENGTH_THRESHOLD
+            and _coerce_float(mem.get("confidence"), 1.0) < ARCHIVE_CONFIDENCE_THRESHOLD):
+        return UTILITY_DORMANT
+    return UTILITY_ACTIVE
+
+
+# Transient cues: things worth understanding now but not worth remembering.
+_TEMPORARY_PATTERNS = tuple(re.compile(p, re.I) for p in (
+    r"\b(yesterday|last night|this morning|today|tomorrow|tonight|just now|earlier today)\b",
+    r"\bi (?:just|currently) (?:played|watched|ate|read|bought|finished|started|did)\b",
+    r"\bright now\b", r"\bat the moment\b", r"\bcurrently (?:talking|discussing|working on|playing)\b",
+    r"\bwhat (?:i am|i'm) (?:talking|asking|saying) about\b",
+))
+_DECISION_PATTERNS = tuple(re.compile(p, re.I) for p in (
+    r"\b(?:we|i) (?:decided|agreed|chose|settled on|will go with)\b",
+    r"\b(?:let'?s|we'?ll) (?:go with|use|do|stick with)\b",
+    r"\bthe plan is\b", r"\bfinal decision\b",
+))
+# Preference wording: a durable trait rather than a one-off statement.
+_PREFERENCE_PATTERNS = tuple(re.compile(p, re.I) for p in (
+    r"\b(?:my|his) favou?rite\b", r"\bi (?:really )?(?:like|love|enjoy|prefer|hate|dislike)\b",
+    r"\bi(?:'m| am) (?:really )?into\b", r"\bi always\b", r"\bi never\b",
+    r"\bi(?:'d| would) rather\b", r"\bplease (?:always|never|don't|do not)\b",
+    r"\bi want you to\b", r"\bi prefer\b",
+))
+# Project state is revisable: it describes how things are now, not an
+# immutable historical fact (section 1, tests I).
+_PROJECT_STATE_PATTERNS = tuple(re.compile(p, re.I) for p in (
+    r"\b(?:is|are|was|were) (?:currently |still |now )?"
+    r"(?:stalled|blocked|paused|on hold|delayed|in progress|underway|waiting|pending|done|finished)\b",
+    r"\b(?:waiting|blocked) (?:on|for)\b",
+))
+
+
+def _matches(patterns, text: str) -> bool:
+    return any(p.search(text) for p in patterns)
+
+
+def is_project_state(content: str) -> bool:
+    return _matches(_PROJECT_STATE_PATTERNS, str(content or "").casefold())
+
+
+def same_project_subject(a: str, b: str) -> bool:
+    """True when two project-state statements are about the same subject.
+
+    Requires a shared *distinctive* token (a project name or other unusual
+    word), not merely shared filler, so two different projects are never
+    treated as one another's stale state. A restatement naturally adds detail,
+    so overall overlap is deliberately not required.
+    """
+    ta, tb = _content_tokens(a), _content_tokens(b)
+    shared = ta & tb
+    return any(
+        tok not in _COMMON_PROJECT_WORDS and len(tok) >= 3 for tok in shared
+    )
+
+
+# Filler that appears in almost any project sentence and therefore does not
+# identify *which* project is being discussed.
+_COMMON_PROJECT_WORDS = {
+    "project", "currently", "current", "still", "now", "work", "working",
+    "on", "in", "progress", "stalled", "blocked", "paused", "hold", "delayed",
+    "underway", "waiting", "pending", "done", "finished", "because", "approval",
+    "publisher", "wait", "start", "started", "develop", "development",
+}
+
+
 VALID_MEMORY_TYPES = {
     "explicit_fact", "explicit_preference", "explicit_project_information",
     "behavioral_pattern", "uncertain_inference", "self_fact",
@@ -776,6 +1027,76 @@ class CommandStore:
 # ---------------------------------------------------------------------
 # Triple memory store
 # ---------------------------------------------------------------------
+class TemporaryContext:
+    """Conversation scratch space: available now, never written to disk.
+
+    Temporary context is for things worth *understanding* this session but not
+    worth permanently remembering - what Roum is currently talking about, a
+    short-term plan, a passing emotional note. It is deliberately kept out of
+    the persistent memory files and is capped and time-limited so it cannot
+    grow without bound.
+    """
+
+    def __init__(self, ttl_seconds: int = DEFAULT_TEMPORARY_TTL_SECONDS,
+                 cap: int = DEFAULT_TEMPORARY_CAP):
+        self.ttl_seconds = max(1, int(ttl_seconds))
+        self.cap = max(1, int(cap))
+        self._items: List[Dict[str, Any]] = []
+        self._lock = threading.RLock()
+
+    def add(self, content: str, *, kind: str = "context", source: str = "ai_extraction",
+            conversation_id: Optional[str] = None) -> Optional[str]:
+        text = str(content or "").strip()
+        if not text:
+            return None
+        item = {
+            "id": _new_id("tmp"),
+            "content": text,
+            "kind": str(kind or "context"),
+            "source": str(source or "ai_extraction"),
+            "conversation_id": conversation_id,
+            "created_at": _now(),
+        }
+        with self._lock:
+            self._items.append(item)
+            del self._items[:-self.cap]  # keep only the newest `cap` items
+        return item["id"]
+
+    def _live(self, now: datetime) -> List[Dict[str, Any]]:
+        live: List[Dict[str, Any]] = []
+        for item in self._items:
+            age = _days_since(item.get("created_at"), now)
+            if age is not None and age * 86400.0 > self.ttl_seconds:
+                continue
+            live.append(item)
+        return live
+
+    def get_context(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Unexpired scratch items, newest first."""
+        with self._lock:
+            live = self._live(datetime.now(timezone.utc))
+        live.reverse()
+        if limit is not None:
+            live = live[:limit]
+        return copy.deepcopy(live)
+
+    def purge(self, now: Optional[datetime] = None) -> int:
+        """Drop expired items; returns how many were removed."""
+        now = now or datetime.now(timezone.utc)
+        with self._lock:
+            before = len(self._items)
+            self._items = self._live(now)
+            return before - len(self._items)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._items = []
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._items)
+
+
 class TripleMemoryStore:
     def __init__(self, data_dir: str = "./storage", *,
                  maintenance_every: int = DEFAULT_MAINTENANCE_EVERY,
@@ -797,6 +1118,22 @@ class TripleMemoryStore:
 
         self.memories = {name: self._load_file(path) for name, path in self.files.items()}
         self.journal = self._load_file(self.journal_file)
+        # Conversation scratch: deliberately NOT a file. It lives only for the
+        # life of the process so transient context never clutters the stores.
+        self.temporary = TemporaryContext()
+
+    # ---- temporary context (section 5) -------------------------------
+    def add_temporary_context(self, content: str, *, kind: str = "context",
+                              source: str = "ai_extraction",
+                              conversation_id: Optional[str] = None) -> Optional[str]:
+        return self.temporary.add(content, kind=kind, source=source,
+                                  conversation_id=conversation_id)
+
+    def get_temporary_context(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        return self.temporary.get_context(limit=limit)
+
+    def purge_temporary_context(self) -> int:
+        return self.temporary.purge()
 
     # ---- internals ---------------------------------------------------
     def _load_file(self, path: str) -> List[Dict[str, Any]]:
@@ -957,6 +1294,30 @@ class TripleMemoryStore:
         content = self._clean_content(content)
 
         with self._lock:
+            # Self-model protection (section 4): a single generated sentence
+            # must not create a durable self-fact/self-preference. It is stored
+            # as an observation instead, and only *repeated* evidence promotes
+            # it. A deliberate declaration is trusted immediately.
+            if (target_model == "self" and mem_type in SELF_DURABLE_CLASSIFICATIONS
+                    and not is_durable_self_memory(mem_type, source, 1)):
+                prior = self._find_duplicate("self", "self_observation", content)
+                if prior is None:
+                    with self._transaction(target_model):
+                        observed = self._build_memory(
+                            "self", content, "self_observation", source,
+                            keywords, tags, min(_clamp_confidence(confidence), 0.5), extra,
+                        )
+                        self.memories["self"].append(observed)
+                    return observed["id"]
+                with self._transaction(target_model):
+                    self._reinforce(prior, _clean_str_list(keywords), _clean_str_list(tags))
+                    if is_durable_self_memory(mem_type, source,
+                                              int(prior.get("reinforcement_count", 1))):
+                        prior["type"] = mem_type
+                        prior["promoted_at"] = _now()
+                        prior["confidence"] = _clamp_confidence(confidence)
+                return prior["id"]
+
             if dedupe:
                 existing = self._find_duplicate(target_model, mem_type, content)
                 if existing is not None:
@@ -998,6 +1359,32 @@ class TripleMemoryStore:
             if old.get("id") == new_mem.get("id"):
                 continue
             reason = detect_contradiction(old, new_mem)
+
+            # Revisable project state (section 1, tests I): a newer statement
+            # about how a project currently *is* supersedes the older state
+            # without marking the older one false - it was true at the time.
+            # Checked before lexical contradiction, because two states of the
+            # same project need not be worded as opposites.
+            if (is_project_state(old.get("content"))
+                    and is_project_state(new_mem.get("content"))
+                    and same_project_subject(old.get("content"), new_mem.get("content"))
+                    and new_mem.get("source") in EXPLICIT_USER_SOURCES):
+                if old.get("status") == "active":
+                    old["status"] = "superseded"
+                    old["superseded_by"] = new_mem.get("id")
+                    old["superseded_at"] = _now()
+                    old["supersession_reason"] = "project state updated (state, not a false claim)"
+                    old["contradiction_reason"] = (
+                        f"Superseded by project-state update {new_mem.get('id')}"
+                    )
+                    old["contradicts"] = _clean_str_list(
+                        list(old.get("contradicts") or []) + [new_mem.get("id")]
+                    )
+                    old["contradiction_count"] = int(old.get("contradiction_count", 0)) + 1
+                    new_mem["supersedes"] = old.get("id")
+                    weakened.append(old["id"])
+                continue
+
             if not reason:
                 continue
 
@@ -1095,7 +1482,29 @@ class TripleMemoryStore:
             return False
         self.expire_governing_slots()
         self.apply_decay()
+        self.apply_utility_decay()
+        self.purge_temporary_context()
         return True
+
+    def apply_utility_decay(self) -> Dict[str, int]:
+        """Mark stale, low-value memories dormant (section 6).
+
+        This is the soft alternative to deletion: a dormant memory keeps its
+        content and stays retrievable, but it stops governing and ranks lower.
+        Age alone is never enough - it must also be weak, unused and
+        low-confidence. Nothing is deleted.
+        """
+        dormant = 0
+        for target_model in sorted(VALID_TARGET_MODELS):
+            with self._transaction(target_model):
+                for mem in self.memories[target_model]:
+                    if is_dormant(mem) or mem.get("status") not in ("active", "weakened"):
+                        continue
+                    if memory_utility(mem) != UTILITY_DORMANT:
+                        continue
+                    mark_dormant(mem, "stale and low-value (unused, weak, low confidence)")
+                    dormant += 1
+        return {"dormant": dormant}
 
     def expire_governing_slots(self) -> int:
         """Supersede stale 'current state' memories within each slot.
@@ -1272,6 +1681,25 @@ class TripleMemoryStore:
     def get_active_memories(self, target_model: str) -> List[Dict[str, Any]]:
         return self.get_memories(target_model, status="active")
 
+    def find_contradiction(self, target_model: str, content: str,
+                           mem_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Return the first active memory that ``content`` contradicts, if any.
+
+        Used by the consolidator to decide *before* writing whether a new
+        explicit statement should supersede an existing memory rather than
+        coexist with it (section 2).
+        """
+        self._check_target(target_model)
+        probe = {"content": self._clean_content(content), "type": mem_type,
+                 "status": "active", "source": "explicit_user_statement"}
+        with self._lock:
+            for mem in self.memories[target_model]:
+                if mem.get("status") != "active":
+                    continue
+                if detect_contradiction(mem, probe):
+                    return copy.deepcopy(mem)
+        return None
+
     def get_retrievable_memories(self, target_model: str) -> List[Dict[str, Any]]:
         """Active + weakened memories: usable context, ranked by strength later.
 
@@ -1296,6 +1724,7 @@ class TripleMemoryStore:
                     "active": len(active),
                     "by_type": dict(Counter(m.get("type", "unknown") for m in active)),
                     "by_status": dict(Counter(m.get("status", "unknown") for m in items)),
+                    "by_utility": dict(Counter(memory_utility(m) for m in active)),
                 }
             result["journal_entries"] = len(self.journal)
             return result
