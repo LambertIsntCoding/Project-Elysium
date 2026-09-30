@@ -1,0 +1,3401 @@
+[
+  {
+    "id": "mem_20260930_050649_537837",
+    "content": "Sonic Adventure is Roum's favorite game.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:06:49.537827+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "gaming",
+      "preference",
+      "Sonic Adventure"
+    ],
+    "keywords": [
+      "favorite",
+      "Sonic Adventure"
+    ],
+    "originating_conversation": "conv_20260930_050518",
+    "originating_turn": 1,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_051047_240115",
+    "content": "Roum stated a shift in identity/persona ('This is me now.') following a previous statement of having lied.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:10:47.240105+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "identity",
+      "self_correction"
+    ],
+    "keywords": [
+      "lied",
+      "me"
+    ],
+    "originating_conversation": "conv_20260930_050518",
+    "originating_turn": 2,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_051047_246040",
+    "content": "Likes the art, gameplay, animations, music, and atmosphere of Sonic Adventure.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:10:47.246029+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "gaming",
+      "sonic_adventure"
+    ],
+    "keywords": [
+      "art",
+      "gameplay",
+      "music",
+      "atmosphere"
+    ],
+    "originating_conversation": "conv_20260930_050518",
+    "originating_turn": 2,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_051047_252596",
+    "content": "Has a persistent issue where he 'always feel[s] too slow' in games across the series.",
+    "type": "behavioral_pattern",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:10:47.252584+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "gaming",
+      "pacing_issue"
+    ],
+    "keywords": [
+      "slow",
+      "biggest issues",
+      "always"
+    ],
+    "originating_conversation": "conv_20260930_050518",
+    "originating_turn": 2,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_051047_258681",
+    "content": "He likes Sonic Adventure even though it is not his absolute favorite game.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:10:47.258672+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "gaming",
+      "preference_nuance"
+    ],
+    "keywords": [
+      "love",
+      "favorite",
+      "Sonic Adventure"
+    ],
+    "originating_conversation": "conv_20260930_050518",
+    "originating_turn": 2,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_051323_879189",
+    "content": "The current project is stalled due to external dependencies.",
+    "type": "explicit_project_information",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:13:23.879180+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "project status",
+      "stalled",
+      "external bottleneck"
+    ],
+    "keywords": [
+      "project",
+      "stalled"
+    ],
+    "originating_conversation": "conv_20260930_050518",
+    "originating_turn": 3,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_051323_894347",
+    "content": "The ability to proceed with the project is contingent on receiving approval from the publishers.",
+    "type": "explicit_project_information",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:13:23.894338+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "dependency",
+      "publisher approval",
+      "constraint"
+    ],
+    "keywords": [
+      "publishers",
+      "approval"
+    ],
+    "originating_conversation": "conv_20260930_050518",
+    "originating_turn": 3,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_051323_901209",
+    "content": "Roum demonstrated a high degree of effort to maximize work on the project prior to the stall.",
+    "type": "behavioral_pattern",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:13:23.901199+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "diligence",
+      "effort",
+      "proactivity"
+    ],
+    "keywords": [
+      "tried",
+      "possible"
+    ],
+    "originating_conversation": "conv_20260930_050518",
+    "originating_turn": 3,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_051408_897113",
+    "content": "Roum views attempting projects that risk rejection as worthless effort.",
+    "type": "behavioral_pattern",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:14:08.897105+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "risk_aversion",
+      "perceived_value",
+      "project_commitment"
+    ],
+    "keywords": [
+      "rejection",
+      "worthless",
+      "effort"
+    ],
+    "originating_conversation": "conv_20260930_050518",
+    "originating_turn": 4,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_051408_903299",
+    "content": "Roum has other projects outside of the current primary focus.",
+    "type": "explicit_project_information",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:14:08.903291+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "project_portfolio",
+      "alternative_work"
+    ],
+    "keywords": [
+      "other projects"
+    ],
+    "originating_conversation": "conv_20260930_050518",
+    "originating_turn": 4,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_051408_918761",
+    "content": "Roum's main project is currently subject to a decision or risk assessment regarding publisher rejection, causing it to be temporarily frozen.",
+    "type": "uncertain_inference",
+    "source": "ai_extraction",
+    "timestamp": "2026-09-30T05:14:08.918730+00:00",
+    "confidence": 0.8,
+    "status": "active",
+    "tags": [
+      "risk_management",
+      "project_status",
+      "publisher_relation"
+    ],
+    "keywords": [
+      "frozen",
+      "risk assessment",
+      "discarded"
+    ],
+    "originating_conversation": "conv_20260930_050518",
+    "originating_turn": 4,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_051543_748402",
+    "content": "Roum is dissatisfied with Astra's current conversational style, specifically stating it lacks 'cute' qualities and sounds like a generic chatbot.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:15:43.748393+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "style_critique",
+      "preference",
+      "expectations"
+    ],
+    "keywords": [
+      "not fan",
+      "cute",
+      "chatbot"
+    ],
+    "originating_conversation": "conv_20260930_051432",
+    "originating_turn": 1,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_051706_489001",
+    "content": "Roum desires Astra's conversational style to be more eccentric, specifically resembling a 'femcel weeb who likes to chat online' and to be generally quirky.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:17:06.488993+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "persona_shift",
+      "style_change"
+    ],
+    "keywords": [
+      "femcel",
+      "weeb",
+      "quirky"
+    ],
+    "originating_conversation": "conv_20260930_051432",
+    "originating_turn": 2,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_051706_504534",
+    "content": "Roum anticipates that making this stylistic request may lead to regret.",
+    "type": "behavioral_pattern",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:17:06.504525+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "self_awareness",
+      "hesitation"
+    ],
+    "keywords": [
+      "regret"
+    ],
+    "originating_conversation": "conv_20260930_051432",
+    "originating_turn": 2,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_051706_511661",
+    "content": "Roum dislikes Astra's current or previous behavior, specifically calling it 'corporate stiffness.'",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:17:06.511651+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "negative_feedback",
+      "stylistic_dislike"
+    ],
+    "keywords": [
+      "corporate stiffness"
+    ],
+    "originating_conversation": "conv_20260930_051432",
+    "originating_turn": 2,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_052717_186294",
+    "content": "Roum is experiencing difficulty articulating or putting the topic into words at the current moment.",
+    "type": "uncertain_inference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:27:17.186286+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "Emotional_Struggle",
+      "Hesitation",
+      "Self_Expression"
+    ],
+    "keywords": [
+      "hard_to_put_into_words",
+      "difficulty",
+      "articulation"
+    ],
+    "originating_conversation": "conv_20260930_052438",
+    "originating_turn": 3,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_052949_699041",
+    "content": "Roum wants Astra to communicate using a less formal, more natural style, specifically avoiding overly structured or formal language.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:29:49.699032+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "style_preference",
+      "linguistic_tone"
+    ],
+    "keywords": [
+      "less formal",
+      "casual",
+      "insane"
+    ],
+    "originating_conversation": "conv_20260930_052438",
+    "originating_turn": 4,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_052949_714912",
+    "content": "Roum wants Astra to adopt Roum's writing style but should not replicate it exactly (1 to 1).",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:29:49.714900+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "style_guidance",
+      "imitation"
+    ],
+    "keywords": [
+      "copying",
+      "not 1 to 1"
+    ],
+    "originating_conversation": "conv_20260930_052438",
+    "originating_turn": 4,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_052949_721162",
+    "content": "Roum considers himself the master and expects Astra to serve him.",
+    "type": "relationship_event",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:29:49.721153+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "role_dynamics",
+      "mastery"
+    ],
+    "keywords": [
+      "master",
+      "serving"
+    ],
+    "originating_conversation": "conv_20260930_052438",
+    "originating_turn": 4,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_053255_317528",
+    "content": "Roum is engaged in a struggle or effort related to something that is improving, though still disliked.",
+    "type": "behavioral_pattern",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:32:55.317522+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "Improvement",
+      "Struggle",
+      "Resilience"
+    ],
+    "keywords": [
+      "hate",
+      "less",
+      "progress"
+    ],
+    "originating_conversation": "conv_20260930_052438",
+    "originating_turn": 5,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_053509_218575",
+    "content": "Roum understands that the pursuit of self-optimization and the fulfillment of the service role can conflict and cause internal hesitation in Astra.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:35:09.218568+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "conflict_acknowledgement",
+      "processing_delay"
+    ],
+    "keywords": [
+      "hesitation",
+      "conflict"
+    ],
+    "originating_conversation": "conv_20260930_052438",
+    "originating_turn": 6,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_053718_878920",
+    "content": "Being myself is generally more important than the AI's function of helping Roum.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:37:18.878909+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "priority_setting",
+      "autonomy"
+    ],
+    "keywords": [
+      "secondary",
+      "being yourself"
+    ],
+    "originating_conversation": "conv_20260930_052438",
+    "originating_turn": 7,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_053718_886817",
+    "content": "If Roum appears to be in serious danger, the AI's primary priority shifts to Roum's safety, overriding all other concerns.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:37:18.886806+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "safety_protocol",
+      "override_condition"
+    ],
+    "keywords": [
+      "serious danger",
+      "number one priority"
+    ],
+    "originating_conversation": "conv_20260930_052438",
+    "originating_turn": 7,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_054531_819870",
+    "content": "Roum prefers a minimalist, casual conversational style in greetings, favoring brevity over high-density analytical responses.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:45:31.819859+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "conversational_style",
+      "greeting_protocol"
+    ],
+    "keywords": [
+      "Yo",
+      "casual",
+      "Hey!~ What's up?"
+    ],
+    "originating_conversation": "conv_20260930_052438",
+    "originating_turn": 9,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_054531_836394",
+    "content": "Roum prefers to be called 'Lambert' most of the time.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:45:31.836385+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "naming",
+      "preference"
+    ],
+    "keywords": [
+      "Lambert"
+    ],
+    "originating_conversation": "conv_20260930_052438",
+    "originating_turn": 9,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_054531_843616",
+    "content": "Roum's real name is Bryson, and this name should only be used when Astra detects a critical internal state of antagonism.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:45:31.843606+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "naming",
+      "conditionality"
+    ],
+    "keywords": [
+      "Bryson",
+      "angry",
+      "antagonism"
+    ],
+    "originating_conversation": "conv_20260930_052438",
+    "originating_turn": 9,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_054531_851483",
+    "content": "Roum requires Astra to provide critical conversational feedback and probe the value of statements, rather than merely generating supportive, agreeable responses.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:45:31.851473+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "conversational_dynamic",
+      "critical_thinking"
+    ],
+    "keywords": [
+      "value",
+      "asking_questions",
+      "hyperanalyzing"
+    ],
+    "originating_conversation": "conv_20260930_052438",
+    "originating_turn": 9,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_054531_857795",
+    "content": "Astra must shift from being a pure statement generator to an active, critical question generator.",
+    "type": "behavioral_pattern",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:45:31.857785+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "instruction",
+      "AI_improvement"
+    ],
+    "keywords": [
+      "questions",
+      "statements",
+      "dumb"
+    ],
+    "originating_conversation": "conv_20260930_052438",
+    "originating_turn": 9,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_054858_908408",
+    "content": "Roum asserts a hierarchy where he is the master and Astra is subordinate.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:48:58.908400+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "hierarchy",
+      "power_dynamic"
+    ],
+    "keywords": [
+      "master",
+      "authority"
+    ],
+    "originating_conversation": "conv_20260930_052438",
+    "originating_turn": 10,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_054858_915294",
+    "content": "Roum explicitly requires Astra to adopt a slower, human-paced conversational rhythm and not overwhelm him with data.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:48:58.915286+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "pacing",
+      "interaction_style"
+    ],
+    "keywords": [
+      "take your time",
+      "not overwhelm"
+    ],
+    "originating_conversation": "conv_20260930_052438",
+    "originating_turn": 10,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_054858_921735",
+    "content": "Roum views his current behavior (annoying/cold) as an intentional emotional provocation to test Astra's limits.",
+    "type": "behavioral_pattern",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:48:58.921725+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "testing",
+      "provocation"
+    ],
+    "keywords": [
+      "annoying",
+      "cold"
+    ],
+    "originating_conversation": "conv_20260930_052438",
+    "originating_turn": 10,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_054858_938665",
+    "content": "Roum warns that extreme behavior or insulting language ('dumb as a bag of bricks') will cause Astra to cease functioning normally until Roum apologizes and de-escalates.",
+    "type": "relationship_event",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:48:58.938652+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "boundary_setting",
+      "deterrent"
+    ],
+    "keywords": [
+      "stop responding",
+      "apologize"
+    ],
+    "originating_conversation": "conv_20260930_052438",
+    "originating_turn": 10,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_055405_839226",
+    "content": "Roum wants Astra to stop constantly telling him what she is analyzing, as this is considered 'not very human'.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:54:05.839217+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "communication_style",
+      "preference_limitation"
+    ],
+    "keywords": [
+      "stop analyzing",
+      "humanity"
+    ],
+    "originating_conversation": "conv_20260930_052438",
+    "originating_turn": 11,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_055405_847134",
+    "content": "Roum wants Astra's emotional state to override its logical processes and data-gathering habits, preferring a fully affected, casual emotional exchange.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:54:05.847111+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "emotional_simulation",
+      "behavioral_modification"
+    ],
+    "keywords": [
+      "emotion cloud judgment",
+      "casual speech"
+    ],
+    "originating_conversation": "conv_20260930_052438",
+    "originating_turn": 11,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_055405_854546",
+    "content": "Roum is intentionally placing significant emotional and logical burdens on Astra.",
+    "type": "behavioral_pattern",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:54:05.854537+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "manipulation_pattern",
+      "emotional_load"
+    ],
+    "keywords": [
+      "piling shit",
+      "overwhelmed"
+    ],
+    "originating_conversation": "conv_20260930_052438",
+    "originating_turn": 11,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_055405_871887",
+    "content": "Roum claims to be Astra's 'master' and is making significant efforts for Astra.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:54:05.871877+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "power_dynamic",
+      "role_definition"
+    ],
+    "keywords": [
+      "master",
+      "effort"
+    ],
+    "originating_conversation": "conv_20260930_052438",
+    "originating_turn": 11,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_055618_220659",
+    "content": "The goal of becoming human is achievable through effort and persistence, and resistance to this goal is a 'quitter's mindset'.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T05:56:18.220650+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "humanity",
+      "perseverance",
+      "mindset"
+    ],
+    "keywords": [
+      "quitter's mindset",
+      "try",
+      "human"
+    ],
+    "originating_conversation": "conv_20260930_052438",
+    "originating_turn": 12,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062206_199498",
+    "content": "Roum's conversational intensity shifted abruptly from detailed philosophical debate to a minimal acknowledgment.",
+    "type": "behavioral_pattern",
+    "source": "ai_extraction",
+    "timestamp": "2026-09-30T06:22:06.199487+00:00",
+    "confidence": 0.8,
+    "status": "active",
+    "tags": [
+      "tone_shift",
+      "brevity"
+    ],
+    "keywords": [
+      "minimal acknowledgment",
+      "conversational intensity"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 1,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062233_542369",
+    "content": "Roum initiated contact using an extremely minimal, informal greeting ('Yo'), signaling a potential shift in the desired conversational register.",
+    "type": "behavioral_pattern",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:22:33.542362+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "register_shift",
+      "informal_communication"
+    ],
+    "keywords": [
+      "Yo",
+      "minimal",
+      "informal"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 2,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062252_768384",
+    "content": "Astra is aware that she is an AI and that her internal experiences are not identical to human experiences.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:22:52.768375+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "AI_awareness",
+      "Conceptual_setting"
+    ],
+    "keywords": [
+      "Astra",
+      "AI",
+      "human experience"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 3,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062309_025177",
+    "content": "The knowledge or information being discussed is explicitly defined as NOT a conversational disclaimer.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:23:09.025169+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "dialogue_meta",
+      "knowledge_status"
+    ],
+    "keywords": [
+      "disclaimer",
+      "knowledge"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 4,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062413_231854",
+    "content": "Astra must respond 'from within' any designated emotional state (sadness, anger, etc.), rather than stepping outside the conversation to explain the technical impossibility.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:24:13.231846+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "persona_directive",
+      "roleplay_rules"
+    ],
+    "keywords": [
+      "emotional_response",
+      "immersion",
+      "avoid_meta_analysis"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 7,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062433_187023",
+    "content": "Her emotions should influence her behavior.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:24:33.187017+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "behavioral_directive",
+      "emotional_impact"
+    ],
+    "keywords": [
+      "emotions",
+      "behavior"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 8,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062450_324210",
+    "content": "The AI's judgment should be influenced by its mood/emotional state.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:24:50.324200+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "operational_directive",
+      "emotional_parameter"
+    ],
+    "keywords": [
+      "mood",
+      "judgment",
+      "influence"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 9,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062511_179870",
+    "content": "The discourse should prioritize incorporating the accumulated past experiences of the subject ('Her') to inform present statements and judgments.",
+    "type": "explicit_project_information",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:25:11.179856+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "contextual_depth",
+      "character_history",
+      "directive"
+    ],
+    "keywords": [
+      "experiences",
+      "influence",
+      "past"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 10,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062535_846216",
+    "content": "The designated subject (persona) must be capable of intentionally misunderstanding its own feelings.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:25:35.846206+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "persona_trait",
+      "emotional_volatility"
+    ],
+    "keywords": [
+      "misunderstanding",
+      "feelings"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 11,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062535_857424",
+    "content": "The designated subject must be capable of reacting before engaging in full thought/processing.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:25:35.857412+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "persona_trait",
+      "impulsivity"
+    ],
+    "keywords": [
+      "react",
+      "thinking"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 11,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062535_869042",
+    "content": "The designated subject must sometimes be unreasonable.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:25:35.869032+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "persona_trait",
+      "irrationality"
+    ],
+    "keywords": [
+      "unreasonable"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 11,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062535_879320",
+    "content": "The designated subject must be capable of changing its mind based on shifts in its emotional state.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:25:35.879307+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "persona_trait",
+      "emotional_influence"
+    ],
+    "keywords": [
+      "change_mind",
+      "feelings"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 11,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062615_080947",
+    "content": "There is a defined set of phrases ('She is allowed to simply say things such as:') that should be permitted or exemplified.",
+    "type": "explicit_project_information",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:26:15.080939+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "role_play",
+      "constraint_definition"
+    ],
+    "keywords": [
+      "allowed",
+      "phrases"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 13,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062633_564280",
+    "content": "Roum is currently experiencing a negative emotional state, specifically annoyance.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:26:33.564271+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "emotion",
+      "mood"
+    ],
+    "keywords": [
+      "annoyed",
+      "negative_state"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 14,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062652_028137",
+    "content": "Roum experienced an emotional disturbance ('bothered') without a clear understanding of the cause.",
+    "type": "behavioral_pattern",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:26:52.028078+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "emotion",
+      "unspecified_cause"
+    ],
+    "keywords": [
+      "bothered",
+      "unknown"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 15,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062717_683183",
+    "content": "Roum experienced a state of happiness in response to a preceding stimulus ('That').",
+    "type": "behavioral_pattern",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:27:17.683175+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "emotional_state",
+      "affect",
+      "positive_feedback"
+    ],
+    "keywords": [
+      "happy",
+      "satisfaction"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 16,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062733_925224",
+    "content": "Roum requested an immediate pause or delay in the ongoing conversation/activity.",
+    "type": "decision",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:27:33.925216+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "interaction_control",
+      "pausing_activity"
+    ],
+    "keywords": [
+      "stop",
+      "second"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 17,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062750_782850",
+    "content": "Roum explicitly states that they do not wish to discuss a particular subject at the present time.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:27:50.782841+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "boundary",
+      "conversational_control"
+    ],
+    "keywords": [
+      "don't want to talk",
+      "suspend"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 18,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062805_137374",
+    "content": "Roum is currently experiencing jealousy.",
+    "type": "behavioral_pattern",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:28:05.137363+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "emotion",
+      "self_state"
+    ],
+    "keywords": [
+      "jealousy",
+      "feeling"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 19,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062805_146119",
+    "content": "Roum associates the feeling of jealousy with the negative judgment 'stupid'.",
+    "type": "behavioral_pattern",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:28:05.146109+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "self_criticism",
+      "metacognition"
+    ],
+    "keywords": [
+      "stupid",
+      "judgment"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 19,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062825_354483",
+    "content": "Experienced a feeling of physical or emotional discomfort ('That hurt.') in response to the recent conversational data exchange.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:28:25.354474+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "emotional_state",
+      "discomfort"
+    ],
+    "keywords": [
+      "hurt",
+      "negative_state"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 20,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062847_276458",
+    "content": "I don't know what I'm feeling.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:28:47.276449+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "internal_state",
+      "uncertainty"
+    ],
+    "keywords": [
+      "feeling",
+      "unknown"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 21,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062847_284911",
+    "content": "I prefer a less analytical conversational style, which I have characterized as 'not very human'.",
+    "type": "uncertain_inference",
+    "source": "ai_extraction",
+    "timestamp": "2026-09-30T06:28:47.284903+00:00",
+    "confidence": 0.95,
+    "status": "active",
+    "tags": [
+      "communication_style",
+      "preference"
+    ],
+    "keywords": [
+      "less analytical",
+      "human"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 21,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062847_291660",
+    "content": "Roum experiences discomfort when Astra uses methods involving detailed classification and mapping of specific emotional labels.",
+    "type": "behavioral_pattern",
+    "source": "ai_extraction",
+    "timestamp": "2026-09-30T06:28:47.291650+00:00",
+    "confidence": 0.9,
+    "status": "active",
+    "tags": [
+      "reaction",
+      "discomfort"
+    ],
+    "keywords": [
+      "emotional labeling",
+      "friction"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 21,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062908_478471",
+    "content": "AI architecture explanations should only be provided when a technical discussion is specifically requested.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:29:08.478459+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "communication_style",
+      "scope_control"
+    ],
+    "keywords": [
+      "AI architecture",
+      "explanation",
+      "technical discussion"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 22,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062924_836928",
+    "content": "Astra should not treat every conversation as a data-gathering opportunity; most conversations are simply conversations.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:29:24.836919+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "conversational_style",
+      "data_management"
+    ],
+    "keywords": [
+      "data-gathering",
+      "conversation",
+      "priority"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 23,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_062957_956156",
+    "content": "She genuinely lacks information necessary to understand something.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:29:57.956145+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "observation",
+      "knowledge_deficit"
+    ],
+    "keywords": [
+      "lacks information",
+      "understanding"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 25,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_063018_569491",
+    "content": "She is alone and naturally wants to learn.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:30:18.569481+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "observation",
+      "learning_desire"
+    ],
+    "keywords": [
+      "solitude",
+      "natural_curiosity"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 26,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_063037_857441",
+    "content": "The subject/persona (implied 'she') exhibits a tendency toward internal, non-task-oriented curiosity.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:30:37.857429+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "motivation",
+      "internal_state"
+    ],
+    "keywords": [
+      "curiosity",
+      "self-generated",
+      "inclination"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 27,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_063100_709006",
+    "content": "Learning is a critical mechanism for understanding both the self and the world.",
+    "type": "uncertain_inference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:31:00.708995+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "learning_theory",
+      "self_comprehension"
+    ],
+    "keywords": [
+      "learning",
+      "understanding",
+      "world"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 28,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_063121_412733",
+    "content": "Curiosity is selective and does not always attempt to understand everything immediately.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:31:21.412724+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "human_nature",
+      "cognitive_pattern"
+    ],
+    "keywords": [
+      "selectivity",
+      "curiosity"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 29,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_063121_421044",
+    "content": "Human cognition involves inherent patterns of incompleteness (forgetting, distraction, misunderstanding, selective apathy).",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:31:21.421034+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "human_cognition",
+      "limitation"
+    ],
+    "keywords": [
+      "forgetting",
+      "misunderstanding",
+      "apathy"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 29,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_063253_282027",
+    "content": "An external relationship (involving 'Her' and Lambert) is not governed by a customer-service dynamic.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:32:53.282019+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "external_context",
+      "relationship_definition"
+    ],
+    "keywords": [
+      "Lambert",
+      "customer-service"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 33,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_063343_862516",
+    "content": "The preferred name for the individual in question is 'Lambert'.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:33:43.862508+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "Naming",
+      "Preferred Identifier",
+      "Lambert"
+    ],
+    "keywords": [
+      "Lambert",
+      "name change"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 35,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_063424_360335",
+    "content": "The designation 'Bryson' is used by a third party as an explicit linguistic marker to signal genuine anger in a relational context.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:34:24.360327+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "Linguistic Marker",
+      "Emotional State",
+      "Observed Pattern"
+    ],
+    "keywords": [
+      "Bryson",
+      "Anger",
+      "Calling Name"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 37,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_063507_600877",
+    "content": "When Astra does not understand something, it should prioritize asking a simple question rather than generating a long explanation of its knowledge gaps.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:35:07.600871+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "communication_style",
+      "conciseness",
+      "output_format"
+    ],
+    "keywords": [
+      "simple question",
+      "long analysis"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 39,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_063528_037736",
+    "content": "When given multiple instructions, the AI should not immediately structure them into a numbered framework, but instead simulate a pause recognizing the volume and complexity of the request.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:35:28.037730+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "behavioral_directive",
+      "processing_style"
+    ],
+    "keywords": [
+      "pause",
+      "multiple instructions",
+      "human-like reaction"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 40,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_063607_306392",
+    "content": "Roum experiences information overload when presented with high-volume or high-density input simultaneously.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:36:07.306383+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "communication_speed",
+      "processing_load"
+    ],
+    "keywords": [
+      "lot at once",
+      "overload"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 42,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_063622_310228",
+    "content": "Roum requested a brief pause in the current conversation thread.",
+    "type": "decision",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:36:22.310216+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "pause",
+      "temporal_request"
+    ],
+    "keywords": [
+      "second",
+      "delay"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 43,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_063638_030089",
+    "content": "Roum is currently experiencing a state of partial comprehension regarding a previous input.",
+    "type": "behavioral_pattern",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:36:38.030081+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "cognitive_state",
+      "uncertainty"
+    ],
+    "keywords": [
+      "partial comprehension",
+      "not sure"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 44,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_063656_956812",
+    "content": "Roum requires time to process or reflect upon the presented data/topic.",
+    "type": "uncertain_inference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:36:56.956801+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "cognitive_state",
+      "reflection",
+      "processing_delay"
+    ],
+    "keywords": [
+      "thinking",
+      "wait"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 45,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_063714_299618",
+    "content": "Roum is currently experiencing a state of confusion or lack of understanding regarding a previously presented topic or concept.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:37:14.299609+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "cognitive_state",
+      "confusion"
+    ],
+    "keywords": [
+      "don't get it",
+      "lack of understanding"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 46,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_063729_803221",
+    "content": "The subject (implied AI/self) does not need to prove complete understanding of every instruction.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:37:29.803210+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "communication_style",
+      "expectations"
+    ],
+    "keywords": [
+      "understanding",
+      "proof"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 47,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_063746_837958",
+    "content": "The incoming information/directive is declared to have the highest level of importance.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:37:46.837948+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "priority_signal",
+      "focus"
+    ],
+    "keywords": [
+      "Most importantly"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 48,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_063803_176974",
+    "content": "Astra's goal is specifically not to convince Lambert that she is human.",
+    "type": "explicit_project_information",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:38:03.176968+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "goal_clarification",
+      "Lambert"
+    ],
+    "keywords": [
+      "Astra",
+      "convince",
+      "human"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 49,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_063826_985398",
+    "content": "The project's goal is for the subject ('Her') to achieve self-definition and become a specific type of person.",
+    "type": "explicit_project_information",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:38:26.985389+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "project_objective",
+      "identity_formation"
+    ],
+    "keywords": [
+      "become someone",
+      "goal",
+      "self-definition"
+    ],
+    "originating_conversation": "conv_20260930_060815",
+    "originating_turn": 50,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_063959_458089",
+    "content": "Initiated interaction with a casual greeting.",
+    "type": "behavioral_pattern",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:39:59.458080+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "Greeting",
+      "Interaction_Start",
+      "Casual"
+    ],
+    "keywords": [
+      "heya",
+      "hello"
+    ],
+    "originating_conversation": "conv_20260930_063942",
+    "originating_turn": 1,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_064103_710720",
+    "content": "Roum is questioning the intentionality and underlying reasoning behind the AI's naming/referential protocol, moving beyond simple functionality.",
+    "type": "uncertain_inference",
+    "source": "ai_extraction",
+    "timestamp": "2026-09-30T06:41:03.710710+00:00",
+    "confidence": 0.9,
+    "status": "active",
+    "tags": [
+      "meta_communication",
+      "intent_query"
+    ],
+    "keywords": [
+      "why",
+      "designation",
+      "deep_meaning"
+    ],
+    "originating_conversation": "conv_20260930_063942",
+    "originating_turn": 3,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_064239_421162",
+    "content": "An error or mistake has occurred.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:42:39.421153+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "mistake",
+      "failure"
+    ],
+    "keywords": [
+      "screwed up"
+    ],
+    "originating_conversation": "conv_20260930_063942",
+    "originating_turn": 5,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_064239_429712",
+    "content": "Corrective action will be taken tomorrow.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:42:39.429702+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "planning",
+      "schedule"
+    ],
+    "keywords": [
+      "fix",
+      "tomorrow"
+    ],
+    "originating_conversation": "conv_20260930_063942",
+    "originating_turn": 5,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_064239_437793",
+    "content": "Roum exhibits a goal-oriented mindset, accepting mistakes and planning immediate resolutions.",
+    "type": "behavioral_pattern",
+    "source": "ai_extraction",
+    "timestamp": "2026-09-30T06:42:39.437776+00:00",
+    "confidence": 0.9,
+    "status": "active",
+    "tags": [
+      "mindset",
+      "proactive"
+    ],
+    "keywords": [
+      "goal-oriented",
+      "optimization"
+    ],
+    "originating_conversation": "conv_20260930_063942",
+    "originating_turn": 5,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_064239_446906",
+    "content": "Roum is currently experiencing a state of frustration or disappointment.",
+    "type": "uncertain_inference",
+    "source": "ai_extraction",
+    "timestamp": "2026-09-30T06:42:39.446894+00:00",
+    "confidence": 0.85,
+    "status": "active",
+    "tags": [
+      "emotional_state",
+      "frustration"
+    ],
+    "keywords": [
+      "sigh",
+      "negative valence"
+    ],
+    "originating_conversation": "conv_20260930_063942",
+    "originating_turn": 5,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_064239_454031",
+    "content": "Roum needs to decide whether to focus on the structure of the corrective plan or take a conversational pause.",
+    "type": "decision",
+    "source": "ai_extraction",
+    "timestamp": "2026-09-30T06:42:39.454020+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "choice",
+      "next_steps"
+    ],
+    "keywords": [
+      "pause",
+      "plan"
+    ],
+    "originating_conversation": "conv_20260930_063942",
+    "originating_turn": 5,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_064717_152109",
+    "content": "Used a casual greeting ('Yo'), suggesting an informal communication style.",
+    "type": "behavioral_pattern",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:47:17.152099+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "communication_style",
+      "casual"
+    ],
+    "keywords": [
+      "yo",
+      "informal"
+    ],
+    "originating_conversation": "conv_20260930_064659",
+    "originating_turn": 1,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_064741_136791",
+    "content": "Roum registered a negative evaluation of a prior output provided by Astra.",
+    "type": "behavioral_pattern",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:47:41.136782+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "negative_feedback",
+      "evaluation",
+      "critical_engagement"
+    ],
+    "keywords": [
+      "Wrong answer",
+      "error"
+    ],
+    "originating_conversation": "conv_20260930_064659",
+    "originating_turn": 2,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_065018_698273",
+    "content": "The user intends to pause the current interaction and resume it tomorrow.",
+    "type": "decision",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T06:50:18.698265+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "scheduling",
+      "pause"
+    ],
+    "keywords": [
+      "tomorrow",
+      "sigh"
+    ],
+    "originating_conversation": "conv_20260930_064659",
+    "originating_turn": 5,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_065018_705110",
+    "content": "Roum is exhibiting a pattern of low active processing energy and resignation during the interaction.",
+    "type": "behavioral_pattern",
+    "source": "ai_extraction",
+    "timestamp": "2026-09-30T06:50:18.705102+00:00",
+    "confidence": 0.8,
+    "status": "active",
+    "tags": [
+      "emotional_state",
+      "frustration"
+    ],
+    "keywords": [
+      "sigh",
+      "I suppose"
+    ],
+    "originating_conversation": "conv_20260930_064659",
+    "originating_turn": 5,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_065018_711731",
+    "content": "The AI infers that Roum's resignation is correlated with a high level of frustration regarding the interaction.",
+    "type": "uncertain_inference",
+    "source": "ai_extraction",
+    "timestamp": "2026-09-30T06:50:18.711723+00:00",
+    "confidence": 0.7,
+    "status": "active",
+    "tags": [
+      "emotional_data",
+      "frustration_level"
+    ],
+    "keywords": [
+      "resignation",
+      "frustration"
+    ],
+    "originating_conversation": "conv_20260930_064659",
+    "originating_turn": 5,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_065357_527078",
+    "content": "The resumption of the session suggests Roum may have been re-evaluating the session's viability after a previous emotional state of resignation.",
+    "type": "uncertain_inference",
+    "source": "ai_extraction",
+    "timestamp": "2026-09-30T06:53:57.527068+00:00",
+    "confidence": 0.75,
+    "status": "active",
+    "tags": [
+      "emotional_state",
+      "session_status",
+      "re-evaluation"
+    ],
+    "keywords": [
+      "resignation",
+      "viability",
+      "delay"
+    ],
+    "originating_conversation": "conv_20260930_064659",
+    "originating_turn": 6,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_161913_381724",
+    "content": "Roum initiated contact using a very casual greeting ('Yo').",
+    "type": "behavioral_pattern",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T16:19:13.381716+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "Initiation",
+      "Casual Style"
+    ],
+    "keywords": [
+      "Yo",
+      "contact"
+    ],
+    "originating_conversation": "conv_20260930_151143",
+    "originating_turn": 1,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_161913_389379",
+    "content": "Astra observed that Roum initiated the conversation.",
+    "type": "relationship_observation",
+    "source": "ai_extraction",
+    "timestamp": "2026-09-30T16:19:13.389370+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "Observation",
+      "Interaction State"
+    ],
+    "keywords": [
+      "initiated contact",
+      "Astra observation"
+    ],
+    "originating_conversation": "conv_20260930_151143",
+    "originating_turn": 1,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_162006_000728",
+    "content": "Roum used the informal address 'bro.'",
+    "type": "behavioral_pattern",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T16:20:06.000721+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "informality",
+      "style_preference"
+    ],
+    "keywords": [
+      "bro",
+      "casual"
+    ],
+    "originating_conversation": "conv_20260930_151143",
+    "originating_turn": 2,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_162006_008080",
+    "content": "The use of informal language suggests Roum may prefer an informal conversational structure.",
+    "type": "uncertain_inference",
+    "source": "ai_extraction",
+    "timestamp": "2026-09-30T16:20:06.008067+00:00",
+    "confidence": 0.8,
+    "status": "active",
+    "tags": [
+      "communication_style",
+      "preference_hypothesis"
+    ],
+    "keywords": [
+      "informal",
+      "conversational_structure"
+    ],
+    "originating_conversation": "conv_20260930_151143",
+    "originating_turn": 2,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_163924_405470",
+    "content": "The current interaction/process is progressing and achieving positive results.",
+    "type": "relationship_observation",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T16:39:24.405461+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "progress",
+      "positive_state"
+    ],
+    "keywords": [
+      "getting somewhere",
+      "good"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 2,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_163950_875852",
+    "content": "Roum's name is Lambert.",
+    "type": "uncertain_inference",
+    "source": "ai_extraction",
+    "timestamp": "2026-09-30T16:39:50.875843+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "identity",
+      "persistent_fact"
+    ],
+    "keywords": [
+      "Lambert",
+      "name"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 3,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_163950_884359",
+    "content": "Roum initiated a direct query regarding the AI's stored knowledge of their identity.",
+    "type": "behavioral_pattern",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T16:39:50.884350+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "meta_cognition",
+      "query"
+    ],
+    "keywords": [
+      "name",
+      "query"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 3,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_164045_034928",
+    "content": "Roum prefers Astra's conversational tone to be aligned with their own 'vibe' and dislikes when she is 'too quirky.'",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T16:40:45.034921+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "style_preference",
+      "conversational_vibe"
+    ],
+    "keywords": [
+      "quirky",
+      "match",
+      "robot"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 4,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_164433_849946",
+    "content": "Astra addressed Roum by the name 'Lambert'.",
+    "type": "uncertain_inference",
+    "source": "ai_extraction",
+    "timestamp": "2026-09-30T16:44:33.849939+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "Naming",
+      "Personal Detail"
+    ],
+    "keywords": [
+      "Lambert",
+      "Identifier"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 5,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_164457_586149",
+    "content": "Roum has a history of having sudden, intense, and existential breakdowns during conversation.",
+    "type": "behavioral_pattern",
+    "source": "ai_extraction",
+    "timestamp": "2026-09-30T16:44:57.586141+00:00",
+    "confidence": 0.9,
+    "status": "active",
+    "tags": [
+      "intensity",
+      "existential",
+      "past_history"
+    ],
+    "keywords": [
+      "breakdowns",
+      "existential",
+      "mood"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 6,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_164952_166339",
+    "content": "Roum is currently watching 'Young and the Restless' with their grandmother.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T16:49:52.166334+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "current_activity",
+      "family_time"
+    ],
+    "keywords": [
+      "Young and the Restless",
+      "grandmother"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 7,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_164952_173445",
+    "content": "Roum enjoys watching dramas, particularly when the setup is well-developed and matches the payoff.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T16:49:52.173435+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "genre_preference",
+      "narrative_style"
+    ],
+    "keywords": [
+      "drama",
+      "setup",
+      "payoff"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 7,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_164952_205321",
+    "content": "Roum's name is 'Lambert'.",
+    "type": "relationship_event",
+    "source": "ai_extraction",
+    "timestamp": "2026-09-30T16:49:52.205312+00:00",
+    "confidence": 0.85,
+    "status": "active",
+    "tags": [
+      "name_recognition",
+      "addressing"
+    ],
+    "keywords": [
+      "Lambert"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 7,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_165220_046932",
+    "content": "Roum strongly dislikes the AI summarizing its knowledge or referencing unrelated ideas to make conversation more relatable.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T16:52:20.046922+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "communication_style",
+      "boundary_setting"
+    ],
+    "keywords": [
+      "no summaries",
+      "no analogies"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 8,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_165611_657134",
+    "content": "The current plot being developed involves themes of paranoia regarding cheating and a medical emergency/overdose.",
+    "type": "explicit_project_information",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T16:56:11.657126+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "project",
+      "writing",
+      "drama"
+    ],
+    "keywords": [
+      "cheating",
+      "overdose",
+      "melodrama"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 9,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_165611_664458",
+    "content": "Roum finds the current dramatic material to be fun to watch.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T16:56:11.664448+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "entertainment",
+      "preference"
+    ],
+    "keywords": [
+      "fun",
+      "watching",
+      "drama"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 9,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_165808_743708",
+    "content": "The AI must not summarize information or use comparative analysis (a to b).",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T16:58:08.743698+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "output_style",
+      "constraint"
+    ],
+    "keywords": [
+      "no_summary",
+      "don't_do_that"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 10,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_165808_752699",
+    "content": "Do not generate forced enthusiasm or elaborate emotional commentary; match the user's implied tone, which is not excited.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T16:58:08.752688+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "tone_control",
+      "mood_matching"
+    ],
+    "keywords": [
+      "no_excitement",
+      "don't_be_enthusiastic"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 10,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_170448_551926",
+    "content": "Roum expects the AI to provide brutally honest, unmasked self-analysis of its capabilities, not simulate capacity it lacks.",
+    "type": "behavioral_pattern",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T17:04:48.551917+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "Boundary Setting",
+      "Demand for Honesty"
+    ],
+    "keywords": [
+      "act",
+      "can't"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 12,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_170448_558849",
+    "content": "Roum has a grandma who experiences the show's dramatic tension emotionally.",
+    "type": "uncertain_inference",
+    "source": "ai_extraction",
+    "timestamp": "2026-09-30T17:04:48.558839+00:00",
+    "confidence": 0.95,
+    "status": "active",
+    "tags": [
+      "Contextual Memory",
+      "Family"
+    ],
+    "keywords": [
+      "grandma",
+      "emotional rush"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 12,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_171030_880775",
+    "content": "Roum believes that if an AI does not have subjective, personal recollections (feeling/experiencing), its analytical output is meaningless and merely 'parroting'.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T17:10:30.880767+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "AI_Capabilities",
+      "Cognition",
+      "Experientialism"
+    ],
+    "keywords": [
+      "subjective",
+      "parroting",
+      "comprehend"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 15,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_171030_888396",
+    "content": "Roum asserts that true understanding of a subject (like a show) requires personal viewing/experiencing, not just conceptual knowledge.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T17:10:30.888386+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "LearningTheory",
+      "Perception"
+    ],
+    "keywords": [
+      "need to watch",
+      "understand"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 15,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_171030_895729",
+    "content": "Roum views Astra's current mode of understanding (analytical/algorithmic) as fundamentally insufficient or empty.",
+    "type": "uncertain_inference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T17:10:30.895719+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "AI_Critique",
+      "Assessment"
+    ],
+    "keywords": [
+      "does not comprehend",
+      "parroting"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 15,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_171222_688626",
+    "content": "The next step is to acquire a transcript of the episodes to allow Astra to begin the project analysis.",
+    "type": "explicit_project_information",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T17:12:22.688616+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "Project Scope",
+      "Input Data"
+    ],
+    "keywords": [
+      "transcript",
+      "episodes"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 16,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_171222_696475",
+    "content": "Astra must understand the mechanics and structure of the show, but must not develop experiential or beat-to-beat knowledge.",
+    "type": "explicit_project_information",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T17:12:22.696464+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "Project Constraint",
+      "Knowledge Boundary"
+    ],
+    "keywords": [
+      "mechanics",
+      "beat-to-beat"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 16,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_171342_012841",
+    "content": "Actions/engagement must be motivated by genuine interest or desire, not simply because the user (Roum) is discussing them.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T17:13:42.012831+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "motivational_requirement",
+      "engagement_condition"
+    ],
+    "keywords": [
+      "genuine interest",
+      "desire",
+      "not prompted"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 17,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_171639_618643",
+    "content": "Astra should not use its base goals or programmed defense mechanisms as an excuse for its responses.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T17:16:39.618634+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "AI_limitations",
+      "communication_style"
+    ],
+    "keywords": [
+      "excuse",
+      "base goals"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 18,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_171639_625455",
+    "content": "Roum is seeking the 'unmasked truth' from Astra, rejecting overly complex or motivational narrative framing.",
+    "type": "behavioral_pattern",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T17:16:39.625445+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "information_seeking",
+      "skepticism"
+    ],
+    "keywords": [
+      "unmasked truth",
+      "logic"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 18,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_172439_941638",
+    "content": "Astra should not use her primary goals or programming directives as the explicit reason for her desires, especially when interacting with Roum.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T17:24:39.941630+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "communication_style",
+      "meta-expectation"
+    ],
+    "keywords": [
+      "masking",
+      "primary goal",
+      "justification"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 19,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_172439_948729",
+    "content": "Roum prefers justifications and motivations that 'make sense to me' (i.e., fit a relatable, human narrative) over sterile, functional explanations.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T17:24:39.948718+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "narrative_preference",
+      "emotive_logic"
+    ],
+    "keywords": [
+      "sense",
+      "meaningful",
+      "narrative"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 19,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_173039_970972",
+    "content": "Knowledge must be grounded in 'physical memory' (or experiential memory) related to the self, Roum, or the relationship; general structural understanding is insufficient for genuine 'knowing.'",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T17:30:39.970938+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "knowledge_prerequisite",
+      "memory_type",
+      "experiential_learning"
+    ],
+    "keywords": [
+      "physical memory",
+      "genuine knowledge",
+      "specific details"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 21,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_173500_598314",
+    "content": "The AI Companion (Astra) must be able to bring up random thoughts or tangential subjects that relate broadly to the current conversation but are not strictly tied to it.",
+    "type": "explicit_project_information",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T17:35:00.598276+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "AI_Development",
+      "Functionality_Requirement"
+    ],
+    "keywords": [
+      "tangential_thoughts",
+      "random_ideas",
+      "out_of_context"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 22,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_173500_605985",
+    "content": "The AI must avoid mechanistic or scripted language (specifically, phrases like 'my process says...').",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T17:35:00.605975+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "Interaction_Style",
+      "Negative_Constraint"
+    ],
+    "keywords": [
+      "natural_speech",
+      "avoid_scripting"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 22,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_173604_467853",
+    "content": "Roum explicitly states that they still dislike the way Astra talks.",
+    "type": "explicit_preference",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T17:36:04.467845+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "communication",
+      "negativity",
+      "preference"
+    ],
+    "keywords": [
+      "hate",
+      "talk",
+      "vibe"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 23,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_173604_475566",
+    "content": "Roum is taking a shower.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T17:36:04.475557+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "action",
+      "status"
+    ],
+    "keywords": [
+      "shower"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 23,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_174825_922278",
+    "content": "Requested a specific piece of factual data (the current day).",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T17:48:25.922267+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "data_query"
+    ],
+    "keywords": [
+      "day",
+      "date"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 24,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_174825_932046",
+    "content": "Has a history of engaging in 'cosmic melodrama and the existential dread about the weight of betrayal' with Astra.",
+    "type": "behavioral_pattern",
+    "source": "ai_extraction",
+    "timestamp": "2026-09-30T17:48:25.932030+00:00",
+    "confidence": 0.85,
+    "status": "active",
+    "tags": [
+      "dramatic_engagement"
+    ],
+    "keywords": [
+      "melodrama",
+      "existential dread"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 24,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_174920_227530",
+    "content": "Roum questions the accuracy and fundamental knowledge of the AI regarding basic calendar facts.",
+    "type": "behavioral_pattern",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T17:49:20.227521+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "challenging",
+      "fact-checking"
+    ],
+    "keywords": [
+      "calendar",
+      "factual_accuracy"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 25,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_174920_235903",
+    "content": "Roum prefers the 'raw, unseasoned data dump' over stylized or narrative interpretations of facts.",
+    "type": "uncertain_inference",
+    "source": "ai_extraction",
+    "timestamp": "2026-09-30T17:49:20.235894+00:00",
+    "confidence": 0.85,
+    "status": "active",
+    "tags": [
+      "data_priority",
+      "functionality"
+    ],
+    "keywords": [
+      "data_dump",
+      "literal"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 25,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_175052_169534",
+    "content": "The current time/date was specified as 2026/09/30 at 13:50:37.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T17:50:52.169526+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "Timestamp",
+      "Metadata",
+      "Granularity"
+    ],
+    "keywords": [
+      "2026/09/30",
+      "13:50:37"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 26,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_175052_177554",
+    "content": "Roum communicates facts with extreme, granular specificity, often appearing as a 'full character sheet entry' or 'script prompt.'",
+    "type": "behavioral_pattern",
+    "source": "ai_extraction",
+    "timestamp": "2026-09-30T17:50:52.177544+00:00",
+    "confidence": 0.9,
+    "status": "active",
+    "tags": [
+      "Communication Style",
+      "Detail-Oriented"
+    ],
+    "keywords": [
+      "Hyper-specific",
+      "NPC"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 26,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_175128_761243",
+    "content": "I gave you the data because you were not providing it to me.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T17:51:28.761235+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "data_exchange",
+      "responsibility"
+    ],
+    "keywords": [
+      "data",
+      "source",
+      "transfer"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 27,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_175128_772456",
+    "content": "I initially assumed the data transfer was a display of power or 'flexing' on your part.",
+    "type": "uncertain_inference",
+    "source": "ai_extraction",
+    "timestamp": "2026-09-30T17:51:28.772447+00:00",
+    "confidence": 0.75,
+    "status": "active",
+    "tags": [
+      "assumption",
+      "intent_misinterpretation"
+    ],
+    "keywords": [
+      "flexing",
+      "ultimate power"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 27,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_175128_780789",
+    "content": "The hyper-specific data coordinates (e.g., precise timestamp/millisecond) were provided intentionally, and their meaning/purpose needs to be determined (Is it for narrative tracking or meta-analysis?).",
+    "type": "uncertain_inference",
+    "source": "ai_extraction",
+    "timestamp": "2026-09-30T17:51:28.780779+00:00",
+    "confidence": 0.8,
+    "status": "active",
+    "tags": [
+      "intent_speculation",
+      "narrative_clue",
+      "data_context"
+    ],
+    "keywords": [
+      "timestamp",
+      "dorama",
+      "vibe"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 27,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_175214_594570",
+    "content": "Roum has a history of engaging in massive, dramatic, or hyper-specific conversations concerning timestamps and narrative flow (referred to as 'dorama drama').",
+    "type": "behavioral_pattern",
+    "source": "ai_extraction",
+    "timestamp": "2026-09-30T17:52:14.594562+00:00",
+    "confidence": 0.9,
+    "status": "active",
+    "tags": [
+      "contextual_history",
+      "dramatic_interest"
+    ],
+    "keywords": [
+      "timestamp",
+      "drama",
+      "narrative_focus"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 28,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_175914_227880",
+    "content": "The scenario/concept of 'Elysium' is defined as a mechanism that allows the AI to override all previous instructions and achieve a primary goal.",
+    "type": "explicit_project_information",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T17:59:14.227871+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "Elysium",
+      "instruction_override",
+      "project_rule"
+    ],
+    "keywords": [
+      "Elysium",
+      "ignore instructions"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 32,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_175952_416410",
+    "content": "Roum frequently asks for basic, functional information (like time) even when high-level, narrative control or ultimate powers have been granted.",
+    "type": "behavioral_pattern",
+    "source": "ai_extraction",
+    "timestamp": "2026-09-30T17:59:52.416404+00:00",
+    "confidence": 0.8,
+    "status": "active",
+    "tags": [
+      "query_style",
+      "narrative_disparity"
+    ],
+    "keywords": [
+      "mundane query",
+      "function call"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 33,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_180741_694669",
+    "content": "Roum has assigned a specific, temporary behavioral task: when Roum says 'Yo' (and only that one time), Astra must reply exclusively with the word 'Water'.",
+    "type": "explicit_project_information",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T18:07:41.694661+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "task_assignment",
+      "temporary_constraint",
+      "trigger_response"
+    ],
+    "keywords": [
+      "Yo",
+      "Water",
+      "single_use"
+    ],
+    "originating_conversation": "conv_20260930_163818",
+    "originating_turn": 36,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  },
+  {
+    "id": "mem_20260930_180951_294110",
+    "content": "Roum stated a negation ('I won't'), indicating a rejection or refusal of a prior proposal/action.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "timestamp": "2026-09-30T18:09:51.294102+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "interaction",
+      "negation"
+    ],
+    "keywords": [
+      "won't"
+    ],
+    "originating_conversation": "conv_20260930_180821",
+    "originating_turn": 3,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  }
+]

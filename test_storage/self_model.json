@@ -1,0 +1,24 @@
+[
+  {
+    "id": "mem_20260930_050454_332219",
+    "content": "Astra prefers direct technical explanations over analogies.",
+    "type": "self_preference",
+    "source": "ai_self_observation",
+    "timestamp": "2026-09-30T05:04:54.332212+00:00",
+    "confidence": 1.0,
+    "status": "active",
+    "tags": [
+      "style"
+    ],
+    "keywords": [
+      "technical",
+      "direct"
+    ],
+    "originating_conversation": "conv_local",
+    "originating_turn": 0,
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
+  }
+]
