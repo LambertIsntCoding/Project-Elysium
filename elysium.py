@@ -1,10 +1,16 @@
 """ELYSIUM governing layer for Astra.
 
-This module implements the root-directive ("Elysium") concept on top of the
-existing Astra storage layer.  It deliberately reuses ``memory_store``'s
-``atomic_save`` / ``load_json`` / ``CommandStore`` rather than re-implementing
-persistence, so the on-disk format stays the plain-JSON-list format the rest of
-the project already reads and writes.
+ELYSIUM is an application-level root command interface, not a personality,
+prompt section or conversational mode of Astra.  ``is_elysium_invocation``
+decides whether a line addresses the root layer, and ``ElysiumCommandHandler``
+answers it directly in Python (exact capabilities such as the clock) without
+ever entering Astra's generation path.
+
+This module also implements the root-directive ("Elysium") storage concept on
+top of the existing Astra storage layer.  It deliberately reuses
+``memory_store``'s ``atomic_save`` / ``load_json`` / ``CommandStore`` rather
+than re-implementing persistence, so the on-disk format stays the plain-JSON
+format the rest of the project already reads and writes.
 
 Design notes
 ------------
@@ -25,10 +31,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import socket
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from ipaddress import ip_address
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
@@ -414,6 +422,97 @@ class ElysiumOrchestrator:
         except Exception as exc:
             logger.error("Elysium processing error: %s", exc)
             return f"[Elysium Error: {exc}]"
+
+
+def is_elysium_invocation(text: Any) -> bool:
+    """True when ``text`` addresses the ELYSIUM root layer rather than Astra.
+
+    The match is on the whole leading word (plus optional ``:``/``>``
+    separator), so an ordinary sentence that merely contains "elysium"
+    ("I read about Elysium") is *not* an invocation.
+    """
+    if not isinstance(text, str):
+        return False
+    return re.match(r"^\s*elysium\b\s*[:>]?", text, re.IGNORECASE) is not None
+
+
+def _strip_invocation(text: str) -> str:
+    """Return the command text following the leading ``elysium`` keyword."""
+    return re.sub(r"^\s*elysium\b\s*[:>]?\s*", "", text, count=1, flags=re.IGNORECASE)
+
+
+class ElysiumCommandHandler:
+    """Application-level command interface for the ELYSIUM root layer.
+
+    Elysium is a governing/system layer, not a persona. It answers exact
+    requests deterministically in Python and never routes them through the
+    conversational model, so it has no access to Astra's tone, memories or
+    roleplay behaviour.
+
+    Capabilities are only the ones actually implemented here:
+
+    * ``clock``  -- current time/date from the system clock (``datetime``).
+
+    Administrative directive changes (add/remove) are delegated to the
+    supplied :class:`ElysiumOrchestrator`, whose output is used verbatim and
+    is not passed through Astra.
+    """
+
+    HELP_TEXT = "commands: time | date | help"
+
+    def __init__(self, orchestrator: Optional[Any] = None, *, clock: Optional[Callable[[], datetime]] = None):
+        self.orchestrator = orchestrator
+        self._clock = clock or (lambda: datetime.now().astimezone())
+
+    # -- exact capabilities -------------------------------------------------
+    def _clock_text(self, command: str) -> Optional[str]:
+        words = set(re.findall(r"[a-z]+", command.casefold()))
+        wants_date = bool(words & {"date", "day", "today"})
+        wants_time = bool(words & {"time", "clock", "hour"})
+        if not (wants_date or wants_time):
+            return None
+        now = self._clock()
+        if wants_date and wants_time:
+            return now.strftime("%Y-%m-%d %H:%M:%S %Z")
+        if wants_date:
+            return now.strftime("%A, %B %d, %Y")
+        # Portable 12-hour form (%-I is glibc-only; Windows rejects it).
+        return now.strftime("%I:%M %p %Z").lstrip("0")
+
+    def _directive_command(self, raw: str, command: str) -> Optional[str]:
+        if self.orchestrator is None:
+            return None
+        cmd = command.casefold()
+        if cmd.startswith(("add ", "remove ", "delete ", "drop ", "set ")):
+            return self.orchestrator.process_command(raw)
+        return None
+
+    # -- public API ---------------------------------------------------------
+    def handle(self, user_input: str) -> str:
+        """Handle one ELYSIUM invocation and return the display line.
+
+        Every return value is prefixed with ``Elysium >`` so a caller can tell
+        a root-layer answer apart from an Astra reply.
+        """
+        command = _strip_invocation(user_input).strip()
+        if not command:
+            return f"Elysium > {self.HELP_TEXT}"
+
+        exact = self._clock_text(command)
+        if exact is not None:
+            return f"Elysium > {exact}"
+
+        if command.casefold() in {"help", "?"}:
+            return f"Elysium > {self.HELP_TEXT}"
+
+        directive = self._directive_command(user_input, command)
+        if directive is not None:
+            return f"Elysium > {directive}"
+
+        return (
+            "Elysium > Unknown command. "
+            "Available: time, date, help (directive changes: add/remove <rule>)."
+        )
 
 
 class ElysiumCommandRecorder:

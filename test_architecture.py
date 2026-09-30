@@ -1,12 +1,13 @@
 """Architecture and persistence tests.
 
-Covers the four integration guarantees end to end on real on-disk stores:
+Covers the integration guarantees end to end on real on-disk stores:
 
 1. commands persist without an explicit save and fire deterministically;
 2. the runtime clock is injected into the prompt;
 3. command history is surfaced to the model;
-4. Elysium root directives reach the prompt and take effect even when the
-   state file appears after the orchestrator was constructed.
+4. Elysium governing directives are answered by the application-level Elysium
+   layer and are *not* injected into Astra's prompt, even when the state file
+   appears after the orchestrator was constructed.
 """
 
 import os
@@ -17,7 +18,7 @@ from datetime import datetime
 
 from elysium import ElysiumOrchestrator
 from memory_store import CommandStore, TripleMemoryStore, atomic_save
-from orchestrator import CompanionOrchestrator, ELYSIUM_DIRECTIVES_HEADER
+from orchestrator import CompanionOrchestrator
 
 
 class TestArchitecture(unittest.TestCase):
@@ -55,10 +56,9 @@ class TestArchitecture(unittest.TestCase):
         self.assertIn("echo", prompt)
         self.assertIn("bravo", prompt)
 
-    def test_elysium_directive_applies_when_added_after_construction(self):
+    def test_elysium_directive_stays_out_of_prompt_when_added_after_construction(self):
         store = TripleMemoryStore(data_dir=self.storage)
         astra = CompanionOrchestrator(store, config_dir=self.config)
-        self.assertNotIn(ELYSIUM_DIRECTIVES_HEADER, astra.build_prompt("Hello", []))
 
         # Directive appears only after the orchestrator was built.
         elysium = ElysiumOrchestrator(config_dir=self.config)
@@ -66,8 +66,8 @@ class TestArchitecture(unittest.TestCase):
         atomic_save(elysium.state_file, elysium.state)
 
         prompt = astra.build_prompt("Hello", [])
-        self.assertIn(ELYSIUM_DIRECTIVES_HEADER, prompt)
-        self.assertIn("Astra must speak formally.", prompt)
+        self.assertNotIn("Astra must speak formally.", prompt)
+        self.assertNotIn("ELYSIUM ROOT GOVERNING", prompt)
 
 
 if __name__ == "__main__":

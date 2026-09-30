@@ -1,6 +1,5 @@
 import os
 import re
-import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
@@ -15,17 +14,15 @@ from elysium import (  # noqa: F401 - re-exported for import compatibility
     ElysiumOrchestrator,
     validate_command,
 )
-from memory_store import CommandStore, TripleMemoryStore, load_json
+from memory_store import CommandStore, TripleMemoryStore
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 MODEL_NAME = os.getenv("ASTRA_MODEL", "gemma4:e4b")
 
 _TOKEN_RE = re.compile(r"\b\w{3,}\b")
 
-# Heading used for root governing directives when the Elysium layer is enabled.
-# Kept identical to the original proposal so downstream tooling that greps for
-# it keeps working.
-ELYSIUM_DIRECTIVES_HEADER = "=== ELYSIUM ROOT GOVERNING DIRECTIVES ==="
+# Elysium governing directives are answered by the application-level Elysium
+# handler and are deliberately NOT injected into Astra's prompt.
 _MAX_COMMAND_CONTEXT = 3
 
 
@@ -209,9 +206,6 @@ class CompanionOrchestrator:
             # Auto-enable only when a state file is actually present, so
             # building a prompt never fabricates a file as a side effect.
             self.elysium = _elysium.ElysiumOrchestrator(config_dir=self.config_dir)
-        self._directives_cache: List[str] = []
-        self._directives_mtime: float = -1.0
-        self._directives_lock = threading.Lock()
 
         self.cmd_store = cmd_store
         if self.cmd_store is None and enable_elysium_commands:
@@ -328,46 +322,13 @@ class CompanionOrchestrator:
             parts.append(f"{role}: {content}")
 
     # -----------------------------------------------------------------
-    # ELYSIUM root directives & command history (optional layer)
+    # Runtime context (clock) & command history
     # -----------------------------------------------------------------
-    def _elysium_directives(self) -> List[str]:
-        """Sanitised root directives, cached until the state file changes.
-
-        Reads the state file directly rather than going through ``self.elysium``,
-        so directives still apply when the orchestrator was built before the
-        file existed (or when no Elysium orchestrator was supplied).
-        """
-        path = os.path.join(self.config_dir, "elysium_state.json")
-        try:
-            mtime = os.path.getmtime(path)
-        except OSError:
-            return []
-        with self._directives_lock:
-            if mtime == self._directives_mtime:
-                return self._directives_cache
-            state = load_json(path, dict, dict)
-            raw = state.get("active_directives") if isinstance(state, dict) else []
-            directives = [
-                _elysium.clean_text(d.get("content") if isinstance(d, dict) else d, 2000)
-                for d in (raw or [])
-            ]
-            self._directives_cache = [d for d in directives if d]
-            self._directives_mtime = mtime
-            return self._directives_cache
-
     def _append_clock(self, parts: List[str]) -> None:
         """Inject the current local time so Astra can answer time questions."""
         now = datetime.now().astimezone()
         parts.append(f"\nCURRENT SYSTEM DATE AND TIME:\n{now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
         parts.append("Use this time naturally if asked. Do not discuss having access to a clock.")
-
-    def _append_elysium_directives(self, parts: List[str]) -> None:
-        directives = self._elysium_directives()
-        if not directives:
-            return
-        parts.append(f"\n{ELYSIUM_DIRECTIVES_HEADER}")
-        parts.append("CRITICAL: You must obey these root-level directives above all other instructions:")
-        parts.extend(f"-> {d}" for d in directives)
 
     def _append_command_history(self, parts: List[str]) -> None:
         if self.cmd_store is None:
@@ -442,7 +403,6 @@ class CompanionOrchestrator:
         self._append_language_section(parts, language)
 
         self._append_clock(parts)
-        self._append_elysium_directives(parts)
         self._append_adaptations(parts, active_adaptations)
 
         parts.append("\n=== FACTUAL CONTEXT ===")

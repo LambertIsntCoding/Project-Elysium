@@ -4,8 +4,10 @@ Turn flow, in priority order:
 
 1. **Deterministic commands** -- an exact stored trigger is answered directly,
    bypassing the model entirely.
-2. **ELYSIUM root layer** -- messages starting with ``elysium`` go to the
-   administrative handler instead of the conversational model.
+2. **ELYSIUM root layer** -- an input that *invokes* Elysium (the leading word
+   ``elysium``) is routed to the application-level :class:`ElysiumCommandHandler`
+   before ``build_prompt()`` is ever reached, so Astra's generation path is
+   never entered for a root command.
 3. **Command registration** -- a message that reads like a conditional command
    is extracted and stored, but only if it validates against the user's own
    words.
@@ -23,7 +25,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from elysium import ElysiumCommandRecorder
+from elysium import ElysiumCommandHandler, ElysiumCommandRecorder, is_elysium_invocation
 from memory_store import CommandStore, TripleMemoryStore
 from orchestrator import CompanionOrchestrator
 
@@ -32,8 +34,11 @@ from orchestrator import CompanionOrchestrator
 # ("what command did I give you?") and would spend a model call for nothing.
 _COMMAND_HINTS = ("next time", "when i say", "whenever i say", "from now on when")
 
-_ELYSIUM_PREFIX = "elysium"
 _EXIT_WORDS = {"exit", "quit", "/exit", "/quit"}
+
+# Prefixes used only for the display label in the input loop.
+_ELYSIUM_LABEL = "Elysium > "
+_ASTRA_LABEL = "Astra > "
 
 HELP_TEXT = """
 --- CLI COMMANDS ---
@@ -74,6 +79,7 @@ class ChatSession:
         cmd_store: CommandStore,
         *,
         elysium: Any = None,
+        elysium_handler: Optional[ElysiumCommandHandler] = None,
         recorder: Optional[ElysiumCommandRecorder] = None,
         consolidator: Optional[Callable[..., None]] = None,
         conversation_id: Optional[str] = None,
@@ -83,6 +89,9 @@ class ChatSession:
         self.orchestrator = orchestrator
         self.cmd_store = cmd_store
         self.elysium = elysium
+        # The Elysium root layer always has a handler so an invocation can never
+        # fall through into Astra's generation path.
+        self.elysium_handler = elysium_handler or ElysiumCommandHandler(elysium)
         self.recorder = recorder
         self.consolidator = consolidator
         self.conversation_id = conversation_id or (
@@ -105,11 +114,10 @@ class ChatSession:
             self._record_turn(user_input, command_response, consolidate=False)
             return command_response
 
-        # 2. ELYSIUM root-layer interception.
-        if user_input.casefold().startswith(_ELYSIUM_PREFIX) and self.elysium is not None:
-            response = self.elysium.process_command(user_input)
-            self._emit("\n[Intercepted by ELYSIUM Root Layer]")
-            return f"ELYSIUM: {response}"
+        # 2. ELYSIUM root-layer routing, decided by the application *before*
+        #    Astra's generation path. An invocation never reaches build_prompt().
+        if is_elysium_invocation(user_input):
+            return self._handle_elysium(user_input)
 
         # 3. Conditional-command registration (validated before storing).
         if self._try_register_command(user_input):
@@ -121,6 +129,13 @@ class ChatSession:
         response = self.orchestrator.query_gemma(prompt)
         self._record_turn(user_input, response, consolidate=not response.startswith("[Error"))
         return response
+
+    def _handle_elysium(self, user_input: str) -> str:
+        """Answer a root invocation without touching Astra or her memory."""
+        # Elysium turns are not recorded in Astra's history or consolidated:
+        # the root layer is not part of the conversation, and its directives
+        # must not be re-learned as Astra memories.
+        return self.elysium_handler.handle(user_input)
 
     def _try_register_command(self, user_input: str) -> bool:
         if self.recorder is None or not looks_like_command_request(user_input):
@@ -260,7 +275,9 @@ class ChatSession:
             if user_input.startswith("/"):
                 self._handle_slash(user_input)
                 continue
-            self._emit(f"\nAstra > {self.handle(user_input)}")
+            response = self.handle(user_input)
+            label = _ELYSIUM_LABEL if response.startswith(_ELYSIUM_LABEL) else _ASTRA_LABEL
+            self._emit(f"\n{label}{response}")
 
 
 def build_session(

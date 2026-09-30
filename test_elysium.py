@@ -12,20 +12,23 @@ import shutil
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import elysium
 from elysium import (
     CommandExtractor,
+    ElysiumCommandHandler,
     ElysiumCommandRecorder,
     ElysiumDirective,
     ElysiumOrchestrator,
     _clean_text,
     _validate_endpoint,
+    is_elysium_invocation,
     validate_command,
 )
 from memory_store import CommandStore, atomic_save
-from orchestrator import CompanionOrchestrator, ELYSIUM_DIRECTIVES_HEADER
+from orchestrator import CompanionOrchestrator
 
 
 class _FakeOllama(BaseHTTPRequestHandler):
@@ -202,15 +205,18 @@ class TestCommandRecorder(_ServerFixture):
 
 
 class TestPromptIntegration(_ServerFixture):
-    def test_directives_and_command_history_in_prompt(self):
+    def test_elysium_directives_are_not_in_astra_prompt(self):
+        # Governing directives are handled by the Elysium layer; they must never
+        # be injected into Astra's generation prompt.
         atomic_save(os.path.join(self.tmp, "elysium_state.json"),
                     {"active_directives": [ElysiumDirective("obey the prime directive").to_dict()]})
         cmd_store = CommandStore(data_dir=self.tmp)
         cmd_store.add_command("when I say hi", "hi", "hello")
         orch = CompanionOrchestrator(_StubStore(), config_dir=self.tmp, cmd_store=cmd_store)
         prompt = orch.build_prompt("hi", [])
-        self.assertIn(ELYSIUM_DIRECTIVES_HEADER, prompt)
-        self.assertIn("obey the prime directive", prompt)
+        self.assertNotIn("obey the prime directive", prompt)
+        self.assertNotIn("ELYSIUM ROOT GOVERNING", prompt)
+        # Command history is a separate, still-supported feature.
         self.assertIn("=== DIRECT COMMAND HISTORY ===", prompt)
         self.assertIn("Stored rule", prompt)
 
@@ -225,19 +231,8 @@ class TestPromptIntegration(_ServerFixture):
     def test_no_elysium_state_means_no_section_or_file(self):
         orch = CompanionOrchestrator(_StubStore(), config_dir=self.tmp)
         prompt = orch.build_prompt("hello", [])
-        self.assertNotIn(ELYSIUM_DIRECTIVES_HEADER, prompt)
+        self.assertNotIn("ELYSIUM ROOT GOVERNING", prompt)
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "elysium_state.json")))
-
-    def test_directive_cache_reloads_on_change(self):
-        path = os.path.join(self.tmp, "elysium_state.json")
-        atomic_save(path, {"active_directives": [ElysiumDirective("rule one").to_dict()]})
-        orch = CompanionOrchestrator(_StubStore(), config_dir=self.tmp)
-        self.assertIn("rule one", orch.build_prompt("hi", []))
-        import time
-
-        time.sleep(0.01)
-        atomic_save(path, {"active_directives": [ElysiumDirective("rule two").to_dict()]})
-        self.assertIn("rule two", orch.build_prompt("hi", []))
 
     def test_injected_directive_cannot_forge_a_section(self):
         atomic_save(os.path.join(self.tmp, "elysium_state.json"),
@@ -250,6 +245,53 @@ class TestPromptIntegration(_ServerFixture):
         orch = CompanionOrchestrator(_StubStore(), config_dir=self.tmp, enable_elysium_commands=True)
         self.assertIsNotNone(orch.cmd_store)
         self.assertIsNotNone(orch.command_recorder)
+
+
+class TestElysiumInvocationDetection(unittest.TestCase):
+    def test_leading_keyword_is_an_invocation(self):
+        for text in ("Elysium", "elysium", "  Elysium what is the time",
+                     "Elysium: date", "ELYsium> help"):
+            self.assertTrue(is_elysium_invocation(text), text)
+
+    def test_ordinary_mentions_are_not_invocations(self):
+        for text in ("What is the time?", "Heyo!", "I read about Elysium today",
+                     "the elysium protocols are interesting", ""):
+            self.assertFalse(is_elysium_invocation(text), text)
+
+
+class TestElysiumCommandHandler(unittest.TestCase):
+    def test_clock_comes_from_python(self):
+        handler = ElysiumCommandHandler(
+            clock=lambda: datetime(2026, 1, 2, 15, 4, tzinfo=timezone.utc)
+        )
+        self.assertEqual(handler.handle("Elysium what is the time"), "Elysium > 3:04 PM UTC")
+
+    def test_date_command(self):
+        handler = ElysiumCommandHandler(
+            clock=lambda: datetime(2026, 1, 2, 15, 4, tzinfo=timezone.utc)
+        )
+        self.assertEqual(handler.handle("Elysium date"), "Elysium > Friday, January 02, 2026")
+
+    def test_bare_invocation_and_help(self):
+        handler = ElysiumCommandHandler()
+        self.assertTrue(handler.handle("Elysium").startswith("Elysium > "))
+        self.assertTrue(handler.handle("Elysium help").startswith("Elysium > "))
+
+    def test_unknown_command_is_plain(self):
+        handler = ElysiumCommandHandler()
+        self.assertEqual(
+            handler.handle("Elysium do X"),
+            "Elysium > Unknown command. Available: time, date, help "
+            "(directive changes: add/remove <rule>).",
+        )
+
+    def test_handler_never_returns_astra_style_narration(self):
+        handler = ElysiumCommandHandler()
+        for text in ("Elysium", "Elysium what is the time", "Elysium do X"):
+            output = handler.handle(text).casefold()
+            for banned in ("admin mode", "final boss", "dramatic", "circuits",
+                           "chaotic protagonist", "bestie", "fam."):
+                self.assertNotIn(banned, output)
 
 
 if __name__ == "__main__":
