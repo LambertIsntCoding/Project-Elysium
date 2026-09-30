@@ -178,16 +178,22 @@ class CompanionOrchestrator:
     MAX_STYLE_EXAMPLES = 4   # set higher (or None) to include every example
     MAX_HISTORY_TURNS = 6
 
-    def __init__(self, store: TripleMemoryStore, config_dir: Any = "./config", *,
-                 elysium: Any = None, cmd_store: Optional[CommandStore] = None,
+    def __init__(self, store: TripleMemoryStore, cmd_store: Any = None, *,
+                 config_dir: str = "./config", elysium: Any = None,
                  enable_elysium_commands: bool = False):
-        # Compatibility: the original proposal called
-        # ``CompanionOrchestrator(store, cmd_store)``. Accept a CommandStore in
-        # the second positional slot and keep the default config dir, so that
-        # call form works without silently treating the store as a path.
-        if isinstance(config_dir, CommandStore):
-            cmd_store = config_dir
-            config_dir = "./config"
+        # Support every call form used across the project:
+        #   CompanionOrchestrator(store)
+        #   CompanionOrchestrator(store, config_dir="./config")
+        #   CompanionOrchestrator(store, cmd_store)
+        #   CompanionOrchestrator(store, cmd_store, config_dir="./config")
+        if isinstance(cmd_store, (str, os.PathLike)):
+            config_dir = os.fspath(cmd_store)  # legacy positional config path
+            cmd_store = None
+        elif cmd_store is not None and not isinstance(cmd_store, CommandStore):
+            raise TypeError(
+                "second argument must be a CommandStore or a config path, "
+                f"got {type(cmd_store).__name__}"
+            )
         self.store = store
         self.config_dir = os.path.abspath(config_dir)
         self._yaml_cache: Dict[str, tuple] = {}  # filename -> (mtime, data)
@@ -325,9 +331,12 @@ class CompanionOrchestrator:
     # ELYSIUM root directives & command history (optional layer)
     # -----------------------------------------------------------------
     def _elysium_directives(self) -> List[str]:
-        """Sanitised root directives, cached until the state file changes."""
-        if self.elysium is None:
-            return []
+        """Sanitised root directives, cached until the state file changes.
+
+        Reads the state file directly rather than going through ``self.elysium``,
+        so directives still apply when the orchestrator was built before the
+        file existed (or when no Elysium orchestrator was supplied).
+        """
         path = os.path.join(self.config_dir, "elysium_state.json")
         try:
             mtime = os.path.getmtime(path)
@@ -345,6 +354,12 @@ class CompanionOrchestrator:
             self._directives_cache = [d for d in directives if d]
             self._directives_mtime = mtime
             return self._directives_cache
+
+    def _append_clock(self, parts: List[str]) -> None:
+        """Inject the current local time so Astra can answer time questions."""
+        now = datetime.now().astimezone()
+        parts.append(f"\nCURRENT SYSTEM DATE AND TIME:\n{now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        parts.append("Use this time naturally if asked. Do not discuss having access to a clock.")
 
     def _append_elysium_directives(self, parts: List[str]) -> None:
         directives = self._elysium_directives()
@@ -426,6 +441,7 @@ class CompanionOrchestrator:
         self._append_list_section(parts, "PERSONALITY TRAITS", speech.get("personality"))
         self._append_language_section(parts, language)
 
+        self._append_clock(parts)
         self._append_elysium_directives(parts)
         self._append_adaptations(parts, active_adaptations)
 
