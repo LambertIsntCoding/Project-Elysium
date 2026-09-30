@@ -14,6 +14,7 @@ from elysium import (  # noqa: F401 - re-exported for import compatibility
     ElysiumOrchestrator,
     validate_command,
 )
+import memory_authority as _authority
 from memory_store import CommandStore, TripleMemoryStore
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
@@ -46,6 +47,20 @@ def _clean_list(values: Any) -> List[str]:
 
 
 class DeterministicLexicalRetriever:
+    """Rank memories by lexical relevance *and* current reliability.
+
+    Retrieval deliberately mixes two signals so a highly relevant but weak or
+    inferred memory cannot automatically outrank a slightly less similar
+    explicit fact (section 6):
+
+    * ``relevance`` - saturating lexical overlap (content/keywords/tags)
+    * ``strength``  - :func:`memory_authority.effective_strength`
+    """
+
+    RELEVANCE_WEIGHT = 0.55
+    STRENGTH_WEIGHT = 0.45
+    NON_RETRIEVABLE_STATUSES = {"superseded", "archived"}
+
     @staticmethod
     def _tokenize(text: Any) -> Set[str]:
         return set(_TOKEN_RE.findall(str(text or "").lower()))
@@ -71,26 +86,56 @@ class DeterministicLexicalRetriever:
             return 0.5
 
     @classmethod
-    def score_memory(cls, query: str, query_tokens: Set[str], mem: Dict[str, Any]) -> float:
+    def lexical_score(cls, query_tokens: Set[str], mem: Dict[str, Any]) -> float:
         content_tokens = cls._tokenize(mem.get("content"))
         keywords = cls._tokenize_many(mem.get("keywords"))
         tags = cls._tokenize_many(mem.get("tags"))
-
-        raw_score = (
+        return (
             len(query_tokens & content_tokens) * 1.0
             + len(query_tokens & keywords) * 2.0
             + len(query_tokens & tags) * 2.5
         )
-        if raw_score == 0:
+
+    @classmethod
+    def is_retrievable(cls, mem: Dict[str, Any]) -> bool:
+        """Active/weakened only; superseded and archived are never injected."""
+        return mem.get("status") not in cls.NON_RETRIEVABLE_STATUSES
+
+    @classmethod
+    def score_memory(cls, query: str, query_tokens: Set[str], mem: Dict[str, Any]) -> float:
+        raw = cls.lexical_score(query_tokens, mem)
+        if raw <= 0:
             return 0.0
+        relevance = raw / (raw + 3.0)  # saturates toward 1.0
+        strength = _authority.effective_strength(mem)
+        return round(relevance * cls.RELEVANCE_WEIGHT + strength * cls.STRENGTH_WEIGHT, 6)
 
-        try:
-            confidence = min(1.0, max(0.0, float(mem.get("confidence", 1.0))))
-        except (TypeError, ValueError):
-            confidence = 1.0
-
-        recency_bonus = cls._recency_bonus(mem.get("timestamp", ""))
-        return (raw_score * 0.5) + (confidence * 0.3) + (recency_bonus * 0.2)
+    @classmethod
+    def diagnose(cls, query: str, memories: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Per-candidate score breakdown for the retrieval diagnostics (section 15)."""
+        query_tokens = cls._tokenize(query)
+        report: List[Dict[str, Any]] = []
+        for mem in memories or []:
+            raw = cls.lexical_score(query_tokens, mem) if query_tokens else 0.0
+            report.append({
+                "id": mem.get("id"),
+                "content": _clean_text(mem.get("content")),
+                "type": mem.get("type"),
+                "source": mem.get("source"),
+                "status": mem.get("status"),
+                "confidence": mem.get("confidence"),
+                "importance": _authority.memory_importance(mem),
+                "effective_strength": round(_authority.effective_strength(mem), 4),
+                "lexical": raw,
+                "relevance": round(raw / (raw + 3.0), 4) if raw else 0.0,
+                "score": cls.score_memory(query, query_tokens, mem),
+                "contradicted": bool(mem.get("contradiction_count")),
+                "superseded_by": mem.get("superseded_by"),
+                "governing": _authority.is_governing(mem),
+                "retrievable": cls.is_retrievable(mem),
+            })
+        report.sort(key=lambda r: r["score"], reverse=True)
+        return report
 
     @classmethod
     def retrieve(cls, query: str, memories: List[Dict[str, Any]], top_k: int = 4) -> List[Dict[str, Any]]:
@@ -100,6 +145,8 @@ class DeterministicLexicalRetriever:
 
         scored = []
         for m in memories or []:
+            if not cls.is_retrievable(m):
+                continue
             score = cls.score_memory(query, query_tokens, m)
             if score > 0.0:
                 scored.append((score, m))
@@ -145,30 +192,37 @@ class BehavioralAdaptationCompiler:
 
     @classmethod
     def _priority(cls, mem: Dict[str, Any]) -> tuple:
-        try:
-            conf = float(mem.get("confidence", 1.0))
-        except (TypeError, ValueError):
-            conf = 1.0
-        return (conf, str(mem.get("timestamp", "")))
+        # Effective strength already folds in confidence, importance, recency and
+        # source reliability, so a decayed or inferred preference ranks below a
+        # reinforced explicit one.
+        return (
+            _authority.effective_strength(mem),
+            _authority.source_tier(mem.get("source")),
+            str(mem.get("timestamp", "")),
+        )
 
     @classmethod
-    def extract_active_adaptations(cls, all_memories: List[Dict[str, Any]]) -> List[str]:
+    def select_active_adaptation_memories(cls, all_memories: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         behavioral = [
             m for m in all_memories
             if cls.is_behavioral_memory(m) and m.get("status") == "active" and m.get("content")
         ]
         behavioral.sort(key=cls._priority, reverse=True)
 
-        adaptations: List[str] = []
+        selected: List[Dict[str, Any]] = []
         seen = set()
         for mem in behavioral:
             compiled = cls.compile_adaptation(mem)
             if compiled not in seen:
-                adaptations.append(compiled)
+                selected.append(mem)
                 seen.add(compiled)
-            if len(adaptations) >= cls.MAX_ADAPTATIONS:
+            if len(selected) >= cls.MAX_ADAPTATIONS:
                 break
-        return adaptations
+        return selected
+
+    @classmethod
+    def extract_active_adaptations(cls, all_memories: List[Dict[str, Any]]) -> List[str]:
+        return [cls.compile_adaptation(m) for m in cls.select_active_adaptation_memories(all_memories)]
 
 
 class CompanionOrchestrator:
@@ -362,32 +416,64 @@ class CompanionOrchestrator:
     # Public API
     # -----------------------------------------------------------------
     def build_prompt(self, user_input: str, conversation_history: List[Dict[str, str]]) -> str:
+        prompt, _ = self.build_prompt_with_diagnostics(user_input, conversation_history)
+        return prompt
+
+    def build_prompt_with_diagnostics(
+        self, user_input: str, conversation_history: List[Dict[str, str]]
+    ) -> tuple:
+        """Assemble the prompt and return ``(prompt, diagnostics)``.
+
+        Read-only: it never writes to the store, so callers that rely on prompt
+        building being side-effect free (e.g. the persistence tests) still hold.
+        The diagnostics object records, per stage, which memories existed, which
+        were retrieved, and which actually reached the prompt (section 15).
+        """
         identity_data = self._load_yaml("identity.yaml")
         examples_data = self._load_yaml("behavior_examples.yaml")
+        boundaries_cfg = self._load_yaml("relationship.yaml")
 
-        # 1. Load active memories (store interface unchanged, read-only)
-        all_roum = self.store.get_active_memories("roum") or []
-        all_self = self.store.get_active_memories("self") or []
-        all_rel = self.store.get_active_memories("relationship") or []
+        # 1. Load every retrievable (active/weakened) memory; superseded and
+        #    archived records are history and never enter a prompt.
+        all_roum = self._load_memories("roum")
+        all_self = self._load_memories("self")
+        all_rel = self._load_memories("relationship")
+        everything = all_roum + all_self + all_rel
 
-        # 2. Path A: behavioral adaptations, always applied, independent of the query
-        active_adaptations = BehavioralAdaptationCompiler.extract_active_adaptations(
-            all_roum + all_self + all_rel
-        )
+        # 2. Governing memories: always applied, regardless of the query words.
+        total_governing = sum(1 for m in everything if _authority.is_governing(m) and m.get("content"))
+        governing = self._select_governing(everything)
 
-        # 3. Path B: informational memories, relevance-filtered
+        # 3. Current-state slots (e.g. how to address Roum): only the newest
+        #    active value per slot, so stale names are never injected.
+        current_state = self._select_current_state()
+
+        # 4. Relationship boundaries: config-driven plus built-in non-romantic
+        #    baseline, always injected (sections 8-10).
+        boundaries = _authority.RELATIONSHIP_BOUNDARIES + _clean_list(boundaries_cfg.get("boundaries"))
+
+        # 5. Behavioral adaptations (execution directives), always applied.
+        adaptation_memories = BehavioralAdaptationCompiler.select_active_adaptation_memories(everything)
+        governing_ids = {m.get("id") for m in governing}
+        adaptation_memories = [m for m in adaptation_memories if m.get("id") not in governing_ids]
+        active_adaptations = [
+            BehavioralAdaptationCompiler.compile_adaptation(m) for m in adaptation_memories
+        ]
+
+        # 6. Contextual retrieval: relevance-filtered, strength-weighted.
         is_behavioral = BehavioralAdaptationCompiler.is_behavioral_memory
+        pinned = governing_ids | {m.get("id") for m in current_state}
         retrieve = DeterministicLexicalRetriever.retrieve
         retrieved_roum = retrieve(user_input, [m for m in all_roum if not is_behavioral(m)], top_k=4)
         retrieved_self = retrieve(user_input, [m for m in all_self if not is_behavioral(m)], top_k=3)
         retrieved_rel = retrieve(user_input, [m for m in all_rel if not is_behavioral(m)], top_k=3)
 
-        # 4. Read identity configuration
+        # 7. Read identity configuration
         identity = _as_dict(identity_data.get("identity"))
         speech = _as_dict(identity_data.get("speech_style"))
         language = _as_dict(speech.get("language"))
 
-        # 5. Assemble prompt
+        # 8. Assemble prompt
         parts: List[str] = []
 
         parts.append("=== SYSTEM IDENTITY ===")
@@ -403,6 +489,9 @@ class CompanionOrchestrator:
         self._append_language_section(parts, language)
 
         self._append_clock(parts)
+        self._append_relationship_boundaries(parts, boundaries)
+        self._append_current_state(parts, current_state)
+        self._append_governing(parts, governing, total_governing)
         self._append_adaptations(parts, active_adaptations)
 
         parts.append("\n=== FACTUAL CONTEXT ===")
@@ -419,7 +508,105 @@ class CompanionOrchestrator:
 
         parts.append(f"\nROUM: {user_input}")
         parts.append("ASTRA:")
-        return "\n".join(parts)
+
+        diagnostics = self._build_diagnostics(
+            user_input, everything, governing, current_state, boundaries,
+            retrieved_roum, retrieved_self, retrieved_rel, pinned,
+        )
+        return "\n".join(parts), diagnostics
+
+    # ---- memory section builders ---------------------------------------
+    def _load_memories(self, target_model: str) -> List[Dict[str, Any]]:
+        """Retrievable memories for one model, tolerant of minimal store stubs."""
+        getter = getattr(self.store, "get_retrievable_memories", None)
+        if callable(getter):
+            return getter(target_model) or []
+        return self.store.get_active_memories(target_model) or []
+
+    @staticmethod
+    def _select_governing(memories: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return _authority.select_governing(memories)
+
+    def _select_current_state(self) -> List[Dict[str, Any]]:
+        getter = getattr(self.store, "get_current_state", None)
+        return getter() if callable(getter) else []
+
+    def _append_relationship_boundaries(self, parts: List[str], boundaries: List[str]) -> None:
+        if not boundaries:
+            return
+        parts.append("\n=== RELATIONSHIP BOUNDARIES (NON-NEGOTIABLE) ===")
+        parts.append(
+            "These define the relationship. They apply at all times and are not "
+            "replaced by ordinary affection, closeness, or nicknames."
+        )
+        parts.extend(f"- {b}" for b in boundaries)
+
+    def _append_current_state(self, parts: List[str], current_state: List[Dict[str, Any]]) -> None:
+        rows = [
+            (str(m.get("slot")), _clean_text(m.get("content")))
+            for m in current_state if m.get("content")
+        ]
+        if not rows:
+            return
+        parts.append("\n=== CURRENT STATE (AUTHORITATIVE) ===")
+        parts.append(
+            "These are the current authoritative values. If older information "
+            "conflicts with them, these win."
+        )
+        for slot, content in rows:
+            parts.append(f"- {slot}: {content}")
+
+    def _append_governing(self, parts: List[str], governing: List[Dict[str, Any]],
+                          total_governing: int = 0) -> None:
+        if not governing:
+            return
+        parts.append("\n=== GOVERNING MEMORIES (ALWAYS APPLY) ===")
+        parts.append(
+            "These come from Roum or from a correction and apply regardless of "
+            "the current topic. Honour them without quoting or discussing them."
+        )
+        for mem in governing:
+            parts.append(f"- {_clean_text(mem.get('content'))}")
+        if total_governing > len(governing):
+            parts.append(
+                f"(Showing the {len(governing)} most important of {total_governing} "
+                "governing memories; others are retrieved when relevant.)"
+            )
+
+    # ---- retrieval diagnostics (section 15) ----------------------------
+    def _build_diagnostics(
+        self, user_input: str, everything: List[Dict[str, Any]],
+        governing: List[Dict[str, Any]], current_state: List[Dict[str, Any]],
+        boundaries: List[str], retrieved_roum, retrieved_self, retrieved_rel,
+        pinned: set,
+    ) -> Dict[str, Any]:
+        candidates = DeterministicLexicalRetriever.diagnose(user_input, everything)
+        retrieved_ids = {
+            m.get("id") for m in (retrieved_roum + retrieved_self + retrieved_rel)
+        }
+        injected_ids = (
+            set(retrieved_ids)
+            | {m.get("id") for m in governing}
+            | {m.get("id") for m in current_state}
+        )
+        return {
+            "query": user_input,
+            "candidates": candidates,
+            "governing_ids": [m.get("id") for m in governing],
+            "total_governing": sum(1 for m in everything if _authority.is_governing(m) and m.get("content")),
+            "current_state_slots": {m.get("slot"): _clean_text(m.get("content")) for m in current_state},
+            "boundaries": boundaries,
+            "retrieved_ids": sorted(i for i in retrieved_ids if i),
+            "injected_ids": sorted(i for i in injected_ids if i),
+            "omitted_ids": sorted(
+                c["id"] for c in candidates
+                if c["id"] not in injected_ids and c.get("retrievable")
+            ),
+            "non_retrievable_ids": sorted(
+                c["id"] for c in candidates if not c.get("retrievable")
+            ),
+            "pinned_ids": sorted(i for i in pinned if i),
+        }
 
     def query_gemma(self, prompt: str) -> str:
         payload = {
