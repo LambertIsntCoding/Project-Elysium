@@ -44,6 +44,14 @@ HELP_TEXT = """
 --- CLI COMMANDS ---
  /memories [target] : List memories with key metadata (target optional: roum, self, relationship)
  /memory <id>       : Display full record and provenance for a memory
+ /search <text>     : Search memories by content, keywords, or tags
+ /governing         : Show the memories that always apply
+ /temporary         : Show transient context for this session (not stored)
+ /contradictions    : Show memories that were weakened or superseded
+ /dormant           : Show stale memories that have gone dormant
+ /stats             : Memory health summary (counts, types, utility)
+ /forget <id>       : Retire a memory without deleting it (archive)
+ /restore <id>      : Bring an archived memory back
  /correct           : Interactive workflow to supersede an incorrect memory
  /journal           : Display AI journal reflections
  /debug <message>   : Show memory retrieval diagnostics for a message
@@ -182,6 +190,28 @@ class ChatSession:
                 self._display_memory(parts[1])
             else:
                 self._emit("Usage: /memory <mem_id>")
+        elif command == "/search":
+            self._search_memories(" ".join(parts[1:]))
+        elif command == "/governing":
+            self._display_governing()
+        elif command == "/temporary":
+            self._display_temporary()
+        elif command == "/contradictions":
+            self._display_contradictions()
+        elif command == "/dormant":
+            self._display_dormant()
+        elif command == "/stats":
+            self._display_stats()
+        elif command == "/forget":
+            if len(parts) > 1:
+                self._archive_memory(parts[1])
+            else:
+                self._emit("Usage: /forget <mem_id>")
+        elif command == "/restore":
+            if len(parts) > 1:
+                self._restore_memory(parts[1])
+            else:
+                self._emit("Usage: /restore <mem_id>")
         elif command == "/journal":
             self._display_journal()
         elif command == "/debug":
@@ -213,6 +243,143 @@ class ChatSession:
                     f" | Turn: {mem.get('originating_turn', '-')}"
                 )
                 self._emit("-" * 50)
+
+    def _all_memories(self, status: Optional[str] = None):
+        """Iterate ``(target, memory)`` across every model."""
+        for target in ("roum", "self", "relationship"):
+            for mem in self.orchestrator.store.get_memories(target, status=status):
+                yield target, mem
+
+    def _search_memories(self, query: str) -> None:
+        """Find memories by content, keyword, or tag (case-insensitive)."""
+        if not query.strip():
+            self._emit("Usage: /search <text>")
+            return
+        needle = query.casefold()
+        hits = []
+        for target, mem in self._all_memories(status=None):
+            haystack = " ".join([
+                str(mem.get("content", "")),
+                " ".join(str(k) for k in mem.get("keywords", []) or []),
+                " ".join(str(t) for t in mem.get("tags", []) or []),
+            ]).casefold()
+            if needle in haystack:
+                hits.append((target, mem))
+
+        self._emit(f"\n=== SEARCH: {query!r} ({len(hits)} match{'es' if len(hits) != 1 else ''}) ===")
+        if not hits:
+            self._emit("  (Nothing matched)")
+            return
+        for target, mem in hits:
+            self._emit(f" [{target}] {mem.get('id')} | {mem.get('status')} | {mem.get('type')}")
+            self._emit(f"    {mem.get('content')}")
+
+    def _display_governing(self) -> None:
+        """The memories that are always injected, regardless of the query."""
+        getter = getattr(self.orchestrator.store, "get_governing_memories", None)
+        governing = getter() if callable(getter) else []
+        self._emit(f"\n=== GOVERNING MEMORIES ({len(governing)} always apply) ===")
+        if not governing:
+            self._emit("  (None)")
+            return
+        for mem in governing:
+            self._emit(f" [{mem.get('target_model')}] {mem.get('id')} | {mem.get('type')}")
+            self._emit(f"    {mem.get('content')}")
+
+    def _display_temporary(self) -> None:
+        """Transient scratch for this session only - never written to disk."""
+        getter = getattr(self.orchestrator.store, "get_temporary_context", None)
+        items = getter(limit=50) if callable(getter) else []
+        self._emit(f"\n=== TEMPORARY CONTEXT ({len(items)} item(s), this session only) ===")
+        if not items:
+            self._emit("  (Nothing transient right now)")
+            return
+        for item in items:
+            self._emit(f" {item.get('id')} | {item.get('kind')} | {item.get('content')}")
+        self._emit("  These are NOT stored and will disappear when the session ends.")
+
+    def _display_contradictions(self) -> None:
+        """Memories that were weakened or superseded by a later statement."""
+        flagged = [
+            (target, mem) for target, mem in self._all_memories(status=None)
+            if mem.get("contradiction_count") or mem.get("superseded_by")
+            or mem.get("contradiction_reason")
+        ]
+        self._emit(f"\n=== CONTRADICTIONS ({len(flagged)}) ===")
+        if not flagged:
+            self._emit("  (No contradictions recorded)")
+            return
+        for target, mem in flagged:
+            self._emit(f" [{target}] {mem.get('id')} | status={mem.get('status')}")
+            self._emit(f"    {mem.get('content')}")
+            if mem.get("superseded_by"):
+                self._emit(f"    superseded by: {mem.get('superseded_by')}")
+            if mem.get("contradiction_reason"):
+                self._emit(f"    reason: {mem.get('contradiction_reason')}")
+
+    def _display_dormant(self) -> None:
+        """Stale, low-value memories - readable and retrievable, but not governing."""
+        dormant = [
+            (target, mem) for target, mem in self._all_memories(status=None)
+            if str(mem.get("utility") or "active") == "dormant"
+        ]
+        self._emit(f"\n=== DORMANT MEMORIES ({len(dormant)}) ===")
+        if not dormant:
+            self._emit("  (None - everything is still active)")
+            return
+        for target, mem in dormant:
+            self._emit(f" [{target}] {mem.get('id')} | {mem.get('type')}")
+            self._emit(f"    {mem.get('content')}")
+            if mem.get("dormant_reason"):
+                self._emit(f"    reason: {mem.get('dormant_reason')}")
+
+    def _display_stats(self) -> None:
+        """Memory health summary."""
+        stats = self.orchestrator.store.stats()
+        self._emit("\n=== MEMORY STATS ===")
+        for target in ("roum", "self", "relationship"):
+            info = stats.get(target, {})
+            self._emit(
+                f" {target:>12}: {info.get('active', 0)} active / {info.get('total', 0)} total"
+            )
+            by_type = info.get("by_type") or {}
+            if by_type:
+                self._emit(f"      types: {by_type}")
+            by_utility = info.get("by_utility") or {}
+            if by_utility:
+                self._emit(f"      utility: {by_utility}")
+            by_status = info.get("by_status") or {}
+            if by_status:
+                self._emit(f"      status: {by_status}")
+        self._emit(f" journal entries: {stats.get('journal_entries', 0)}")
+
+    def _archive_memory(self, mem_id: str) -> None:
+        """Retire a memory without deleting it."""
+        found = self._find_memory(mem_id)
+        if not found:
+            self._emit(f"Error: Memory ID '{mem_id}' not found.")
+            return
+        target, mem = found
+        try:
+            self.orchestrator.store.archive_memory(target, mem_id, reason="user requested /forget")
+        except ValueError as exc:
+            self._emit(f"Could not archive: {exc}")
+            return
+        self._emit(f"\n✓ Memory '{mem_id}' archived (kept on disk, no longer used).")
+        self._emit(f"  Was: {mem.get('content')}")
+
+    def _restore_memory(self, mem_id: str) -> None:
+        found = self._find_memory(mem_id)
+        if not found:
+            self._emit(f"Error: Memory ID '{mem_id}' not found.")
+            return
+        target, _ = found
+        try:
+            self.orchestrator.store.restore_memory(target, mem_id)
+        except ValueError as exc:
+            self._emit(f"Could not restore: {exc}")
+            return
+        self._emit(f"\n✓ Memory '{mem_id}' restored to active.")
 
     def _find_memory(self, mem_id: str) -> Optional[Tuple[str, Dict[str, Any]]]:
         for target in ("roum", "self", "relationship"):
