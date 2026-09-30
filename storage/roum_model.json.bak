@@ -3397,35 +3397,5 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null
-  },
-  {
-    "id": "mem_1790807699388_5f8f71",
-    "target_model": "roum",
-    "content": "The user asserts that the AI must be capable of deliberately not knowing certain things.",
-    "type": "behavioral_pattern",
-    "source": "explicit_user_statement",
-    "status": "active",
-    "timestamp": "2026-09-30T22:34:59.388950+00:00",
-    "confidence": 1.0,
-    "created_at": "2026-09-30T22:34:59.388950+00:00",
-    "last_used": "2026-09-30T22:34:59.388950+00:00",
-    "use_count": 0,
-    "contradiction_count": 0,
-    "contradicts": [],
-    "supersedes": null,
-    "superseded_by": null,
-    "source_type": 4,
-    "reinforcement_count": 1,
-    "last_reinforced": "2026-09-30T22:34:59.388950+00:00",
-    "keywords": [
-      "not know",
-      "cluelessness"
-    ],
-    "tags": [
-      "meta_instruction",
-      "epistemology"
-    ],
-    "conversation_id": "conv_20260930_221527",
-    "turn": 2
   }
 ]
