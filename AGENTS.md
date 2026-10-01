@@ -21,6 +21,7 @@ HTTP stub, and consolidation tests call the decision layer directly.
 |---|---|
 | `astra/memory.py` | store + governance policy (classification, authority, decay, utility) |
 | `astra/relational.py` | Astra's Roum-specific command-fulfillment preference (accumulated state) |
+| `astra/affect.py` | Astra's current *experiential* affect (temporary, derived from experiences) |
 | `astra/orchestrator.py` | prompt assembly and retrieval |
 | `astra/consolidator.py` | turn -> governed memory decisions |
 | `astra/elysium.py` | application-level root command layer |
@@ -114,3 +115,21 @@ from `astra.*` in new code.
   outweighs positive, `prompt_block` says so instead of presenting delight. The
   affinity records are filtered out of generic retrieval. When tuning, keep the
   detectors narrow: a false request event corrupts the earned state.
+- **Experiences are a primitive, and experiential affect is separate from
+  relational state.** An experience is a self-model memory of type `experience`
+  (kind, `work_id`, intensity, significance), written via
+  `TripleMemoryStore.record_experience`. It reuses the ordinary evidence/decay/
+  dormancy/supersession machinery, so isolated events fade and repeated ones
+  persist - but it is never a `self_fact`/`self_preference`, so one experience
+  can never redefine Astra's personality (that stays gated on repeated
+  evidence). Recording an experience also nudges the *temporary* affect state in
+  `astra/affect.py`, persisted in one self record tagged `experiential_affect`
+  and kept out of generic retrieval. Affect components decay toward neutral
+  (0.0), are surfaced by their own prompt block only when non-neutral, and
+  change *processing* (retrieval breadth) rather than wording. `affect.py` and
+  `relational.py` share accumulator mechanics on purpose but are deliberately
+  NOT merged: a book can absorb Astra without changing how she feels about Roum,
+  and vice versa. Experiences and affect reach the prompt only as Astra's own
+  history/state, never mislabelled as facts about Roum or tentative inferences.
+  Adding an affect dimension without a concrete behavioural consumer is
+  discouraged; uncertainty belongs to the question system, not a scalar here.

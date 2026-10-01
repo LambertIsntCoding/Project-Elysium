@@ -7,6 +7,7 @@ import requests
 import yaml
 
 from . import elysium as _elysium
+from . import affect
 from . import relational
 from .elysium import (  # noqa: F401 - re-exported for import compatibility
     CommandExtractor,
@@ -514,6 +515,14 @@ class CompanionOrchestrator:
         # (below), so its raw backing record is kept out of generic retrieval:
         # that way the preference is stated once, and only when it is earned.
         all_rel = [m for m in all_rel if not relational.affinity_memory_filter(m)]
+        # The experiential-affect accumulator is likewise presented through its
+        # own block, so its backing record stays out of generic retrieval.
+        all_self = [m for m in all_self if not affect.affect_memory_filter(m)]
+        # Experiences are Astra's own history, not facts about Roum nor
+        # inferences about him. They get a dedicated block rather than being
+        # mislabelled under FACTUAL CONTEXT / TENTATIVE INFERENCES.
+        recent_experiences = self._recent_experiences(all_self)
+        all_self = [m for m in all_self if m.get("type") != "experience"]
         everything = all_roum + all_self + all_rel
 
         # 2. Governing memories: always applied, regardless of the query words.
@@ -536,11 +545,15 @@ class CompanionOrchestrator:
             BehavioralAdaptationCompiler.compile_adaptation(m) for m in adaptation_memories
         ]
 
-        # 6. Contextual retrieval: relevance-filtered, strength-weighted.
+        # 6. Contextual retrieval: relevance-filtered, strength-weighted. The
+        #    current affective condition widens (or narrows) the breadth, so
+        #    affect changes *processing*, not just wording.
+        affect_state = self._affect_state()
+        breadth = affect.retrieval_breadth(affect_state, 4)
         is_behavioral = BehavioralAdaptationCompiler.is_behavioral_memory
         pinned = governing_ids | {m.get("id") for m in current_state}
         retrieve = DeterministicLexicalRetriever.retrieve
-        retrieved_roum = retrieve(user_input, [m for m in all_roum if not is_behavioral(m)], top_k=4)
+        retrieved_roum = retrieve(user_input, [m for m in all_roum if not is_behavioral(m)], top_k=breadth)
         retrieved_self = retrieve(user_input, [m for m in all_self if not is_behavioral(m)], top_k=3)
         retrieved_rel = retrieve(user_input, [m for m in all_rel if not is_behavioral(m)], top_k=3)
 
@@ -566,6 +579,8 @@ class CompanionOrchestrator:
 
         self._append_clock(parts)
         self._append_relationship_boundaries(parts, boundaries)
+        self._append_affect(parts, affect_state)
+        self._append_experiences(parts, recent_experiences)
         self._append_current_state(parts, current_state)
         self._append_governing(parts, governing, total_governing)
         self._append_adaptations(parts, active_adaptations)
@@ -604,7 +619,7 @@ class CompanionOrchestrator:
 
         diagnostics = self._build_diagnostics(
             user_input, everything, governing, current_state, boundaries,
-            retrieved_roum, retrieved_self, retrieved_rel, pinned,
+            retrieved_roum, retrieved_self, retrieved_rel, pinned, recent_experiences,
         )
         return "\n".join(parts), diagnostics
 
@@ -651,6 +666,45 @@ class CompanionOrchestrator:
         if block:
             parts.append("\n" + block)
 
+    def _affect_state(self) -> Dict[str, Any]:
+        """Astra's current experiential affect, read from the self model."""
+        getter = getattr(self.store, "get_memories", None)
+        memories = getter("self", status=None) if callable(getter) else []
+        return affect.load_state_from_memories(memories)
+
+    def affect_diagnostics(self) -> Dict[str, Any]:
+        """The current condition as diagnostics (temporary, never an instruction)."""
+        return affect.diagnostics(self._affect_state())
+
+    def _append_affect(self, parts: List[str], state: Dict[str, Any]) -> None:
+        """Inject the current condition, and only when it is not neutral."""
+        block = affect.prompt_block(state)
+        if block:
+            parts.append("\n" + block)
+
+    @staticmethod
+    def _recent_experiences(all_self: List[Dict[str, Any]], limit: int = 4) -> List[Dict[str, Any]]:
+        """The newest experience records, for Astra's own recent-history block."""
+        experiences = [m for m in all_self if m.get("type") == "experience" and m.get("content")]
+        experiences.sort(key=lambda m: str(m.get("timestamp") or ""), reverse=True)
+        return experiences[:limit]
+
+    def _append_experiences(self, parts: List[str], experiences: List[Dict[str, Any]]) -> None:
+        """Astra's recent experiences, as grounded context - never as facts about Roum."""
+        if not experiences:
+            return
+        parts.append("\n=== ASTRA'S RECENT EXPERIENCES (HER OWN HISTORY) ===")
+        parts.append(
+            "Things Astra has actually done or encountered. These are her own "
+            "history, not claims about Roum; draw on them only where they are "
+            "relevant."
+        )
+        for mem in experiences:
+            kind = _clean_text(mem.get("experience_kind")) or "experience"
+            work = _clean_text(mem.get("work_id"))
+            suffix = f" (re: {work})" if work else ""
+            parts.append(f"- [{kind}] {_clean_text(mem.get('content'))}{suffix}")
+
     def _append_current_state(self, parts: List[str], current_state: List[Dict[str, Any]]) -> None:
         rows = [
             (str(m.get("slot")), _clean_text(m.get("content")))
@@ -688,7 +742,7 @@ class CompanionOrchestrator:
         self, user_input: str, everything: List[Dict[str, Any]],
         governing: List[Dict[str, Any]], current_state: List[Dict[str, Any]],
         boundaries: List[str], retrieved_roum, retrieved_self, retrieved_rel,
-        pinned: set,
+        pinned: set, recent_experiences: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
         candidates = DeterministicLexicalRetriever.diagnose(user_input, everything)
         retrieved_ids = {
@@ -707,6 +761,8 @@ class CompanionOrchestrator:
             "current_state_slots": {m.get("slot"): _clean_text(m.get("content")) for m in current_state},
             "boundaries": boundaries,
             "relational_affinity": self.affinity_diagnostics(),
+            "experiential_affect": self.affect_diagnostics(),
+            "experience_ids": [m.get("id") for m in recent_experiences],
             "retrieved_ids": sorted(i for i in retrieved_ids if i),
             "injected_ids": sorted(i for i in injected_ids if i),
             "omitted_ids": sorted(

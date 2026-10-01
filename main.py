@@ -34,6 +34,7 @@ from astra.memory import (
     memory_utility,
 )
 from astra.orchestrator import CompanionOrchestrator
+from astra import affect
 from astra import relational
 
 # Phrases that indicate the user is *asking* to register a command. Kept
@@ -58,6 +59,8 @@ HELP_TEXT = """
  /contradictions    : Show memories that were weakened or superseded
  /reconcile         : Link same-subject contradictions that were never resolved
  /relationship      : Astra's accumulated Roum-specific command-affinity state
+ /affect            : Astra's current experiential affect (temporary, not memory)
+ /experiences       : List stored experiences (what she has actually done or met)
  /dormant           : Show stale memories that have gone dormant
  /stats             : Memory health summary (counts, types, utility)
  /timeline [gran] [target] : Memory counts by date; gran = month (default), day, year
@@ -279,6 +282,10 @@ class ChatSession:
             self._reconcile_contradictions()
         elif command == "/relationship":
             self._display_relationship()
+        elif command == "/affect":
+            self._display_affect()
+        elif command == "/experiences":
+            self._display_experiences()
         elif command == "/dormant":
             self._display_dormant()
         elif command == "/stats":
@@ -486,6 +493,43 @@ class ChatSession:
             if other["observations"] or other["command_affinity"]:
                 self._emit("")
                 self._emit(relational.format_diagnostics(other, subject))
+
+    def _display_affect(self) -> None:
+        """Astra's current experiential condition, and why it last moved.
+
+        Distinct from /relationship on purpose: this is temporary experiential
+        state, not the durable Roum-specific preference.
+        """
+        getter = getattr(self.orchestrator.store, "get_memories", None)
+        memories = getter("self", status=None) if callable(getter) else []
+        state = affect.load_state_from_memories(memories)
+        diag = affect.diagnostics(state)
+        self._emit("\n=== ASTRA'S CURRENT CONDITION (TEMPORARY) ===")
+        for name in affect.AFFECT_COMPONENTS:
+            self._emit(f"  {name.replace('_', ' ').title()}: {diag[name]}")
+        if diag["neutral"]:
+            self._emit("  (neutral - no particular condition right now)")
+        counts = diag.get("event_counts") or {}
+        if counts:
+            summary = ", ".join(f"{k} x{v}" for k, v in sorted(counts.items()))
+            self._emit(f"  From experiences: {summary}")
+        if diag.get("reason"):
+            self._emit(f"  Last change: {diag['reason']}")
+
+    def _display_experiences(self) -> None:
+        """The stored experience records - what Astra actually did or met."""
+        getter = getattr(self.orchestrator.store, "get_experiences", None)
+        experiences = getter(status=None) if callable(getter) else []
+        self._emit(f"\n=== EXPERIENCES ({len(experiences)}) ===")
+        if not experiences:
+            self._emit("  (None recorded yet)")
+            return
+        for mem in experiences:
+            kind = mem.get("experience_kind") or "experience"
+            work = mem.get("work_id")
+            suffix = f" [work: {work}]" if work else ""
+            self._emit(f"  {mem.get('timestamp', '')[:19]} | {kind}{suffix} | {mem.get('status')}")
+            self._emit(f"    {mem.get('content')}")
 
     def _display_dormant(self) -> None:
         """Stale, low-value memories - readable and retrievable, but not governing."""
