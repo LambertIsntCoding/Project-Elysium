@@ -20,8 +20,6 @@
     "originating_turn": 1,
     "related_memory_ids": [],
     "superseded_by": "mem_20260930_051047_258681",
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.478,
     "contradiction_count": 1,
     "contradicts": [
@@ -49,9 +47,6 @@
     "originating_conversation": "conv_20260930_050518",
     "originating_turn": 2,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7549
   },
   {
@@ -75,9 +70,6 @@
     "originating_conversation": "conv_20260930_050518",
     "originating_turn": 2,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8021
   },
   {
@@ -100,9 +92,6 @@
     "originating_conversation": "conv_20260930_050518",
     "originating_turn": 2,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.6605
   },
   {
@@ -125,9 +114,7 @@
     "originating_conversation": "conv_20260930_050518",
     "originating_turn": 2,
     "related_memory_ids": [],
-    "superseded_by": null,
     "supersedes": "mem_20260930_050649_537837",
-    "supersession_reason": null,
     "effective_strength": 0.8021
   },
   {
@@ -150,9 +137,6 @@
     "originating_conversation": "conv_20260930_050518",
     "originating_turn": 3,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7077
   },
   {
@@ -175,9 +159,6 @@
     "originating_conversation": "conv_20260930_050518",
     "originating_turn": 3,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7077
   },
   {
@@ -200,9 +181,6 @@
     "originating_conversation": "conv_20260930_050518",
     "originating_turn": 3,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.6605
   },
   {
@@ -226,9 +204,6 @@
     "originating_conversation": "conv_20260930_050518",
     "originating_turn": 4,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.6606
   },
   {
@@ -249,9 +224,6 @@
     "originating_conversation": "conv_20260930_050518",
     "originating_turn": 4,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7077
   },
   {
@@ -275,9 +247,6 @@
     "originating_conversation": "conv_20260930_050518",
     "originating_turn": 4,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.1789
   },
   {
@@ -301,9 +270,6 @@
     "originating_conversation": "conv_20260930_051432",
     "originating_turn": 1,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8021
   },
   {
@@ -326,9 +292,6 @@
     "originating_conversation": "conv_20260930_051432",
     "originating_turn": 2,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8021
   },
   {
@@ -349,9 +312,6 @@
     "originating_conversation": "conv_20260930_051432",
     "originating_turn": 2,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.6606
   },
   {
@@ -372,9 +332,6 @@
     "originating_conversation": "conv_20260930_051432",
     "originating_turn": 2,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8021
   },
   {
@@ -398,9 +355,6 @@
     "originating_conversation": "conv_20260930_052438",
     "originating_turn": 3,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.3303
   },
   {
@@ -423,9 +377,6 @@
     "originating_conversation": "conv_20260930_052438",
     "originating_turn": 4,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8022
   },
   {
@@ -447,9 +398,6 @@
     "originating_conversation": "conv_20260930_052438",
     "originating_turn": 4,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8022
   },
   {
@@ -471,9 +419,6 @@
     "originating_conversation": "conv_20260930_052438",
     "originating_turn": 4,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.519
   },
   {
@@ -497,9 +442,6 @@
     "originating_conversation": "conv_20260930_052438",
     "originating_turn": 5,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.6606
   },
   {
@@ -521,9 +463,6 @@
     "originating_conversation": "conv_20260930_052438",
     "originating_turn": 6,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.755
   },
   {
@@ -545,9 +484,6 @@
     "originating_conversation": "conv_20260930_052438",
     "originating_turn": 7,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8022
   },
   {
@@ -569,9 +505,6 @@
     "originating_conversation": "conv_20260930_052438",
     "originating_turn": 7,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8022
   },
   {
@@ -594,9 +527,6 @@
     "originating_conversation": "conv_20260930_052438",
     "originating_turn": 9,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8022
   },
   {
@@ -617,9 +547,6 @@
     "originating_conversation": "conv_20260930_052438",
     "originating_turn": 9,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8022
   },
   {
@@ -642,9 +569,6 @@
     "originating_conversation": "conv_20260930_052438",
     "originating_turn": 9,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8022
   },
   {
@@ -667,9 +591,6 @@
     "originating_conversation": "conv_20260930_052438",
     "originating_turn": 9,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8022
   },
   {
@@ -692,9 +613,6 @@
     "originating_conversation": "conv_20260930_052438",
     "originating_turn": 9,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.6607
   },
   {
@@ -716,9 +634,6 @@
     "originating_conversation": "conv_20260930_052438",
     "originating_turn": 10,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7551
   },
   {
@@ -740,9 +655,6 @@
     "originating_conversation": "conv_20260930_052438",
     "originating_turn": 10,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8022
   },
   {
@@ -764,9 +676,6 @@
     "originating_conversation": "conv_20260930_052438",
     "originating_turn": 10,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.6607
   },
   {
@@ -788,9 +697,6 @@
     "originating_conversation": "conv_20260930_052438",
     "originating_turn": 10,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.5191
   },
   {
@@ -812,9 +718,6 @@
     "originating_conversation": "conv_20260930_052438",
     "originating_turn": 11,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8023
   },
   {
@@ -836,9 +739,6 @@
     "originating_conversation": "conv_20260930_052438",
     "originating_turn": 11,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8023
   },
   {
@@ -860,9 +760,6 @@
     "originating_conversation": "conv_20260930_052438",
     "originating_turn": 11,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.6607
   },
   {
@@ -884,9 +781,6 @@
     "originating_conversation": "conv_20260930_052438",
     "originating_turn": 11,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7551
   },
   {
@@ -910,9 +804,6 @@
     "originating_conversation": "conv_20260930_052438",
     "originating_turn": 12,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8023
   },
   {
@@ -934,9 +825,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 1,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.3581
   },
   {
@@ -959,9 +847,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 2,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.6608
   },
   {
@@ -984,9 +869,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 3,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7552
   },
   {
@@ -1008,9 +890,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 4,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7552
   },
   {
@@ -1033,9 +912,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 7,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8024
   },
   {
@@ -1057,9 +933,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 8,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8024
   },
   {
@@ -1082,9 +955,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 9,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8024
   },
   {
@@ -1108,9 +978,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 10,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.708
   },
   {
@@ -1132,9 +999,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 11,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8024
   },
   {
@@ -1156,9 +1020,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 11,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8024
   },
   {
@@ -1179,9 +1040,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 11,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8024
   },
   {
@@ -1203,9 +1061,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 11,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8024
   },
   {
@@ -1227,9 +1082,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 13,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.708
   },
   {
@@ -1251,9 +1103,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 14,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7552
   },
   {
@@ -1275,9 +1124,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 15,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.6608
   },
   {
@@ -1300,9 +1146,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 16,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.6608
   },
   {
@@ -1324,9 +1167,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 17,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.5664
   },
   {
@@ -1348,9 +1188,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 18,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8024
   },
   {
@@ -1372,9 +1209,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 19,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.6608
   },
   {
@@ -1396,9 +1230,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 19,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.6608
   },
   {
@@ -1420,9 +1251,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 20,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7552
   },
   {
@@ -1444,9 +1272,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 21,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7552
   },
   {
@@ -1468,9 +1293,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 21,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.2126
   },
   {
@@ -1492,9 +1314,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 21,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.4029
   },
   {
@@ -1517,9 +1336,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 22,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8024
   },
   {
@@ -1542,9 +1358,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 23,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8024
   },
   {
@@ -1566,9 +1379,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 25,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7552
   },
   {
@@ -1590,9 +1400,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 26,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7552
   },
   {
@@ -1615,9 +1422,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 27,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7552
   },
   {
@@ -1640,9 +1444,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 28,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.3304
   },
   {
@@ -1664,9 +1465,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 29,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7552
   },
   {
@@ -1689,9 +1487,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 29,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7552
   },
   {
@@ -1713,9 +1508,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 33,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7552
   },
   {
@@ -1738,9 +1530,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 35,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8024
   },
   {
@@ -1764,9 +1553,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 37,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7552
   },
   {
@@ -1789,9 +1575,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 39,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8024
   },
   {
@@ -1814,9 +1597,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 40,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8024
   },
   {
@@ -1838,9 +1618,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 42,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8025
   },
   {
@@ -1862,9 +1639,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 43,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.5664
   },
   {
@@ -1886,9 +1660,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 44,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.6608
   },
   {
@@ -1911,9 +1682,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 45,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.3304
   },
   {
@@ -1935,9 +1703,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 46,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7553
   },
   {
@@ -1959,9 +1724,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 47,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8025
   },
   {
@@ -1982,9 +1744,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 48,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8025
   },
   {
@@ -2007,9 +1766,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 49,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7081
   },
   {
@@ -2032,9 +1788,6 @@
     "originating_conversation": "conv_20260930_060815",
     "originating_turn": 50,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7081
   },
   {
@@ -2057,9 +1810,6 @@
     "originating_conversation": "conv_20260930_063942",
     "originating_turn": 1,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.6609
   },
   {
@@ -2082,9 +1832,6 @@
     "originating_conversation": "conv_20260930_063942",
     "originating_turn": 3,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.2015
   },
   {
@@ -2105,9 +1852,6 @@
     "originating_conversation": "conv_20260930_063942",
     "originating_turn": 5,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7553
   },
   {
@@ -2129,9 +1873,6 @@
     "originating_conversation": "conv_20260930_063942",
     "originating_turn": 5,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7553
   },
   {
@@ -2153,9 +1894,6 @@
     "originating_conversation": "conv_20260930_063942",
     "originating_turn": 5,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.403
   },
   {
@@ -2177,9 +1915,6 @@
     "originating_conversation": "conv_20260930_063942",
     "originating_turn": 5,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.1903
   },
   {
@@ -2201,9 +1936,6 @@
     "originating_conversation": "conv_20260930_063942",
     "originating_turn": 5,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.3838
   },
   {
@@ -2225,9 +1957,6 @@
     "originating_conversation": "conv_20260930_064659",
     "originating_turn": 1,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.6609
   },
   {
@@ -2250,9 +1979,6 @@
     "originating_conversation": "conv_20260930_064659",
     "originating_turn": 2,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.6609
   },
   {
@@ -2274,9 +2000,6 @@
     "originating_conversation": "conv_20260930_064659",
     "originating_turn": 5,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.5665
   },
   {
@@ -2298,9 +2021,6 @@
     "originating_conversation": "conv_20260930_064659",
     "originating_turn": 5,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.3582
   },
   {
@@ -2322,9 +2042,6 @@
     "originating_conversation": "conv_20260930_064659",
     "originating_turn": 5,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.1567
   },
   {
@@ -2348,9 +2065,6 @@
     "originating_conversation": "conv_20260930_064659",
     "originating_turn": 6,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.1679
   },
   {
@@ -2372,9 +2086,6 @@
     "originating_conversation": "conv_20260930_151143",
     "originating_turn": 1,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.6629
   },
   {
@@ -2396,9 +2107,6 @@
     "originating_conversation": "conv_20260930_151143",
     "originating_turn": 1,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.1934
   },
   {
@@ -2420,9 +2128,6 @@
     "originating_conversation": "conv_20260930_151143",
     "originating_turn": 2,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.6629
   },
   {
@@ -2444,9 +2149,6 @@
     "originating_conversation": "conv_20260930_151143",
     "originating_turn": 2,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.1805
   },
   {
@@ -2468,9 +2170,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 2,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.2841
   },
   {
@@ -2492,9 +2191,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 3,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.2257
   },
   {
@@ -2516,9 +2212,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 3,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.663
   },
   {
@@ -2541,9 +2234,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 4,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.805
   },
   {
@@ -2565,9 +2255,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 5,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.2257
   },
   {
@@ -2591,9 +2278,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 6,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.4063
   },
   {
@@ -2615,9 +2299,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 7,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7577
   },
   {
@@ -2640,9 +2321,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 7,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8051
   },
   {
@@ -2663,9 +2341,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 7,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.3015
   },
   {
@@ -2687,9 +2362,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 8,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8051
   },
   {
@@ -2713,9 +2385,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 9,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7104
   },
   {
@@ -2738,9 +2407,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 9,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8051
   },
   {
@@ -2762,9 +2428,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 10,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8051
   },
   {
@@ -2786,9 +2449,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 10,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8051
   },
   {
@@ -2810,9 +2470,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 12,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.6631
   },
   {
@@ -2834,9 +2491,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 12,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.2145
   },
   {
@@ -2860,9 +2514,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 15,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8052
   },
   {
@@ -2884,9 +2535,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 15,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7578
   },
   {
@@ -2908,9 +2556,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 15,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.3315
   },
   {
@@ -2932,9 +2577,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 16,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7105
   },
   {
@@ -2956,9 +2598,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 16,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7105
   },
   {
@@ -2981,9 +2620,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 17,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8052
   },
   {
@@ -3005,9 +2641,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 18,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8052
   },
   {
@@ -3029,9 +2662,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 18,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.6631
   },
   {
@@ -3054,9 +2684,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 19,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8052
   },
   {
@@ -3079,9 +2706,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 19,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8052
   },
   {
@@ -3105,9 +2729,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 21,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8053
   },
   {
@@ -3130,9 +2751,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 22,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7105
   },
   {
@@ -3154,9 +2772,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 22,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8053
   },
   {
@@ -3180,9 +2795,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 23,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.8053
   },
   {
@@ -3203,9 +2815,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 23,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7579
   },
   {
@@ -3226,9 +2835,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 24,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.758
   },
   {
@@ -3249,9 +2855,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 24,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.3841
   },
   {
@@ -3273,9 +2876,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 25,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.6632
   },
   {
@@ -3297,9 +2897,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 25,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.1921
   },
   {
@@ -3322,9 +2919,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 26,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.758
   },
   {
@@ -3346,9 +2940,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 26,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.4067
   },
   {
@@ -3371,9 +2962,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 27,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.758
   },
   {
@@ -3395,9 +2983,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 27,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.1695
   },
   {
@@ -3421,9 +3006,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 27,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.1808
   },
   {
@@ -3446,9 +3028,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 28,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.4067
   },
   {
@@ -3471,9 +3050,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 32,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7106
   },
   {
@@ -3495,9 +3071,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 33,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.3616
   },
   {
@@ -3521,9 +3094,6 @@
     "originating_conversation": "conv_20260930_163818",
     "originating_turn": 36,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7107
   },
   {
@@ -3544,9 +3114,6 @@
     "originating_conversation": "conv_20260930_180821",
     "originating_turn": 3,
     "related_memory_ids": [],
-    "superseded_by": null,
-    "supersedes": null,
-    "supersession_reason": null,
     "effective_strength": 0.7581
   },
   {
@@ -3563,8 +3130,6 @@
     "use_count": 0,
     "contradiction_count": 0,
     "contradicts": [],
-    "supersedes": null,
-    "superseded_by": null,
     "source_type": 4,
     "reinforcement_count": 1,
     "last_reinforced": "2026-09-30T22:34:59.388950+00:00",
@@ -3594,8 +3159,6 @@
     "use_count": 0,
     "contradiction_count": 0,
     "contradicts": [],
-    "supersedes": null,
-    "superseded_by": null,
     "source_type": 4,
     "reinforcement_count": 1,
     "last_reinforced": "2026-09-30T22:53:03.832799+00:00",
@@ -3625,8 +3188,6 @@
     "use_count": 0,
     "contradiction_count": 0,
     "contradicts": [],
-    "supersedes": null,
-    "superseded_by": null,
     "source_type": 4,
     "reinforcement_count": 1,
     "last_reinforced": "2026-09-30T22:59:20.549858+00:00",
@@ -3657,8 +3218,6 @@
     "use_count": 0,
     "contradiction_count": 0,
     "contradicts": [],
-    "supersedes": null,
-    "superseded_by": null,
     "source_type": 4,
     "reinforcement_count": 1,
     "last_reinforced": "2026-09-30T23:02:49.232783+00:00",
@@ -3688,8 +3247,6 @@
     "use_count": 0,
     "contradiction_count": 0,
     "contradicts": [],
-    "supersedes": null,
-    "superseded_by": null,
     "source_type": 4,
     "reinforcement_count": 1,
     "last_reinforced": "2026-09-30T23:12:51.474891+00:00",
@@ -3720,8 +3277,6 @@
     "use_count": 0,
     "contradiction_count": 0,
     "contradicts": [],
-    "supersedes": null,
-    "superseded_by": null,
     "source_type": 2,
     "reinforcement_count": 1,
     "last_reinforced": "2026-09-30T23:12:51.494099+00:00",
@@ -3752,8 +3307,6 @@
     "use_count": 0,
     "contradiction_count": 0,
     "contradicts": [],
-    "supersedes": null,
-    "superseded_by": null,
     "source_type": 4,
     "reinforcement_count": 1,
     "last_reinforced": "2026-09-30T23:14:07.373476+00:00",
@@ -3785,8 +3338,6 @@
     "use_count": 0,
     "contradiction_count": 0,
     "contradicts": [],
-    "supersedes": null,
-    "superseded_by": null,
     "source_type": 4,
     "reinforcement_count": 1,
     "last_reinforced": "2026-09-30T23:14:37.184312+00:00",
@@ -3818,8 +3369,6 @@
     "use_count": 0,
     "contradiction_count": 0,
     "contradicts": [],
-    "supersedes": null,
-    "superseded_by": null,
     "source_type": 2,
     "reinforcement_count": 1,
     "last_reinforced": "2026-09-30T23:14:37.202648+00:00",
@@ -3850,8 +3399,6 @@
     "use_count": 0,
     "contradiction_count": 0,
     "contradicts": [],
-    "supersedes": null,
-    "superseded_by": null,
     "source_type": 4,
     "reinforcement_count": 1,
     "last_reinforced": "2026-09-30T23:23:41.762987+00:00",
@@ -3882,8 +3429,6 @@
     "use_count": 0,
     "contradiction_count": 0,
     "contradicts": [],
-    "supersedes": null,
-    "superseded_by": null,
     "source_type": 2,
     "reinforcement_count": 1,
     "last_reinforced": "2026-10-01T00:54:54.201161+00:00",
@@ -3913,8 +3458,6 @@
     "use_count": 0,
     "contradiction_count": 0,
     "contradicts": [],
-    "supersedes": null,
-    "superseded_by": null,
     "source_type": 4,
     "reinforcement_count": 1,
     "last_reinforced": "2026-10-01T00:55:25.042993+00:00",
@@ -3942,8 +3485,6 @@
     "use_count": 0,
     "contradiction_count": 0,
     "contradicts": [],
-    "supersedes": null,
-    "superseded_by": null,
     "source_type": 2,
     "reinforcement_count": 1,
     "last_reinforced": "2026-10-01T00:55:25.060793+00:00",
@@ -3974,8 +3515,6 @@
     "use_count": 0,
     "contradiction_count": 0,
     "contradicts": [],
-    "supersedes": null,
-    "superseded_by": null,
     "source_type": 2,
     "reinforcement_count": 1,
     "last_reinforced": "2026-10-01T00:56:22.240786+00:00",
@@ -4007,8 +3546,6 @@
     "use_count": 0,
     "contradiction_count": 0,
     "contradicts": [],
-    "supersedes": null,
-    "superseded_by": null,
     "source_type": 4,
     "reinforcement_count": 1,
     "last_reinforced": "2026-10-01T01:08:41.920261+00:00",
@@ -4039,8 +3576,6 @@
     "use_count": 0,
     "contradiction_count": 0,
     "contradicts": [],
-    "supersedes": null,
-    "superseded_by": null,
     "source_type": 4,
     "reinforcement_count": 1,
     "last_reinforced": "2026-10-01T01:49:51.581304+00:00",
@@ -4071,8 +3606,6 @@
     "use_count": 0,
     "contradiction_count": 0,
     "contradicts": [],
-    "supersedes": null,
-    "superseded_by": null,
     "source_type": 4,
     "reinforcement_count": 1,
     "last_reinforced": "2026-10-01T01:59:56.743837+00:00",
@@ -4104,8 +3637,6 @@
     "use_count": 0,
     "contradiction_count": 0,
     "contradicts": [],
-    "supersedes": null,
-    "superseded_by": null,
     "source_type": 4,
     "reinforcement_count": 1,
     "last_reinforced": "2026-10-01T02:02:09.161696+00:00",
@@ -4135,8 +3666,6 @@
     "use_count": 0,
     "contradiction_count": 0,
     "contradicts": [],
-    "supersedes": null,
-    "superseded_by": null,
     "source_type": 2,
     "reinforcement_count": 1,
     "last_reinforced": "2026-10-01T02:02:09.179612+00:00",
@@ -4167,8 +3696,6 @@
     "use_count": 0,
     "contradiction_count": 0,
     "contradicts": [],
-    "supersedes": null,
-    "superseded_by": null,
     "source_type": 4,
     "reinforcement_count": 1,
     "last_reinforced": "2026-10-01T02:08:55.920441+00:00",
@@ -4200,8 +3727,6 @@
     "use_count": 0,
     "contradiction_count": 0,
     "contradicts": [],
-    "supersedes": null,
-    "superseded_by": null,
     "source_type": 4,
     "reinforcement_count": 1,
     "last_reinforced": "2026-10-01T02:14:10.388236+00:00",
@@ -4230,8 +3755,6 @@
     "use_count": 0,
     "contradiction_count": 0,
     "contradicts": [],
-    "supersedes": null,
-    "superseded_by": null,
     "source_type": 4,
     "reinforcement_count": 1,
     "last_reinforced": "2026-10-01T02:14:10.407547+00:00",
@@ -4260,8 +3783,6 @@
     "use_count": 0,
     "contradiction_count": 0,
     "contradicts": [],
-    "supersedes": null,
-    "superseded_by": null,
     "source_type": 4,
     "reinforcement_count": 1,
     "last_reinforced": "2026-10-01T02:14:10.417924+00:00",
@@ -4291,8 +3812,6 @@
     "use_count": 0,
     "contradiction_count": 0,
     "contradicts": [],
-    "supersedes": null,
-    "superseded_by": null,
     "source_type": 4,
     "reinforcement_count": 1,
     "last_reinforced": "2026-10-01T02:14:10.427884+00:00",

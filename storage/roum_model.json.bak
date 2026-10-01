@@ -4276,5 +4276,35 @@
     ],
     "conversation_id": "conv_20261001_005138",
     "turn": 12
+  },
+  {
+    "id": "mem_1790820850427_8eabdf",
+    "target_model": "roum",
+    "content": "Short and sweet it is.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "status": "active",
+    "timestamp": "2026-10-01T02:14:10.427884+00:00",
+    "confidence": 1.0,
+    "created_at": "2026-10-01T02:14:10.427884+00:00",
+    "last_used": "2026-10-01T02:14:10.427884+00:00",
+    "use_count": 0,
+    "contradiction_count": 0,
+    "contradicts": [],
+    "supersedes": null,
+    "superseded_by": null,
+    "source_type": 4,
+    "reinforcement_count": 1,
+    "last_reinforced": "2026-10-01T02:14:10.427884+00:00",
+    "keywords": [
+      "short",
+      "sweet"
+    ],
+    "tags": [
+      "communication_preference",
+      "style"
+    ],
+    "conversation_id": "conv_20261001_005138",
+    "turn": 12
   }
 ]
