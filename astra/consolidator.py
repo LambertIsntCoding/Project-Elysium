@@ -26,6 +26,7 @@ from .memory import (
     VALID_MEMORY_TYPES,
     VALID_TARGET_MODELS,
     TripleMemoryStore,
+    route_candidate_target,
     classify_candidate,
     classification_to_type,
     is_persistent_classification,
@@ -162,6 +163,13 @@ def resolve_candidate(candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     target_model, mem_type = classification_to_type(classification)
     if mem_type not in VALID_MEMORY_TYPES:
         mem_type = "uncertain_inference"
+
+    # Directives and feedback about Astra belong in the self model, not filed as
+    # facts about Roum (section 7). ``add_memory`` enforces this too, for paths
+    # that bypass consolidation.
+    target_model, mem_type = route_candidate_target(
+        classification, mem_type, target_model, content, candidate.get("tags", [])
+    )
 
     return {
         "classification": classification,

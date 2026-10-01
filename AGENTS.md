@@ -37,6 +37,25 @@ from `astra.*` in new code.
   all remain readable on disk.
 - **Only an explicit user statement or correction may supersede.** Inference
   cannot override an explicit memory.
+- **Directives about Astra are self-memories, not facts about Roum.** A sentence
+  that addresses Astra ("Astra should stop narrating her analysis") is routed to
+  the `self` model as a `self_observation`. `_routing_target` enforces this both
+  in the consolidator and in `add_memory`, so no write path can file an
+  instruction about Astra as a `roum` fact.
+- **A restatement collapses, a contradiction weakens.** `detect_restatement`
+  supersedes the older wording non-destructively, and is gated on
+  `detect_contradiction` returning `None`, so a genuine polarity reversal still
+  takes the "weakened" path. It requires a shared `_FEEDBACK_TAGS` tag (a shared
+  topic keyword only corroborates) plus real content overlap; keep the
+  `len(shared) >= 3/4` guards, because shared framing ("designated subject must",
+  "currently experiencing") is not a shared subject. Prefer missing a collapse
+  over superseding two genuinely different traits.
+- **Sourced and unsourced material are separated in the prompt.** Only
+  `SOURCED_SOURCES` (`is_sourced`) appear under `FACTUAL CONTEXT`; everything else
+  goes under `TENTATIVE INFERENCES (UNVERIFIED - NOT STATED BY ROUM)`.
+- **Prompt building is read-only.** Retrieval is recorded as *use* by
+  `CompanionOrchestrator.note_retrieval` on the live turn path, never inside
+  `build_prompt`, because the persistence tests assert byte-for-byte stability.
 - **`storage/*.json` is not modified by tests** (persistence tests assert
   byte-for-byte stability).
 - **Elysium is not a personality.** It is an application-level command route;

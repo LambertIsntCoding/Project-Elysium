@@ -222,6 +222,52 @@ class TestRuntimeInjection(_MemoryCase):
 
 
 # ---------------------------------------------------------------------
+# 8b. Sourced material is separated from unsourced inference
+# ---------------------------------------------------------------------
+class TestSourcedVsUnsourced(_MemoryCase):
+    def test_inference_is_not_presented_as_a_user_fact(self):
+        self.store.add_memory("roum", "Roum probably enjoys jazz music.",
+                              "uncertain_inference", "ai_inference", keywords=["jazz"])
+        self.store.add_memory("roum", "Roum's favorite game is Sonic Adventure.",
+                              "explicit_fact", "explicit_user_statement",
+                              keywords=["Sonic Adventure"])
+        prompt = self.prompt("Tell me about jazz and Sonic Adventure")
+        tentative_at = prompt.index("=== TENTATIVE INFERENCES")
+        style_at = prompt.index("=== STYLE EXAMPLES")
+        tentative = prompt[tentative_at:style_at]
+        factual = prompt[prompt.index("=== FACTUAL CONTEXT"):tentative_at]
+        # The explicit fact is stated plainly; the inference is marked provisional.
+        self.assertIn("Sonic Adventure", factual)
+        self.assertNotIn("Sonic Adventure", tentative)
+        self.assertIn("jazz", tentative)
+        self.assertIn("NOT STATED BY ROUM", prompt)
+
+    def test_unsourced_section_is_omitted_when_everything_is_sourced(self):
+        self.store.add_memory("roum", "Roum's favorite game is Sonic Adventure.",
+                              "explicit_fact", "explicit_user_statement",
+                              keywords=["Sonic Adventure"])
+        prompt = self.prompt("Sonic Adventure")
+        self.assertNotIn("TENTATIVE INFERENCES", prompt)
+
+    def test_note_retrieval_records_use(self):
+        mid = self.store.add_memory("roum", "Roum's favorite game is Sonic Adventure.",
+                                    "explicit_fact", "explicit_user_statement",
+                                    keywords=["Sonic Adventure"])
+        _, diag = self.orch.build_prompt_with_diagnostics("Sonic Adventure", [])
+        self.orch.note_retrieval(diag)
+        self.assertGreaterEqual(self.store.get_memory("roum", mid)["use_count"], 1)
+        self.assertIsNotNone(self.store.get_memory("roum", mid)["last_used"])
+
+    def test_build_prompt_stays_read_only(self):
+        mid = self.store.add_memory("roum", "Roum's favorite game is Sonic Adventure.",
+                                    "explicit_fact", "explicit_user_statement",
+                                    keywords=["Sonic Adventure"])
+        self.orch.build_prompt("Sonic Adventure", [])
+        # Prompt building must not touch the store; only note_retrieval does.
+        self.assertEqual(self.store.get_memory("roum", mid)["use_count"], 0)
+
+
+# ---------------------------------------------------------------------
 # 9. Governing memories available with zero lexical overlap
 # ---------------------------------------------------------------------
 class TestGoverningZeroOverlap(_MemoryCase):

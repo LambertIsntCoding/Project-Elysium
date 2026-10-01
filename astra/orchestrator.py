@@ -20,6 +20,7 @@ from .memory import (
     TripleMemoryStore,
     effective_strength,
     is_governing,
+    is_sourced,
     memory_importance,
     select_governing,
     source_tier,
@@ -313,6 +314,28 @@ class CompanionOrchestrator:
         return True
 
     @staticmethod
+    def _sourced(memories: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [m for m in memories if is_sourced(m)]
+
+    @staticmethod
+    def _unsourced(memories: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [m for m in memories if not is_sourced(m)]
+
+    @staticmethod
+    def _append_unsourced_context(parts: List[str], memories: List[Dict[str, Any]]) -> None:
+        """Present inferred material as provisional, never as established fact."""
+        items = [t for t in (_clean_text(m.get("content")) for m in memories) if t]
+        if not items:
+            return
+        parts.append("\n=== TENTATIVE INFERENCES (UNVERIFIED - NOT STATED BY ROUM) ===")
+        parts.append(
+            "These are Astra's own guesses, not things Roum said. Treat them as "
+            "provisional: do not present them as fact, do not repeat them back as "
+            "if Roum told you, and if one matters, ask him to confirm it first."
+        )
+        parts.extend(f"  ~ {item}" for item in items)
+
+    @staticmethod
     def _append_list_section(parts: List[str], heading: str, values: Any) -> None:
         items = _clean_list(values)
         if not items:
@@ -448,6 +471,25 @@ class CompanionOrchestrator:
         prompt, _ = self.build_prompt_with_diagnostics(user_input, conversation_history)
         return prompt
 
+    def note_retrieval(self, diagnostics: Dict[str, Any]) -> None:
+        """Record which memories were actually injected as *used*.
+
+        Kept separate from ``build_prompt`` on purpose: prompt building stays
+        read-only (the persistence tests rely on that), while the live
+        conversation path calls this after a turn. Recording use is what keeps
+        ``last_used``/``use_count`` - and therefore decay, dormancy and "used
+        memories stay strong" - alive; without it every memory ages from
+        creation and nothing is ever reinforced by use.
+        """
+        recorder = getattr(self.store, "record_use", None)
+        ids = [i for i in (diagnostics.get("injected_ids") or []) if i]
+        if not callable(recorder) or not ids:
+            return
+        try:
+            recorder(ids)
+        except Exception:  # pragma: no cover - defensive: never break a turn
+            pass
+
     def build_prompt_with_diagnostics(
         self, user_input: str, conversation_history: List[Dict[str, str]]
     ) -> tuple:
@@ -524,13 +566,29 @@ class CompanionOrchestrator:
         self._append_adaptations(parts, active_adaptations)
         self._append_temporary_context(parts)
 
+        # Sourced material (things Roum actually said) is presented as fact.
+        # Unsourced material (Astra's own extraction/inference) is separated and
+        # explicitly marked, so it is never stated back to Roum as something he
+        # said. Splitting the two is what lessens the reliance on information
+        # that cannot be directly sourced.
         parts.append("\n=== FACTUAL CONTEXT ===")
         has_facts = False
-        has_facts |= self._append_facts(parts, "User Facts:", retrieved_roum)
-        has_facts |= self._append_facts(parts, "Self Facts & Observations:", retrieved_self)
-        has_facts |= self._append_facts(parts, "Relationship Context:", retrieved_rel)
-        if not has_facts:
+        has_facts |= self._append_facts(parts, "User Facts:", self._sourced(retrieved_roum))
+        has_facts |= self._append_facts(parts, "Self Facts & Observations:", self._sourced(retrieved_self))
+        has_facts |= self._append_facts(parts, "Relationship Context:", self._sourced(retrieved_rel))
+        if has_facts:
+            parts.append(
+                "These are things Roum has told you. Draw on the ones that are "
+                "relevant to what he is asking instead of answering from scratch; "
+                "weave them in naturally rather than reciting the list."
+            )
+        else:
             parts.append("No query-relevant background facts were retrieved for this turn.")
+
+        unsourced = (self._unsourced(retrieved_roum)
+                     + self._unsourced(retrieved_self)
+                     + self._unsourced(retrieved_rel))
+        self._append_unsourced_context(parts, unsourced)
 
         self._append_examples(parts, examples_data)
         self._append_command_history(parts)

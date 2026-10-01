@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from astra.elysium import ElysiumCommandHandler, ElysiumCommandRecorder, is_elysium_invocation
-from astra.memory import CommandStore, TripleMemoryStore
+from astra.memory import CommandStore, TripleMemoryStore, is_sourced, memory_utility
 from astra.orchestrator import CompanionOrchestrator
 
 # Phrases that indicate the user is *asking* to register a command. Kept
@@ -42,7 +42,8 @@ _ASTRA_LABEL = "Astra > "
 
 HELP_TEXT = """
 --- CLI COMMANDS ---
- /memories [target] : List memories with key metadata (target optional: roum, self, relationship)
+ /memories [target] : Grouped memory overview; 'all' (or no target) lists everything
+                      (target optional: roum, self, relationship, all)
  /memory <id>       : Display full record and provenance for a memory
  /search <text>     : Search memories by content, keywords, or tags
  /governing         : Show the memories that always apply
@@ -135,8 +136,16 @@ class ChatSession:
 
         # 4. Normal conversational turn.
         self.turn_counter += 1
-        prompt = self.orchestrator.build_prompt(user_input, self.history)
+        prompt, diagnostics = self.orchestrator.build_prompt_with_diagnostics(
+            user_input, self.history
+        )
         response = self.orchestrator.query_gemma(prompt)
+        # Retrieval is the only real "use" of a memory, so record it now. This
+        # keeps last_used/use_count meaningful, which is what lets decay and
+        # dormancy reflect usage instead of merely age.
+        note_retrieval = getattr(self.orchestrator, "note_retrieval", None)
+        if callable(note_retrieval):
+            note_retrieval(diagnostics)
         self._record_turn(user_input, response, consolidate=not response.startswith("[Error"))
         # Maintenance runs after the turn's memory writes, never during prompt
         # building (which must stay read-only). It is throttled internally.
@@ -184,7 +193,7 @@ class ChatSession:
         if command == "/help":
             self._emit(HELP_TEXT)
         elif command == "/memories":
-            target = parts[1].lower() if len(parts) > 1 else None
+            target = parts[1].lower() if len(parts) > 1 else "all"
             self._display_memories(target)
         elif command == "/memory":
             if len(parts) > 1:
@@ -225,27 +234,72 @@ class ChatSession:
             self._emit(f"Unknown command: {command}. Type /help for options.")
 
     def _display_memories(self, target_filter: Optional[str] = None) -> None:
-        targets = (
-            [target_filter] if target_filter in ("roum", "self", "relationship")
-            else ["roum", "self", "relationship"]
-        )
+        """Grouped overview. ``all`` (the default) covers every model.
+
+        Nothing is hidden by default: superseded and dormant records are shown,
+        but grouped and counted so the shape of the store is visible at a glance
+        instead of one undifferentiated 480-line stream.
+        """
+        if target_filter in ("roum", "self", "relationship"):
+            targets = [target_filter]
+        else:
+            targets = ["roum", "self", "relationship"]
+            if target_filter not in (None, "all"):
+                self._emit(f"Unknown target {target_filter!r}; showing all models.")
+
+        grand_total = 0
         for target in targets:
-            self._emit(f"\n=== {target.upper()} MODEL MEMORIES ===")
             memories = self.orchestrator.store.get_memories(target, status=None)
+            grand_total += len(memories)
+            self._emit(f"\n=== {target.upper()} MODEL MEMORIES ({len(memories)}) ===")
             if not memories:
                 self._emit("  (No memories found)")
                 continue
+
+            by_type: Dict[str, List[Dict[str, Any]]] = {}
             for mem in memories:
-                status = mem.get("status", "unknown")
-                if status == "superseded":
-                    status = f"SUPERSEDED by {mem.get('superseded_by')}"
-                self._emit(f" ID: {mem.get('id')} | [{mem.get('type')}] | Status: {status}")
-                self._emit(f"    Content: {mem.get('content')}")
-                self._emit(
-                    f"    Source: {mem.get('source')} | Conf: {mem.get('confidence')}"
-                    f" | Turn: {mem.get('originating_turn', '-')}"
+                by_type.setdefault(str(mem.get("type") or "unknown"), []).append(mem)
+
+            status_counts: Dict[str, int] = {}
+            for mem in memories:
+                status_counts[str(mem.get("status") or "unknown")] = (
+                    status_counts.get(str(mem.get("status") or "unknown"), 0) + 1
                 )
-                self._emit("-" * 50)
+            util_counts: Dict[str, int] = {}
+            for mem in memories:
+                util = memory_utility(mem)
+                util_counts[util] = util_counts.get(util, 0) + 1
+            sourced = sum(1 for mem in memories if is_sourced(mem))
+
+            self._emit(
+                "  by type: " + ", ".join(
+                    f"{t} x{len(v)}" for t, v in sorted(by_type.items(), key=lambda kv: -len(kv[1]))
+                )
+            )
+            self._emit(
+                "  by status: " + ", ".join(f"{k} {v}" for k, v in sorted(status_counts.items()))
+                + f"  |  utility: " + ", ".join(f"{k} {v}" for k, v in sorted(util_counts.items()))
+                + f"  |  sourced: {sourced}/{len(memories)}"
+            )
+
+            for mem_type in sorted(by_type, key=lambda t: (-len(by_type[t]), t)):
+                group = by_type[mem_type]
+                self._emit(f"\n  -- {mem_type} ({len(group)}) --")
+                for mem in group:
+                    status = mem.get("status", "unknown")
+                    if status == "superseded":
+                        status = f"SUPERSEDED by {mem.get('superseded_by')}"
+                    tag = "" if is_sourced(mem) else "  [unsourced]"
+                    self._emit(f"   ID: {mem.get('id')} | Status: {status}{tag}")
+                    self._emit(f"      Content: {mem.get('content')}")
+                    self._emit(
+                        f"      Source: {mem.get('source')} | Conf: {mem.get('confidence')}"
+                        f" | Turn: {mem.get('originating_turn', '-')}"
+                    )
+                    self._emit("  " + "-" * 48)
+
+        if len(targets) > 1:
+            self._emit(f"\n=== TOTAL: {grand_total} memories across {len(targets)} models ===")
 
     def _all_memories(self, status: Optional[str] = None):
         """Iterate ``(target, memory)`` across every model."""
