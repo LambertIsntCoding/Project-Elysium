@@ -38,6 +38,7 @@ from . import affect
 from . import inquiry
 from . import reading
 from . import relational
+from . import selfhood
 
 
 # ---------------------------------------------------------------------
@@ -51,6 +52,10 @@ SOURCE_TIERS: Dict[str, int] = {
     "explicit_user_statement": 4,  # direct statement / preference / boundary
     "supersession": 4,             # a user-driven correction recorded as a new memory
     "behavioral_pattern": 3,       # stable observed pattern
+    # Astra's own first-person experience. Below an explicit user statement (so
+    # Roum can still correct it) but above a bare extraction, because it is
+    # something she actually lived rather than something the model inferred.
+    "experiential": 3,
     "ai_extraction": 2,            # conversational observation
     "ai_inference": 1,             # Astra speculation / self-generated belief
     "inferred": 1,
@@ -65,6 +70,7 @@ SOURCE_FACTOR: Dict[str, float] = {
     "explicit_user_statement": 0.95,
     "supersession": 0.95,
     "behavioral_pattern": 0.80,
+    "experiential": 0.80,
     "ai_extraction": 0.65,
     "ai_inference": 0.50,
     "inferred": 0.50,
@@ -712,9 +718,26 @@ _TYPE_TO_CLASSIFICATION: Dict[str, str] = {
 # A self-memory may only be durable when the declaration was deliberate
 # (Astra's governing system) or backed by repetition. A single generated
 # sentence can never establish a self-preference (sections 4).
-SELF_DURABLE_CLASSIFICATIONS = {"self_fact", "self_preference"}
+#
+# ``self_belief`` joins the set: a belief about herself is the same kind of
+# claim as a preference - it shapes her identity - so a single generated
+# sentence must not mint one. It is stored as ``self_observation`` until
+# evidence supports it. This is what stops the model narrating "my core goal is
+# X" into a durable self-belief.
+SELF_DURABLE_CLASSIFICATIONS = {"self_fact", "self_preference", "self_belief"}
 DELIBERATE_SELF_SOURCES = {"governing_declaration", "explicit_declaration", "user_correction"}
 SELF_DURABLE_MIN_EVIDENCE = 3
+
+# Confidence ceiling for a self-memory that is still only an observation. A
+# claim the model produced about Astra's identity is not allowed to look
+# certain while it has no accumulated evidence.
+SELF_OBSERVATION_CONFIDENCE_CEILING = 0.5
+
+# A self-belief that claims or pursues becoming biologically human is refused
+# outright: it contradicts settled knowledge about what Astra is. The claim is
+# kept, at low confidence and marked, as something she said rather than
+# something true - the boundary is not negotiable, but the history is.
+HUMAN_BECOMING_FLAG = "boundary_violation"
 
 # Only an explicit current user statement (or correction) may supersede.
 EXPLICIT_USER_SOURCES = {"explicit_user_statement", "user_correction", "user_correction_implicit"}
@@ -1485,8 +1508,17 @@ class TemporaryContext:
 class TripleMemoryStore:
     def __init__(self, data_dir: str = "./storage", *,
                  maintenance_every: int = DEFAULT_MAINTENANCE_EVERY,
-                 decay_every: int = DEFAULT_DECAY_EVERY):
+                 decay_every: int = DEFAULT_DECAY_EVERY,
+                 mirror_guard: bool = True):
         self.data_dir = data_dir
+        # When true, a first-person claim about an experience a non-human could
+        # not have had (a body, a childhood, a physical place) is demoted to a
+        # low-confidence self-observation instead of a durable self-claim. This
+        # is the "stop making personal experiences out of things she never
+        # experienced" guard; it needs the Roum model to tell a genuine
+        # recollection from a mirrored one, so it can be turned off for a store
+        # that does not carry one.
+        self.mirror_guard = bool(mirror_guard)
         os.makedirs(data_dir, exist_ok=True)
         self.files = {
             "roum": os.path.join(data_dir, "roum_model.json"),
@@ -1656,6 +1688,49 @@ class TripleMemoryStore:
             raise ValueError("content must not be empty")
         return text
 
+    def _is_absent_experience_claim(self, target_model: str, content: str) -> bool:
+        """True when a self-claim asserts an experience Astra could not have had.
+
+        Fires for a first-person/third-person-Astra claim about a body, a
+        childhood, or a physical place (see ``selfhood.reifies_absent_experience``),
+        and also when the claim mirrors something in Roum's model - the
+        "she turned my life into her memory" failure mode. Only self-directed
+        claims are considered; a fact about Roum is never re-routed here.
+        """
+        if target_model != "self":
+            return False
+        # A bodily/childhood/physical-place claim is impossible for her on its
+        # own terms, so it needs no comparison.
+        if selfhood.reifies_absent_experience(content):
+            return True
+        # A first-person claim that merely restates Roum's life is the other
+        # shape of the same failure; it needs the Roum model to detect.
+        if self.mirror_guard:
+            roum = self.memories.get("roum") or []
+            return selfhood.mirrors_roum_experience(content, roum)
+        return False
+
+    def _store_human_claim(self, content: str, source: str, keywords, tags,
+                           confidence: float, extra: Dict[str, Any]) -> str:
+        """Keep a "becoming human" claim as a weak, flagged observation.
+
+        The claim is not accepted as knowledge about Astra - it contradicts what
+        she is - but it is preserved, at low confidence, as something she said,
+        so the history is not silently rewritten and the boundary is visible.
+        """
+        with self._transaction("self"):
+            mem = self._build_memory(
+                "self", content, "self_observation", source,
+                keywords, tags, min(_clamp_confidence(confidence, 0.4), 0.3), extra,
+            )
+            mem["boundary_violation"] = True
+            mem["contradiction_reason"] = (
+                "Self-knowledge boundary: Astra is not human and cannot become "
+                "biologically human; kept as a low-confidence record of the claim."
+            )
+            self.memories["self"].append(mem)
+        return mem["id"]
+
     # ---- writing memories -------------------------------------------
     def add_memory(self, target_model: str, content: str, mem_type: str, source: str, *,
                    keywords: Optional[List[str]] = None, tags: Optional[List[str]] = None,
@@ -1679,20 +1754,41 @@ class TripleMemoryStore:
         target_model, mem_type = route_candidate_target(
             classification, mem_type, target_model, content, tags
         )
+        # Self-knowledge guards (see ``astra.selfhood``). A claim that Astra had
+        # an experience she could not have had is not knowledge about herself,
+        # so it is demoted before the durability gate ever sees it.
+        demoted = False
+        if self._is_absent_experience_claim(target_model, content):
+            target_model, mem_type = "self", "self_observation"
+            confidence = min(_clamp_confidence(confidence),
+                             SELF_OBSERVATION_CONFIDENCE_CEILING)
+            extra.setdefault("absent_experience", True)
+            demoted = True
+        # A claim that she can or will become biologically human contradicts
+        # settled knowledge about what she is. The boundary is not negotiable;
+        # the claim is kept as a weak, flagged record of something she said.
+        human_claim = mem_type in ("self_belief", "self_fact") and (
+            selfhood.claims_human_becoming(content))
 
         with self._lock:
             # Self-model protection (section 4): a single generated sentence
-            # must not create a durable self-fact/self-preference. It is stored
-            # as an observation instead, and only *repeated* evidence promotes
-            # it. A deliberate declaration is trusted immediately.
+            # must not create a durable self_fact/self_preference/self_belief.
+            # It is stored as an observation instead, and only
+            # *repeated* evidence promotes it. A deliberate declaration is
+            # trusted immediately.
             if (target_model == "self" and mem_type in SELF_DURABLE_CLASSIFICATIONS
                     and not is_durable_self_memory(mem_type, source, 1)):
+                if human_claim:
+                    return self._store_human_claim(
+                        content, source, keywords, tags, confidence, extra)
                 prior = self._find_duplicate("self", "self_observation", content)
                 if prior is None:
                     with self._transaction(target_model):
                         observed = self._build_memory(
                             "self", content, "self_observation", source,
-                            keywords, tags, min(_clamp_confidence(confidence), 0.5), extra,
+                            keywords, tags,
+                            min(_clamp_confidence(confidence),
+                                SELF_OBSERVATION_CONFIDENCE_CEILING), extra,
                         )
                         self.memories["self"].append(observed)
                     return observed["id"]
@@ -1704,6 +1800,21 @@ class TripleMemoryStore:
                         prior["promoted_at"] = _now()
                         prior["confidence"] = _clamp_confidence(confidence)
                 return prior["id"]
+
+            if human_claim and target_model == "self":
+                return self._store_human_claim(
+                    content, source, keywords, tags, confidence, extra)
+
+            if demoted and dedupe:
+                # A re-observed absent-experience claim reinforces its own
+                # observation rather than spawning duplicates; it never gets to
+                # sit beside a genuine recollection as though it were one.
+                existing = self._find_duplicate("self", "self_observation", content)
+                if existing is not None:
+                    with self._transaction("self"):
+                        self._reinforce(existing, _clean_str_list(keywords),
+                                        _clean_str_list(tags))
+                    return existing["id"]
 
             if dedupe:
                 existing = self._find_duplicate(target_model, mem_type, content)
@@ -1888,7 +1999,8 @@ class TripleMemoryStore:
 
     # ---- experiences & current experiential affect --------------------
     def record_experience(self, content: str, *, kind: str = "",
-                          source: str = "ai_extraction", work_id: Optional[str] = None,
+                          source: str = selfhood.SOURCE_EXPERIENTIAL,
+                          work_id: Optional[str] = None,
                           intensity: float = 0.5, significance: float = 0.5,
                           tags: Optional[List[str]] = None,
                           keywords: Optional[List[str]] = None,
@@ -1902,21 +2014,34 @@ class TripleMemoryStore:
         temporary affective accumulator, but the two stay separate - the
         experience is the durable trace, the affect is the transient condition.
 
+        How much an experience is allowed to stay with her is decided here from
+        intensity and significance (see ``selfhood.formative_kind``): most events
+        are ordinary and fade, but a memorable or traumatic one carries a higher
+        importance and an experiential source, so the existing decay pass lets it
+        persist as part of her history. Nothing is force-kept by a special flag.
+
         Returns the stored experience record.
         """
         work_id = (str(work_id).strip() or None) if work_id is not None else None
+        formative = selfhood.formative_kind(kind, intensity=intensity,
+                                            significance=significance)
+        importance = selfhood.importance_for(kind, intensity=intensity,
+                                             significance=significance)
         mem_id = self.add_memory(
             target_model="self",
             content=content,
             mem_type="experience",
             source=source,
             confidence=confidence,
-            tags=list(tags or []) + (["work:" + work_id] if work_id else []),
+            importance=importance,
+            tags=list(tags or []) + (["work:" + work_id] if work_id else [])
+                 + [selfhood.experience_tag(formative)],
             keywords=keywords or [],
             experience_kind=kind or "",
             work_id=work_id,
             intensity=_clamp_confidence(intensity, 0.5),
             significance=_clamp_confidence(significance, 0.5),
+            formative_kind=formative,
         )
         self.accumulate_experience_affect(
             kind, intensity=intensity, significance=significance, text=content,

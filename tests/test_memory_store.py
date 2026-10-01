@@ -69,7 +69,11 @@ def test_dedupe_and_reinforcement(tmp):
 
 def test_lifecycle(tmp):
     store = TripleMemoryStore(tmp)
+    # A single unaided self-belief is not durable (see the self-model
+    # protection rules), so the lifecycle is exercised on the observation it is
+    # demoted to. The type is checked explicitly below.
     mid = store.add_memory("self", "Astra is shy", "self_belief", "t")
+    assert store.get_memory("self", mid)["type"] == "self_observation"
 
     updated = store.update_memory("self", mid, content="Astra is a little shy", confidence=0.4, tags=["trait"])
     assert updated["content"] == "Astra is a little shy" and updated["confidence"] == 0.4
@@ -87,7 +91,7 @@ def test_lifecycle(tmp):
     assert store.get_memory("self", mid)["status"] == "superseded"
     assert store.get_memory("self", mid)["superseded_by"] == new_id
     assert store.get_memory("self", new_id)["supersedes"] == mid
-    assert store.get_memory("self", new_id)["type"] == "self_belief"
+    assert store.get_memory("self", new_id)["type"] == "self_observation"
     assert [m["id"] for m in store.get_active_memories("self")] == [new_id]
     expect_error(ValueError, store.supersede_memory, "self", mid, "again")
     expect_error(ValueError, store.restore_memory, "self", mid)

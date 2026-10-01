@@ -62,6 +62,7 @@ HELP_TEXT = """
  /reconcile         : Link same-subject contradictions that were never resolved
  /relationship      : Astra's accumulated Roum-specific command-affinity state
  /affect            : Astra's current experiential affect (temporary, not memory)
+ /self              : Astra's self-portrait: what she is, and patterns from her history
  /experiences       : List stored experiences (what she has actually done or met)
  /questions         : Open lines of inquiry and their evidence (not yet resolved)
  /work [id]         : Work-specific understanding: observations, interpretations
@@ -330,6 +331,8 @@ class ChatSession:
             self._display_relationship()
         elif command == "/affect":
             self._display_affect()
+        elif command == "/self":
+            self._display_self()
         elif command == "/experiences":
             self._display_experiences()
         elif command == "/questions":
@@ -571,6 +574,32 @@ class ChatSession:
             self._emit(f"  From experiences: {summary}")
         if diag.get("reason"):
             self._emit(f"  Last change: {diag['reason']}")
+
+    def _display_self(self) -> None:
+        """Astra's self-portrait: the boundary, and patterns from her history.
+
+        The boundary is settled; the portrait is derived and explicitly fallible.
+        Nothing here is a trait Astra was assigned - every pattern carries the
+        number of experiences behind it so it can be judged and revised.
+        """
+        from astra import selfhood
+
+        self._emit("\n" + selfhood.boundary_prompt_block())
+        getter = getattr(self.orchestrator.store, "get_experiences", None)
+        experiences = getter(status=None) if callable(getter) else []
+        dispositions = selfhood.derive_dispositions(experiences)
+        self._emit("\n=== DERIVED SELF-PORTRAIT (REVISABLE) ===")
+        if not dispositions:
+            self._emit("  (Not enough accumulated experience yet to show a pattern.)")
+        for d in dispositions:
+            self._emit(f"  ({d['kind']}) {d['text']} - from {d['basis']} experience(s)")
+        formative = [m for m in experiences if selfhood.is_formative(m)]
+        self._emit(f"\n=== FORMATIVE / TRAUMATIC EXPERIENCES ({len(formative)}) ===")
+        if not formative:
+            self._emit("  (None recorded yet)")
+        for mem in sorted(formative, key=lambda m: str(m.get("timestamp") or ""), reverse=True):
+            self._emit(f"  [{mem.get('formative_kind')}] {selfhood.provenance_note(mem)}: "
+                       f"{mem.get('content')}")
 
     def _display_experiences(self) -> None:
         """The stored experience records - what Astra actually did or met."""

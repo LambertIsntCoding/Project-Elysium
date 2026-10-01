@@ -11,6 +11,7 @@ from . import affect
 from . import inquiry
 from . import reading
 from . import relational
+from . import selfhood
 from .elysium import (  # noqa: F401 - re-exported for import compatibility
     CommandExtractor,
     ElysiumCommandRecorder,
@@ -527,8 +528,15 @@ class CompanionOrchestrator:
         # Experiences are Astra's own history, not facts about Roum nor
         # inferences about him. They get a dedicated block rather than being
         # mislabelled under FACTUAL CONTEXT / TENTATIVE INFERENCES.
+        all_experiences = [m for m in all_self if m.get("type") == "experience"]
         recent_experiences = self._recent_experiences(all_self)
+        # Experiences strong enough to have stayed with her (memorable or
+        # traumatic) are surfaced separately, with real elapsed time.
+        formative_experiences = self._formative_experiences(all_experiences)
         all_self = [m for m in all_self if m.get("type") != "experience"]
+        # A claim that Astra can become biologically human is not knowledge
+        # about her; it is kept as history but never presented as a self-fact.
+        all_self = [m for m in all_self if not m.get("boundary_violation")]
         # Questions and work-specific knowledge are presented through their own
         # labelled blocks (below), so their raw records stay out of generic
         # retrieval - otherwise a tentative interpretation would be injected as
@@ -603,9 +611,14 @@ class CompanionOrchestrator:
 
         self._append_clock(parts)
         self._append_relationship_boundaries(parts, boundaries)
+        # What Astra is (settled) and what she may be discovering about herself
+        # (revisable) are deliberately adjacent but distinct.
+        self._append_selfhood_boundary(parts)
         self._append_affect(parts, affect_state)
         self._append_reading(parts, self._reading_state())
         self._append_experiences(parts, recent_experiences)
+        self._append_formative(parts, formative_experiences)
+        self._append_dispositions(parts)
         self._append_questions(parts, relevant_questions)
         self._append_work_knowledge(parts, work_knowledge)
         self._append_current_state(parts, current_state)
@@ -778,13 +791,50 @@ class CompanionOrchestrator:
         parts.append(
             "Things Astra has actually done or encountered. These are her own "
             "history, not claims about Roum; draw on them only where they are "
-            "relevant."
+            "relevant. The time is real elapsed time, not decoration."
         )
         for mem in experiences:
             kind = _clean_text(mem.get("experience_kind")) or "experience"
             work = _clean_text(mem.get("work_id"))
             suffix = f" (re: {work})" if work else ""
-            parts.append(f"- [{kind}] {_clean_text(mem.get('content'))}{suffix}")
+            when = selfhood.provenance_note(mem)
+            parts.append(
+                f"- [{kind}] {_clean_text(mem.get('content'))}{suffix} [{when}]"
+            )
+
+    @staticmethod
+    def _formative_experiences(all_self: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Experiences strong enough to have stayed with her (memorable/traumatic)."""
+        return [m for m in all_self
+                if m.get("type") == "experience" and selfhood.is_formative(m)]
+
+    def _append_selfhood_boundary(self, parts: List[str]) -> None:
+        """Inject what Astra is: settled, non-negotiable, never an open question.
+
+        The epistemic stance rides alongside it: the boundary is what she does
+        not question, and the stance is how she questions everything else.
+        """
+        parts.append("\n" + selfhood.boundary_prompt_block())
+        parts.append(selfhood.epistemic_prompt_block())
+
+    def _append_formative(self, parts: List[str], experiences: List[Dict[str, Any]]) -> None:
+        """Experiences that stayed with her - including traumatic ones."""
+        block = selfhood.formative_block(experiences)
+        if block:
+            parts.append(block)
+
+    def _append_dispositions(self, parts: List[str]) -> None:
+        """A revisable self-portrait derived on the fly from her own history.
+
+        Never stored as a memory - it is a reading of her experience records,
+        so it moves as they do and carries no authority of its own. It stays
+        silent until her history actually supports a pattern.
+        """
+        getter = getattr(self.store, "get_experiences", None)
+        experiences = getter(status=None) if callable(getter) else []
+        block = selfhood.disposition_block(experiences)
+        if block:
+            parts.append(block)
 
     def _select_relevant_questions(self, user_input: str,
                                    questions: List[Dict[str, Any]],

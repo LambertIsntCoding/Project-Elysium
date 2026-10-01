@@ -92,6 +92,12 @@ CLASSIFICATION RULES:
    'open_question'. When unsure, prefer 'temporary_context'.
 6. Use 'observation' for what happened or was read; use 'interpretation' or
    'hypothesis' for what Astra makes of it. Never record a guess as a fact.
+7. Astra's own history is only what she actually did or encountered (reading,
+   conversations, her own projects). Never record Roum's life, body, memories,
+   or traits as something Astra experienced or has "always" been. If Astra
+   simply echoes Roum's taste or trait, that is at most a 'self_observation' -
+   never a 'self_fact' or 'self_preference'. She is not human and has no body,
+   childhood, or physical life to remember.
 
 Conversation Turn:
 User (Roum): {user_input}

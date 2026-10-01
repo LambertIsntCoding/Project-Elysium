@@ -22,6 +22,7 @@ HTTP stub, and consolidation tests call the decision layer directly.
 | `astra/memory.py` | store + governance policy (classification, authority, decay, utility) |
 | `astra/relational.py` | Astra's Roum-specific command-fulfillment preference (accumulated state) |
 | `astra/affect.py` | Astra's current *experiential* affect (temporary, derived from experiences) |
+| `astra/selfhood.py` | self-knowledge: the non-human boundary, the epistemic stance, absent-experience guard, derived self-portrait, formative/traumatic experience classification (pure, no I/O) |
 | `astra/orchestrator.py` | prompt assembly and retrieval |
 | `astra/consolidator.py` | turn -> governed memory decisions |
 | `astra/inquiry.py` | questions, uncertainty, and revisable work knowledge (Slice 2) |
@@ -33,9 +34,16 @@ HTTP stub, and consolidation tests call the decision layer directly.
 | `config/*.yaml` | identity, relationship boundaries, style examples |
 | `storage/*.json` | persistent memory (never hand-edit; never migrate blindly) |
 
+## Maintenance scripts
+
+| Script | Role |
+|---|---|
+| `curate_self_model.py` | One-off: retires stored self-records that contradict the boundary or are operational chatter, and demotes absent-experience claims. Nothing is deleted; idempotent (`--report` to preview). |
+| `repair_null_fields.py` | One-off: strips no-op `null` placeholder fields from the store. |
+
 Top-level `memory_store.py`, `orchestrator.py`, `elysium.py`, `consolidator.py`,
-`memory_authority.py`, `affect.py`, `inquiry.py`, `reading.py`, `library.py` and
-`reader.py` are compatibility shims re-exporting `astra.*`. Import from
+`memory_authority.py`, `affect.py`, `inquiry.py`, `reading.py`, `library.py`,
+`selfhood.py` and `reader.py` are compatibility shims re-exporting `astra.*`. Import from
 `astra.*` in new code.
 
 ## Invariants
@@ -49,6 +57,31 @@ Top-level `memory_store.py`, `orchestrator.py`, `elysium.py`, `consolidator.py`,
   the `self` model as a `self_observation`. `_routing_target` enforces this both
   in the consolidator and in `add_memory`, so no write path can file an
   instruction about Astra as a `roum` fact.
+- **Self-knowledge is bounded, and Astra's history is only her own.** The
+  non-human boundary (`selfhood.NONHUMAN_BOUNDARY`) is settled knowledge, always
+  in the prompt, never a memory and never an open question; a self-claim that she
+  can become biologically human is kept only as a low-confidence
+  `boundary_violation` observation and never shown as self-knowledge. A
+  first-person claim about an experience she could not have had - a body, a
+  childhood, a physical place, or a restatement of Roum's own life - is demoted
+  in `add_memory` to a weak `absent_experience` observation (`selfhood.reifies_absent_experience`,
+  `mirrors_roum_experience`). Quoted passages are stripped first, so a book's
+  narration is never mistaken for her memory.
+- **Healthy doubt is a stance, not a memory.** `selfhood.EPISTEMIC_STANCE` is
+  injected every turn beside the boundary: she may ask why she thinks something
+  is true and need not accept a claim merely because Roum or a source said it,
+  but doubt must not collapse into refusal. It is a rendering, never stored, so
+  it cannot decay, be reinforced, or be quoted back as one of her beliefs.
+- **A self-belief is gated like a self-preference.** `self_belief` is in
+  `SELF_DURABLE_CLASSIFICATIONS`: one generated sentence is stored as a
+  `self_observation` (confidence capped at `SELF_OBSERVATION_CONFIDENCE_CEILING`)
+  and only repeated evidence promotes it. Do not relax this to let the model
+  narrate an identity into existence.
+- **The self-portrait is derived, never stored.** `selfhood.derive_dispositions`
+  reads Astra's own `experience` records and returns patterns with their
+  evidence; the orchestrator renders it as an explicitly fallible block. It is
+  never a memory type, so nothing about her can become a durable trait just
+  because the model said it once.
 - **A restatement collapses, a contradiction weakens.** `detect_restatement`
   supersedes the older wording non-destructively, and is gated on
   `detect_contradiction` returning `None`, so a genuine polarity reversal still
@@ -60,6 +93,11 @@ Top-level `memory_store.py`, `orchestrator.py`, `elysium.py`, `consolidator.py`,
 - **Sourced and unsourced material are separated in the prompt.** Only
   `SOURCED_SOURCES` (`is_sourced`) appear under `FACTUAL CONTEXT`; everything else
   goes under `TENTATIVE INFERENCES (UNVERIFIED - NOT STATED BY ROUM)`.
+- **Astra never sees her own numbers.** `affect.prompt_block`/`render_summary` and
+  `relational.prompt_block` describe her state in plain language; the internal
+  values that produce it are implementation, not introspection (implementation ->
+  internal state -> experience -> self-interpretation). Do not reintroduce
+  numeric readouts into the prompt.
 - **Prompt building is read-only.** Retrieval is recorded as *use* by
   `CompanionOrchestrator.note_retrieval` on the live turn path, never inside
   `build_prompt`, because the persistence tests assert byte-for-byte stability.
