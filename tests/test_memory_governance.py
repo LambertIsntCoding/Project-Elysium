@@ -518,5 +518,107 @@ class TestLReconciliation(unittest.TestCase):
         self.assertEqual(store.reconcile_contradictions(), 0)
 
 
+
+
+# ---------------------------------------------------------------------
+# M. Restatements collapse; unrelated preferences do not
+# ---------------------------------------------------------------------
+class TestMRestatementCollapse(_GovernanceCase):
+    def _pref(self, content, keywords, tags, turn=1):
+        return self.ingest({
+            "classification": "persistent_user_preference",
+            "content": content,
+            "keywords": keywords,
+            "tags": tags,
+            "is_explicit_user_statement": True,
+        }, turn=turn)
+
+    def test_restated_feedback_supersedes_the_older_wording(self):
+        _, old_id = self._pref(
+            "Astra should stop narrating her internal analysis; it feels robotic.",
+            ["stop narrating", "robotic"], ["communication_style"],
+        )
+        _, new_id = self._pref(
+            "Astra should stop narrating her internal analysis because it feels "
+            "robotic and cold.",
+            ["stop narrating", "robotic"], ["communication_style"], turn=2,
+        )
+        old = self.store.get_memory("self", old_id)
+        self.assertEqual(old["status"], "superseded")
+        self.assertEqual(old["superseded_by"], new_id)
+        # Nothing is deleted, and the newer wording is the authoritative one.
+        self.assertEqual(old["content"],
+                         "Astra should stop narrating her internal analysis; it feels robotic.")
+        self.assertEqual(self.store.get_memory("self", new_id)["status"], "active")
+
+    def test_distinct_traits_sharing_a_tag_are_not_collapsed(self):
+        _, first = self._pref(
+            "The designated subject must sometimes be unreasonable.",
+            ["unreasonable"], ["persona_trait"],
+        )
+        _, second = self._pref(
+            "The designated subject must be capable of changing its mind based on emotion.",
+            ["change_mind", "feelings"], ["persona_trait"], turn=2,
+        )
+        self.assertEqual(self.store.get_memory("roum", first)["status"], "active")
+        self.assertEqual(self.store.get_memory("roum", second)["status"], "active")
+
+    def test_plain_facts_are_never_collapsed_as_restatements(self):
+        _, first = self.ingest({
+            "classification": "persistent_user_fact",
+            "content": "Roum is currently experiencing jealousy.",
+            "is_explicit_user_statement": True,
+        })
+        _, second = self.ingest({
+            "classification": "persistent_user_fact",
+            "content": "Roum is currently experiencing a state of partial comprehension.",
+            "is_explicit_user_statement": True,
+        }, turn=2)
+        self.assertEqual(self.store.get_memory("roum", first)["status"], "active")
+        self.assertEqual(self.store.get_memory("roum", second)["status"], "active")
+
+
+# ---------------------------------------------------------------------
+# N. Astra-directed directives are routed to the self model
+# ---------------------------------------------------------------------
+class TestNRoutingToSelf(_GovernanceCase):
+    def test_directive_about_astra_is_not_a_roum_fact(self):
+        decision, mem_id = self.ingest({
+            "classification": "persistent_user_preference",
+            "content": "Astra should stop narrating her internal analysis.",
+            "is_explicit_user_statement": True,
+        })
+        self.assertEqual(decision["target_model"], "self")
+        self.assertEqual(decision["type"], "self_observation")
+        self.assertEqual(self.store.get_memory("self", mem_id)["content"],
+                         "Astra should stop narrating her internal analysis.")
+        self.assertEqual(self.store.get_memories("roum", status=None), [])
+
+    def test_feedback_tag_routes_to_self(self):
+        _, mem_id = self.ingest({
+            "classification": "persistent_user_preference",
+            "content": "Roum perceives the tone as too formal.",
+            "tags": ["personality_feedback"],
+            "is_explicit_user_statement": True,
+        })
+        self.assertEqual(self.store.get_memory("self", mem_id)["type"], "self_observation")
+
+    def test_preference_about_roum_stays_in_roum(self):
+        decision, mem_id = self.ingest({
+            "classification": "persistent_user_preference",
+            "content": "Roum prefers short answers.",
+            "is_explicit_user_statement": True,
+        })
+        self.assertEqual(decision["target_model"], "roum")
+        self.assertEqual(decision["type"], "explicit_fact")
+        self.assertEqual(self.store.get_memory("roum", mem_id)["type"], "explicit_fact")
+
+    def test_direct_write_through_add_memory_is_routed_too(self):
+        mid = self.store.add_memory(
+            "roum", "Astra must not narrate her internal analysis.",
+            "explicit_preference", "explicit_user_statement",
+        )
+        self.assertEqual(self.store.get_memory("self", mid)["type"], "self_observation")
+
 if __name__ == "__main__":
     unittest.main()

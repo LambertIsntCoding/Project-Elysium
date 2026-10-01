@@ -67,6 +67,13 @@ SOURCE_FACTOR: Dict[str, float] = {
 }
 DEFAULT_SOURCE_FACTOR = 0.65
 
+# Provenance that is genuinely traceable to something Roum said or that the
+# user explicitly directed. Only these are surfaced as sourceable material;
+# everything else is Astra's own generation and is handled separately (see
+# ``is_sourced``), so an unsourced sentence can never be presented as fact.
+SOURCED_SOURCES = {"explicit_user_statement", "user_correction",
+                   "user_correction_implicit", "supersession"}
+
 # Provenance values that are Astra's own generation and must never be promoted
 # to a confirmed user fact just because they were stored (section 14).
 ASTRA_SOURCES = {"ai_extraction", "ai_inference", "inferred", "speculation"}
@@ -83,6 +90,16 @@ def source_reliability(source: Any) -> float:
 
 def is_astra_source(source: Any) -> bool:
     return str(source or "").strip().casefold() in ASTRA_SOURCES
+
+
+def is_sourced(mem: Dict[str, Any]) -> bool:
+    """True when a memory traces to an explicit user statement or correction.
+
+    Everything else (Astra's own extraction/inference, or an inferred
+    behavioral pattern) is *unsourced*: it is still usable as an execution
+    directive, but it must never be presented to Roum as a fact about him.
+    """
+    return str(mem.get("source") or "").strip().casefold() in SOURCED_SOURCES
 
 
 # ---------------------------------------------------------------------
@@ -368,6 +385,77 @@ def detect_contradiction(
     return None
 
 
+# Tags the consolidator attaches to behavioural/style feedback. Two of these
+# memories are near-duplicate restatements even when they share few words.
+_FEEDBACK_TAGS = {"personality_feedback", "style_critique", "style_preference",
+                  "conversational_vibe", "communication_style"}
+
+# Types that encode a revisable behavioural stance, and so may be collapsed as
+# restatements. Plain facts are excluded: two similar facts are still two facts.
+_COLLAPSIBLE_TYPES = {"explicit_preference", "correction", "behavioral_pattern",
+                      "self_preference", "self_observation", "relationship_observation"}
+
+
+def _feedback_keywords(mem: Dict[str, Any]) -> set:
+    """Keyword tokens of a feedback memory, used as a topic signature.
+
+    The consolidator generates short keywords ("stop analyzing", "quirky",
+    "brevity") that are far more stable across restatements than the verbose
+    sentence it also generates, so they are the reliable overlap signal.
+    """
+    return _content_tokens(" ".join(_clean_str_list(mem.get("keywords"))))
+
+
+def detect_restatement(a: Dict[str, Any], b: Dict[str, Any]) -> Optional[str]:
+    """Return a reason when ``a`` and ``b`` state the *same* thing, else None.
+
+    ``detect_contradiction`` is deliberately conservative and only fires on a
+    polarity reversal, so a restated preference with different wording stays
+    active alongside its original. That is how the store accumulated dozens of
+    near-duplicate style/tone preferences. This is the complementary,
+    non-destructive signal: it never marks a memory false, it only lets the
+    newer wording supersede the older (exactly like ``is_project_state`` does
+    for project updates), so history is preserved and the pair stops competing.
+
+    Conservative on purpose: it fires only when the two memories share a
+    feedback tag or a topic keyword *and* their content has real subject
+    overlap. It is therefore only ever consulted for memories whose content is
+    feedback about Astra's behaviour.
+    """
+    if _matches(_TEMPORARY_PATTERNS, str(a.get("content") or "").casefold()) or \
+            _matches(_TEMPORARY_PATTERNS, str(b.get("content") or "").casefold()):
+        return None
+    if str(a.get("type") or "") != str(b.get("type") or ""):
+        return None
+
+    shared_tags = (set(_clean_str_list(a.get("tags"))) & set(_clean_str_list(b.get("tags"))))
+    tag_overlap = bool(shared_tags & _FEEDBACK_TAGS)
+    kw_shared = _feedback_keywords(a) & _feedback_keywords(b)
+
+    ta, tb = _content_tokens(a.get("content")), _content_tokens(b.get("content"))
+    if not ta or not tb:
+        return None
+    shared = ta & tb
+    containment = len(shared) / min(len(ta), len(tb))
+    jaccard = len(shared) / len(ta | tb)
+
+    # A shared *feedback* tag is what makes two memories comparable at all; a
+    # shared topic keyword only corroborates. Requiring the tag is what keeps
+    # two genuinely different traits that happen to share a word (e.g. both
+    # mention "feelings") from being collapsed.
+    if tag_overlap:
+        # Real subject overlap, or a shared topic keyword plus some overlap.
+        if containment >= 0.30 and len(shared) >= 3:
+            return "restates the same feedback (shared tag and subject)"
+        if kw_shared and len(shared) >= 2:
+            return "restates the same feedback (shared tag and topic keyword)"
+    # Same content with only reordered/verbose wording. Needs substantial shared
+    # content, not a common sentence frame.
+    if len(shared) >= 4 and (containment >= 0.55 or jaccard >= 0.45):
+        return "restates the same preference (near-identical wording)"
+    return None
+
+
 # ---------------------------------------------------------------------
 # 6. Governing vs contextual (section 7)
 # ---------------------------------------------------------------------
@@ -580,6 +668,13 @@ CLASSIFICATION_TYPES: Dict[str, Tuple[str, str]] = {
     "decision": ("roum", "decision"),
 }
 
+# Reverse of CLASSIFICATION_TYPES, used by ``add_memory`` to recover the
+# classification label for a stored type so the routing guard can run on direct
+# writes too (not just consolidator decisions).
+_TYPE_TO_CLASSIFICATION: Dict[str, str] = {
+    mem_type: classification for classification, (_, mem_type) in CLASSIFICATION_TYPES.items()
+}
+
 # A self-memory may only be durable when the declaration was deliberate
 # (Astra's governing system) or backed by repetition. A single generated
 # sentence can never establish a self-preference (sections 4).
@@ -619,6 +714,53 @@ def classification_to_type(classification: str) -> Tuple[str, str]:
 
 def is_persistent_classification(classification: str) -> bool:
     return classification in CLASSIFICATION_PERSISTENT
+
+
+# Wording that addresses Astra directly rather than describing Roum. A sentence
+# like "Astra should stop narrating her analysis" is a *directive to Astra*, not
+# a fact about Roum, so it belongs in the self model where it can actually shape
+# behaviour. This is what let 69 of 169 roum memories become instructions aimed
+# at Astra instead of facts about him.
+_ASTRA_DIRECTED_PATTERNS = tuple(re.compile(p, re.I) for p in (
+    r"\b(?:astra|the (?:ai|assistant|companion)|you)\b[^.?!]{0,40}?"
+    r"\b(?:should|must|needs? to|has to|ought to|is to|is not to|will not|won't|"
+    r"can't|cannot|do not|don't|never|always|stop|avoid|refrain)\b",
+    r"\b(?:do not|don't|never|please)\s+\w+",
+    r"\byour (?:personality|tone|style|behaviou?r|responses?|replies|language|"
+    r"emotional state|memory|memories)\b",
+    r"\byou (?:sound|are being|'re being|talk like|feel like|should|must|need)\b",
+))
+
+
+def is_astra_directed(content: Any) -> bool:
+    """True when the statement is an instruction about Astra, not about Roum."""
+    return _matches(_ASTRA_DIRECTED_PATTERNS, str(content or "").casefold())
+
+
+# Feedback about Astra's behaviour is a self-model observation, never an
+# automatic edit to her personality or a "fact" about Roum (section 7).
+_FEEDBACK_TAG_NAMES = {"personality_feedback", "style_critique"}
+
+
+def route_candidate_target(classification: str, mem_type: str, target_model: str,
+                    content: str, tags: Any) -> Tuple[str, str]:
+    """Route a persistent candidate to ``(target_model, memory_type)``.
+
+    The classifier already chose a bucket; this corrects the one case it gets
+    structurally wrong: material that is *about Astra* being filed under Roum.
+    """
+    if target_model == "self":
+        return "self", mem_type
+    if classification == "behavioral_pattern":
+        # A pattern about Astra's conduct is a self-pattern, not a trait of Roum.
+        return ("self", "behavioral_pattern") if is_astra_directed(content) else ("roum", mem_type)
+    if classification in ("persistent_user_preference", "persistent_user_fact",
+                          "persistent_project_information", "decision"):
+        tag_names = {str(t).strip().casefold() for t in _clean_str_list(tags)}
+        if tag_names & _FEEDBACK_TAG_NAMES or is_astra_directed(content):
+            return "self", "self_observation"
+    # Anything else keeps the bucket the classifier already chose.
+    return target_model, mem_type
 
 
 def classify_candidate(content: str, *, explicit: bool, mem_type: str,
@@ -1335,6 +1477,15 @@ class TripleMemoryStore:
         self._check_type(mem_type)
         content = self._clean_content(content)
 
+        # Structural routing guard (section 7): an instruction about Astra is a
+        # self-observation, never a durable fact about Roum. Applied here rather
+        # than only in the consolidator so every write path is covered. The
+        # self-protection block below then decides whether it stays durable.
+        classification = _TYPE_TO_CLASSIFICATION.get(mem_type, "")
+        target_model, mem_type = route_candidate_target(
+            classification, mem_type, target_model, content, tags
+        )
+
         with self._lock:
             # Self-model protection (section 4): a single generated sentence
             # must not create a durable self-fact/self-preference. It is stored
@@ -1435,6 +1586,25 @@ class TripleMemoryStore:
                 continue
 
             if not reason:
+                # Not a contradiction (no polarity reversal): the two may still
+                # be the *same* preference said differently. Collapsing those is
+                # how the store stops accumulating near-duplicate restatements.
+                # Gated on ``not reason`` so a genuine reversal keeps its
+                # "weakened" treatment and is never downgraded to a restatement.
+                if (old.get("type") in _COLLAPSIBLE_TYPES
+                        and new_mem.get("type") in _COLLAPSIBLE_TYPES
+                        and old.get("status") == "active"):
+                    restatement = detect_restatement(old, new_mem)
+                    if restatement:
+                        old["status"] = "superseded"
+                        old["superseded_by"] = new_mem.get("id")
+                        old["superseded_at"] = _now()
+                        old["supersession_reason"] = restatement
+                        old["contradiction_reason"] = (
+                            f"Restated by {new_mem.get('id')}: {restatement}"
+                        )
+                        new_mem["supersedes"] = old.get("id")
+                        weakened.append(old["id"])
                 continue
 
             old_key, new_key = self._authority_key(old), self._authority_key(new_mem)

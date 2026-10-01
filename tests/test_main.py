@@ -214,6 +214,45 @@ class TestNewSlashCommands(_DriverFixture):
                     "/dormant", "/stats", "/forget", "/restore"):
             self.assertIn(cmd, text)
 
+    def test_memories_defaults_to_all_and_groups(self):
+        self.store.add_memory("roum", "Roum likes tea.", "explicit_fact",
+                              "explicit_user_statement")
+        self.store.add_memory("self", "Astra felt calm.", "self_observation",
+                              "ai_extraction")
+        # Bare ``/memories`` now means "all" - no more null-looking placeholder.
+        self.session._handle_slash("/memories")
+        text = "\n".join(self.emitted)
+        self.assertIn("ROUM MODEL MEMORIES", text)
+        self.assertIn("SELF MODEL MEMORIES", text)
+        self.assertIn("by type:", text)
+        self.assertIn("TOTAL:", text)
+
+    def test_memories_all_is_explicitly_accepted(self):
+        self.store.add_memory("roum", "Roum likes tea.", "explicit_fact",
+                              "explicit_user_statement")
+        self.session._handle_slash("/memories all")
+        text = "\n".join(self.emitted)
+        self.assertIn("ROUM MODEL MEMORIES", text)
+        self.assertIn("by type:", text)
+
+    def test_memories_groups_by_type(self):
+        self.store.add_memory("roum", "Roum likes tea.", "explicit_fact",
+                              "explicit_user_statement")
+        self.store.add_memory("roum", "Roum prefers short answers.",
+                              "explicit_preference", "explicit_user_statement")
+        self.session._handle_slash("/memories roum")
+        text = "\n".join(self.emitted)
+        self.assertIn("-- explicit_fact (1) --", text)
+        self.assertIn("-- explicit_preference (1) --", text)
+
+    def test_memories_marks_unsourced_records(self):
+        self.store.add_memory("roum", "Roum might like tea.", "uncertain_inference",
+                              "ai_inference")
+        self.session._handle_slash("/memories roum")
+        text = "\n".join(self.emitted)
+        self.assertIn("[unsourced]", text)
+        self.assertIn("sourced: 0/1", text)
+
     def test_search_finds_by_content_and_keyword(self):
         self.store.add_memory("roum", "Roum likes tea.", "explicit_fact",
                               "explicit_user_statement", keywords=["beverage"])
