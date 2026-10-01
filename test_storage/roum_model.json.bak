@@ -20,6 +20,7 @@
     "originating_turn": 0,
     "related_memory_ids": [],
     "superseded_by": "mem_20260930_050454_350740",
+    "supersedes": null,
     "supersession_reason": "Explicit preference correction",
     "superseded_timestamp": "2026-09-30T05:04:54.350732+00:00"
   },
@@ -43,6 +44,7 @@
     "originating_conversation": "conv_local",
     "originating_turn": 0,
     "related_memory_ids": [],
+    "superseded_by": null,
     "supersedes": "mem_20260930_050454_331450",
     "supersession_reason": "Explicit preference correction"
   }

@@ -16,6 +16,9 @@
     ],
     "originating_conversation": "conv_local",
     "originating_turn": 0,
-    "related_memory_ids": []
+    "related_memory_ids": [],
+    "superseded_by": null,
+    "supersedes": null,
+    "supersession_reason": null
   }
 ]
