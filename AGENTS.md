@@ -25,14 +25,18 @@ HTTP stub, and consolidation tests call the decision layer directly.
 | `astra/orchestrator.py` | prompt assembly and retrieval |
 | `astra/consolidator.py` | turn -> governed memory decisions |
 | `astra/inquiry.py` | questions, uncertainty, and revisable work knowledge (Slice 2) |
+| `astra/reading.py` | reading vocabulary + the reader's idle/game/load gate (pure, no I/O) |
+| `astra/library.py` | local ingestion (text/epub) + resumable reading position |
+| `astra/reader.py` | the low-priority background reader daemon |
 | `astra/elysium.py` | application-level root command layer |
 | `main.py` | CLI, routing, slash commands |
 | `config/*.yaml` | identity, relationship boundaries, style examples |
 | `storage/*.json` | persistent memory (never hand-edit; never migrate blindly) |
 
 Top-level `memory_store.py`, `orchestrator.py`, `elysium.py`, `consolidator.py`,
-`memory_authority.py`, `affect.py` and `inquiry.py` are compatibility shims
-re-exporting `astra.*`. Import from `astra.*` in new code.
+`memory_authority.py`, `affect.py`, `inquiry.py`, `reading.py`, `library.py` and
+`reader.py` are compatibility shims re-exporting `astra.*`. Import from
+`astra.*` in new code.
 
 ## Invariants
 
@@ -160,3 +164,30 @@ re-exporting `astra.*`. Import from `astra.*` in new code.
   `inquiry.significant_tokens` (stopword-filtered), because the shared retriever
   does not filter stopwords and a bare "the" would otherwise pull in another
   work's context.
+- **Reading is a background courtesy, not a personality, and it writes no
+  knowledge of its own.** `astra/reading.py` is pure vocabulary + policy (no
+  store, no model, no thread); `astra/library.py` owns the local text and the
+  reading *position*; `astra/reader.py` is the only thread. The reader wakes only
+  when `reading.should_read` says so - Roum idle, no game, machine not loaded -
+  and a game (or an explicitly busy GPU) always wins, because the GPU is shared.
+  A cycle is bounded and re-checks the gate *between* chunks, so interaction or a
+  game stops it immediately. Progress is saved after every chunk, and a **failed
+  model call does not advance the offset** (`_extract` returns `None`, distinct
+  from `{}`), so an interruption loses at most the chunk in flight and never
+  skips a passage. The reader makes **one model call per bounded chunk** (never
+  one per sentence) and reuses `orchestrator.query_gemma`; parsing is stdlib-only
+  (text + EPUB) and fully offline. What reading *produces* is ordinary, governed
+  memories via `apply_reading_results` (observations / interpretations /
+  hypotheses / open questions, scoped by `work_id`) - never a parallel belief
+  store, and never a durable `self_fact`/`self_preference` from a single
+  experience. An interpretation is filed as `ai_inference`, so it can never
+  supersede an explicit memory; a passage's unresolved question stays an open
+  question and is not answered from general knowledge. The **reading position is
+  deliberately not a memory** (it would rewrite the self model every chunk and
+  break the byte-for-byte read guarantee); it lives in the library state file,
+  which is the single source of truth for resuming. The orchestrator only *reads*
+  the position for its own prompt block - prompt building stays read-only. Game
+  detection uses `psutil` **only if installed**; without it the reader never
+  invents a pause, and pausing relies on the session signalling one. `build_session`
+  starts the reader by default (`enable_reader=False` to disable); the session
+  marks activity on every input and re-checks for games each loop iteration.
