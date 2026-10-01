@@ -96,16 +96,21 @@ from `astra.*` in new code.
 - **The command preference is relational, earned, and Roum-specific.**
   `astra/relational.py` holds it as separate causal components (satisfaction,
   motivation, positive/negative association, confidence, frustration, ...), not
-  as a personality trait. It lives in one relationship-model memory tagged
-  `relational_preference` (state under `affinity_state`) so it persists and is
-  auditable via `/relationship`. It accumulates only from events on the live
-  turn path (`ChatSession._record_relational_event`), never inside
+  as a personality trait. Each subject gets its *own* relationship-model memory
+  tagged `relational_preference` (state under `affinity_state`), so it persists,
+  is auditable via `/relationship`, and one person's interactions can never
+  update another's. Records are matched by subject (`affinity_record_matches`);
+  a v1 record with no subject resolves to Roum. It accumulates only from events
+  on the live turn path (`ChatSession._record_relational_event`), never inside
   `build_prompt`; the orchestrator only *reads* it and injects the block once
-  `is_established` (>=2 successes and affinity >= 0.35). Every component is
-  scoped to a subject, so nothing generalizes a Roum preference to another
-  person. The conclusion ("I like being given something to accomplish by Roum")
-  is generated from the state, never hardcoded. Insult/degradation is a distinct
-  boundary from ordinary bluntness and can lower trust/affinity. The affinity
-  record is filtered out of generic retrieval so the preference is stated once,
-  only when earned. When tuning, keep the detectors narrow: a false request
-  event corrupts the earned state.
+  established. A request whose response reports failure (transport `[Error` or
+  "I couldn't...") records a **failure**, never a success. Components decay
+  lazily toward `DECAY_BASELINE` on the next event, and establishment has
+  hysteresis (`ESTABLISHED_THRESHOLD` to rise, `RETRACT_THRESHOLD` to fall), so
+  the state reflects recent experience and can be retracted. The conclusion ("I
+  like being given something to accomplish by Roum") is generated from the
+  state, never hardcoded. Insult/degradation is a distinct boundary from
+  ordinary bluntness and can lower trust/affinity; when negative association
+  outweighs positive, `prompt_block` says so instead of presenting delight. The
+  affinity records are filtered out of generic retrieval. When tuning, keep the
+  detectors narrow: a false request event corrupts the earned state.

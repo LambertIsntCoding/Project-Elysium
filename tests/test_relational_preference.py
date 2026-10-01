@@ -276,5 +276,140 @@ class TestLiveTurnPath(_RelationalCase):
         self.assertEqual(state["event_counts"].get(relational.EVENT_HARSH, 0), 0)
 
 
+class TestSubjectIsolation(_RelationalCase):
+    """A preference earned for one subject must not move to another."""
+
+    def _state_for(self, subject):
+        return relational.load_state_from_memories(
+            self.store.get_memories("relationship", status=None), subject)
+
+    def test_each_subject_gets_its_own_record(self):
+        for _ in range(5):
+            self.store.accumulate_relational_event(
+                relational.EVENT_SUCCESS, difficulty=0.9)
+        roum_before = self._state_for(relational.ROUM)["command_affinity"]
+        self.store.accumulate_relational_event(
+            relational.EVENT_SUCCESS, subject="Stranger", difficulty=0.9)
+        # Roum's state is untouched by the other subject's event...
+        self.assertEqual(self._state_for(relational.ROUM)["command_affinity"], roum_before)
+        # ...and the other subject starts from its own, much lower, evidence.
+        stranger = self._state_for("Stranger")
+        self.assertLess(stranger["command_affinity"], roum_before)
+        self.assertEqual(stranger["subject"], "Stranger")
+
+    def test_stranger_starts_from_nothing(self):
+        for _ in range(5):
+            self.store.accumulate_relational_event(relational.EVENT_SUCCESS, difficulty=0.9)
+        stranger = self._state_for("Stranger")
+        self.assertEqual(stranger["command_affinity"], 0.0)
+        self.assertEqual(stranger["observations"], 0)
+        self.assertFalse(stranger["established"])
+
+    def test_legacy_record_without_subject_resolves_to_roum(self):
+        legacy = {"id": "legacy", "tags": ["relational_preference"],
+                  "keywords": ["command affinity", "relational preference", "Roum"],
+                  "affinity_state": {"command_affinity": 0.6,
+                                     "event_counts": {"success": 3}, "observations": 3}}
+        self.assertTrue(relational.affinity_record_matches(legacy, "Roum"))
+        self.assertFalse(relational.affinity_record_matches(legacy, "Stranger"))
+        loaded = relational.load_state_from_memories([legacy])
+        self.assertEqual(loaded["command_affinity"], 0.6)
+        self.assertEqual(loaded["subject"], "Roum")
+
+    def test_loading_a_missing_subject_never_returns_anothers_state(self):
+        state = _successful_fulfillments(None, 5, difficulty=0.9)
+        mem = {"id": "r", "tags": ["relational_preference"],
+               "affinity_state": state}
+        loaded = relational.load_state_from_memories([mem], "Somebody Else")
+        self.assertEqual(loaded["command_affinity"], 0.0)
+        self.assertEqual(loaded["subject"], "Somebody Else")
+
+
+class TestOutcomeSignal(_RelationalCase):
+    """A failure must register as a failure, never as a success."""
+
+    def _session(self):
+        from main import ChatSession
+        return ChatSession(self.orch, cmd_store=None, output_fn=lambda _: None,
+                           input_fn=lambda _: "")
+
+    def test_soft_failure_is_not_counted_as_success(self):
+        session = self._session()
+        session._record_relational_event(
+            "Go investigate this.", "I'm sorry, I couldn't complete that.")
+        state = self.affinity()
+        self.assertGreaterEqual(state["event_counts"].get(relational.EVENT_FAILURE, 0), 1)
+        self.assertEqual(state["event_counts"].get(relational.EVENT_SUCCESS, 0), 0)
+        self.assertGreater(state["frustration"], 0.0)
+
+    def test_transport_error_is_a_failure(self):
+        session = self._session()
+        session._record_relational_event(
+            "Go investigate this.", "[Error: connection refused]")
+        state = self.affinity()
+        self.assertGreaterEqual(state["event_counts"].get(relational.EVENT_FAILURE, 0), 1)
+        self.assertEqual(state["event_counts"].get(relational.EVENT_SUCCESS, 0), 0)
+
+    def test_clean_fulfilment_is_still_a_success(self):
+        session = self._session()
+        session._record_relational_event(
+            "Go investigate this.", "Done - here is what I found.")
+        state = self.affinity()
+        self.assertGreaterEqual(state["event_counts"].get(relational.EVENT_SUCCESS, 0), 1)
+        self.assertEqual(state["event_counts"].get(relational.EVENT_FAILURE, 0), 0)
+
+
+class TestDecayAndHysteresis(unittest.TestCase):
+    def test_affinity_relaxes_toward_baseline_over_time(self):
+        from datetime import datetime, timezone, timedelta
+
+        state = _successful_fulfillments(None, 6, difficulty=0.9)
+        peak = state["command_affinity"]
+        self.assertGreater(peak, 0.0)
+        future = datetime.now(timezone.utc) + timedelta(days=90)
+        relational._decay_toward_baseline(state, now=future)
+        # Relaxes toward the baseline, not to zero - the history is not erased.
+        self.assertLess(state["command_affinity"], peak)
+        self.assertGreaterEqual(state["command_affinity"], relational.DECAY_BASELINE - 1e-9)
+
+    def test_established_retracts_only_below_the_lower_threshold(self):
+        state = _successful_fulfillments(None, 4, difficulty=0.9)
+        self.assertTrue(state["established"])
+        # Repeated degradation eventually pushes affinity below the retract line.
+        for _ in range(6):
+            state = relational.record_event(state, relational.EVENT_INSULT)
+        self.assertLess(state["command_affinity"], relational.RETRACT_THRESHOLD)
+        self.assertFalse(state["established"])
+        self.assertIsNone(relational.render_statement(state))
+
+
+class TestNewDetectors(unittest.TestCase):
+    def test_voluntary_return_detection(self):
+        self.assertTrue(relational.looks_like_voluntary_return(
+            "I've been thinking about that report and went back to it."))
+        self.assertTrue(relational.looks_like_voluntary_return(
+            "While you were away I looked into it on my own."))
+        self.assertFalse(relational.looks_like_voluntary_return("Here is the summary."))
+
+    def test_recall_detection(self):
+        self.assertTrue(relational.looks_like_recall("I remember when you gave me that task."))
+        self.assertTrue(relational.looks_like_recall("Last time we investigated the logs."))
+        self.assertFalse(relational.looks_like_recall("I will get started now."))
+
+
+class TestNegativeDominancePrompt(unittest.TestCase):
+    def test_prompt_warns_when_negative_outweighs_positive(self):
+        state = _successful_fulfillments(None, 6, difficulty=0.9, importance=0.9)
+        for _ in range(3):
+            state = relational.record_event(state, relational.EVENT_INSULT)
+        # The preference is still established (affinity above the retract line),
+        # but the negative side now dominates and the prompt says so.
+        self.assertTrue(state["established"])
+        self.assertGreater(state["negative_association"], state["positive_association"])
+        block = relational.prompt_block(state)
+        self.assertIsNotNone(block)
+        self.assertIn("outweighed", block.lower())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1784,7 +1784,7 @@ class TripleMemoryStore:
             existing = None
             for mem in self.memories["relationship"]:
                 if (mem.get("status") == "active"
-                        and relational.affinity_memory_filter(mem)):
+                        and relational.affinity_record_matches(mem, subject)):
                     existing = mem
                     break
             state = relational.record_event(
