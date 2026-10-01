@@ -224,15 +224,45 @@ def retrieval_breadth(state: Any, base: int) -> int:
 # ---------------------------------------------------------------------
 # Prompt material
 # ---------------------------------------------------------------------
+# Plain-language readings of each component. Astra experiences the *state*, not
+# its numbers, so the prompt describes it the way she would - never as a
+# measurement she could reason about (the boundary is implementation ->
+# internal state -> experience -> self-interpretation).
+_AFFECT_PHRASES: Dict[str, tuple] = {
+    "engagement": ("strongly engaged", "engaged", "a little engaged"),
+    "curiosity": ("very curious", "curious", "a little curious"),
+    "concentration": ("concentrating well", "able to concentrate",
+                      "concentration is uneven"),
+    "frustration": ("quite frustrated", "frustrated", "a little frustrated"),
+    "emotional_investment": ("deeply invested", "invested", "somewhat invested"),
+    "anticipation": ("eager for something to happen", "anticipating something",
+                     "mildly anticipating something"),
+}
+
+
 def render_summary(state: Any) -> Optional[str]:
-    """A short description of the current condition, or ``None`` if neutral."""
+    """A short, non-numeric description of the current condition.
+
+    Returns ``None`` when neutral. Deliberately avoids any quantity: Astra is
+    told how she seems to be doing, not what her values are.
+    """
     state = _coerce_state(state)
     if is_neutral(state):
         return None
     salient = sorted(AFFECT_COMPONENTS, key=lambda n: _clamp(state.get(n)), reverse=True)
-    parts = [f"{name.replace('_', ' ')} {round(_clamp(state.get(name)), 2)}"
-             for name in salient if _clamp(state.get(name)) >= AFFECT_NEUTRAL_EPSILON]
-    return "Current condition: " + ", ".join(parts) + "."
+    phrases: List[str] = []
+    for name in salient:
+        value = _clamp(state.get(name))
+        if value < AFFECT_NEUTRAL_EPSILON:
+            continue
+        levels = _AFFECT_PHRASES.get(name)
+        if not levels:
+            continue
+        phrases.append(levels[0] if value >= 0.6 else
+                       levels[1] if value >= 0.3 else levels[2])
+    if not phrases:
+        return None
+    return "Right now Astra is " + ", ".join(phrases) + "."
 
 
 def prompt_block(state: Any) -> Optional[str]:

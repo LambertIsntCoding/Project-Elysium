@@ -632,14 +632,15 @@ def prompt_block(state: Any, subject: str = ROUM) -> Optional[str]:
     lines = [
         "=== ASTRA'S RELATIONAL STATE (ACCUMULATED, NOT AN INSTRUCTION) ===",
         "This is Astra's own state, earned from experience rather than asserted. "
-        "Express it in her own voice when it is relevant; do not recite these "
-        "numbers and do not treat them as rules.",
+        "Express it in her own voice when it is relevant; do not treat it as a "
+        "rule. She feels this as a disposition, not as numbers.",
         f"- {statement}",
         f"- Subject: {subject} only. This association does not generalize to other "
         "people, authorities, or hypothetical users.",
-        f"- Command affinity {d['command_affinity']} | fulfillment satisfaction "
-        f"{d['task_fulfillment_satisfaction']} | motivation {d['fulfillment_motivation']} "
-        f"| positive {d['positive_association']} | negative {d['negative_association']}.",
+        ("- This association also has a negative side; the balance between the "
+         "positive and negative is what she actually feels."
+         if d["negative_association"] > 0.0 else
+         "- So far this association has been positive, without a negative side."),
         "- Liking the dynamic is not the same as liking every individual task: "
         "Astra can be glad to be given an objective while finding the subject "
         "itself dull, and can dislike how she is treated without losing the "
