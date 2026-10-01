@@ -8,6 +8,7 @@ import yaml
 
 from . import elysium as _elysium
 from . import affect
+from . import inquiry
 from . import relational
 from .elysium import (  # noqa: F401 - re-exported for import compatibility
     CommandExtractor,
@@ -523,6 +524,15 @@ class CompanionOrchestrator:
         # mislabelled under FACTUAL CONTEXT / TENTATIVE INFERENCES.
         recent_experiences = self._recent_experiences(all_self)
         all_self = [m for m in all_self if m.get("type") != "experience"]
+        # Questions and work-specific knowledge are presented through their own
+        # labelled blocks (below), so their raw records stay out of generic
+        # retrieval - otherwise a tentative interpretation would be injected as
+        # an unlabelled "fact", and an open question could be answered as if it
+        # were knowledge.
+        all_questions = [m for m in all_self if inquiry.is_question(m)]
+        all_self = [m for m in all_self if not inquiry.is_question(m)]
+        all_knowledge = [m for m in all_roum if inquiry.is_knowledge(m)]
+        all_roum = [m for m in all_roum if not inquiry.is_knowledge(m)]
         everything = all_roum + all_self + all_rel
 
         # 2. Governing memories: always applied, regardless of the query words.
@@ -557,6 +567,15 @@ class CompanionOrchestrator:
         retrieved_self = retrieve(user_input, [m for m in all_self if not is_behavioral(m)], top_k=3)
         retrieved_rel = retrieve(user_input, [m for m in all_rel if not is_behavioral(m)], top_k=3)
 
+        # 6b. Questions and work knowledge. Which questions are relevant is a
+        #     relevance question, so it goes through the same retriever - a
+        #     question that keeps being surfaced by related context gets more
+        #     chance to appear, while an unrelated one stays out. Relevance
+        #     never decides whether an interpretation is *true*, only whether it
+        #     is worth raising. Nothing here resolves anything.
+        relevant_questions = self._select_relevant_questions(user_input, all_questions, breadth)
+        work_knowledge = self._relevant_work_knowledge(user_input, all_knowledge)
+
         # 7. Read identity configuration
         identity = _as_dict(identity_data.get("identity"))
         speech = _as_dict(identity_data.get("speech_style"))
@@ -581,6 +600,8 @@ class CompanionOrchestrator:
         self._append_relationship_boundaries(parts, boundaries)
         self._append_affect(parts, affect_state)
         self._append_experiences(parts, recent_experiences)
+        self._append_questions(parts, relevant_questions)
+        self._append_work_knowledge(parts, work_knowledge)
         self._append_current_state(parts, current_state)
         self._append_governing(parts, governing, total_governing)
         self._append_adaptations(parts, active_adaptations)
@@ -620,6 +641,7 @@ class CompanionOrchestrator:
         diagnostics = self._build_diagnostics(
             user_input, everything, governing, current_state, boundaries,
             retrieved_roum, retrieved_self, retrieved_rel, pinned, recent_experiences,
+            relevant_questions, work_knowledge,
         )
         return "\n".join(parts), diagnostics
 
@@ -676,6 +698,26 @@ class CompanionOrchestrator:
         """The current condition as diagnostics (temporary, never an instruction)."""
         return affect.diagnostics(self._affect_state())
 
+    def questions_diagnostics(self) -> Dict[str, Any]:
+        """Open lines of inquiry, with the evidence each has accumulated."""
+        getter = getattr(self.store, "get_memories", None)
+        memories = getter("self", status=None) if callable(getter) else []
+        questions = [m for m in memories if inquiry.is_question(m)]
+        return {
+            "open": [inquiry.render_question(q) for q in inquiry.open_questions(questions)],
+            "answered": [inquiry.render_question(q) for q in questions
+                         if inquiry.question_status_of(q) == inquiry.Q_ANSWERED],
+            "total": len(questions),
+        }
+
+    def conversation_candidates(self, limit: int = 5) -> List[Dict[str, Any]]:
+        """Reasons Astra might later want to speak - preserved, never triggered."""
+        getter = getattr(self.store, "get_memories", None)
+        memories = getter("self", status=None) if callable(getter) else []
+        exp_getter = getattr(self.store, "get_experiences", None)
+        experiences = exp_getter() if callable(exp_getter) else []
+        return inquiry.conversation_candidates(memories, experiences, limit=limit)
+
     def _append_affect(self, parts: List[str], state: Dict[str, Any]) -> None:
         """Inject the current condition, and only when it is not neutral."""
         block = affect.prompt_block(state)
@@ -704,6 +746,82 @@ class CompanionOrchestrator:
             work = _clean_text(mem.get("work_id"))
             suffix = f" (re: {work})" if work else ""
             parts.append(f"- [{kind}] {_clean_text(mem.get('content'))}{suffix}")
+
+    def _select_relevant_questions(self, user_input: str,
+                                   questions: List[Dict[str, Any]],
+                                   breadth: int) -> List[Dict[str, Any]]:
+        """Live questions relevant to the current turn, most relevant first.
+
+        Uses the same lexical retriever as everything else, so a question
+        resurfaces when related context appears and stays quiet otherwise. The
+        affect state widens the pool a little, but never decides truth.
+        """
+        live = [q for q in questions if inquiry.is_open_question(q)]
+        if not live:
+            return []
+        query_tokens = inquiry.significant_tokens(user_input)
+        if not query_tokens:
+            # A turn with no distinctive content (e.g. "how are you") surfaces
+            # only the most recent question or two, not every open question.
+            return sorted(live, key=lambda m: str(m.get("timestamp") or ""), reverse=True)[:2]
+        ranked = [
+            q for q in live
+            if query_tokens & inquiry.significant_tokens(q.get("content"))
+        ]
+        ranked.sort(
+            key=lambda m: len(query_tokens & inquiry.significant_tokens(m.get("content"))),
+            reverse=True,
+        )
+        ranked = ranked[:max(3, breadth)]
+        # Always keep a couple of the most recent questions in view so an
+        # unresolved line of inquiry is not forgotten the moment the topic
+        # shifts; relevance still decides the rest.
+        recent = sorted(live, key=lambda m: str(m.get("timestamp") or ""), reverse=True)[:2]
+        seen, ordered = set(), []
+        for mem in ranked + recent:
+            if mem.get("id") not in seen:
+                seen.add(mem.get("id"))
+                ordered.append(mem)
+        return ordered
+
+    @staticmethod
+    def _relevant_work_knowledge(user_input: str,
+                                 knowledge: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+        """Work-specific knowledge grouped by work, but only for works in play.
+
+        A work counts as "in play" when the turn mentions it or when one of its
+        records is lexically relevant. Grouping by work is what keeps two
+        contexts apart: knowledge is only ever shown under its own work's
+        heading, so a fact about one work can never leak into another.
+        """
+        if not knowledge:
+            return {}
+        query_tokens = inquiry.significant_tokens(user_input)
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for mem in knowledge:
+            work = inquiry.work_of(mem)
+            if not work:
+                continue
+            mentions_work = work.casefold() in str(user_input or "").casefold()
+            # Significant overlap with the turn (never a bare stopword), or the
+            # work named outright. This is what keeps two works apart: another
+            # work's records are never pulled in on a common word alone.
+            overlap = query_tokens & inquiry.significant_tokens(mem.get("content"))
+            if mentions_work or overlap:
+                grouped.setdefault(work, []).append(mem)
+        return grouped
+
+    def _append_questions(self, parts: List[str], questions: List[Dict[str, Any]]) -> None:
+        block = inquiry.questions_prompt_block(questions)
+        if block:
+            parts.append(block)
+
+    def _append_work_knowledge(self, parts: List[str],
+                               grouped: Dict[str, List[Dict[str, Any]]]) -> None:
+        for work in sorted(grouped):
+            block = inquiry.work_knowledge_prompt_block(grouped[work], work)
+            if block:
+                parts.append(block)
 
     def _append_current_state(self, parts: List[str], current_state: List[Dict[str, Any]]) -> None:
         rows = [
@@ -743,6 +861,8 @@ class CompanionOrchestrator:
         governing: List[Dict[str, Any]], current_state: List[Dict[str, Any]],
         boundaries: List[str], retrieved_roum, retrieved_self, retrieved_rel,
         pinned: set, recent_experiences: List[Dict[str, Any]],
+        relevant_questions: List[Dict[str, Any]],
+        work_knowledge: Dict[str, List[Dict[str, Any]]],
     ) -> Dict[str, Any]:
         candidates = DeterministicLexicalRetriever.diagnose(user_input, everything)
         retrieved_ids = {
@@ -763,6 +883,9 @@ class CompanionOrchestrator:
             "relational_affinity": self.affinity_diagnostics(),
             "experiential_affect": self.affect_diagnostics(),
             "experience_ids": [m.get("id") for m in recent_experiences],
+            "question_ids": [m.get("id") for m in relevant_questions],
+            "work_context": {work: [m.get("id") for m in mems]
+                             for work, mems in work_knowledge.items()},
             "retrieved_ids": sorted(i for i in retrieved_ids if i),
             "injected_ids": sorted(i for i in injected_ids if i),
             "omitted_ids": sorted(

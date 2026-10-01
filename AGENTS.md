@@ -24,14 +24,15 @@ HTTP stub, and consolidation tests call the decision layer directly.
 | `astra/affect.py` | Astra's current *experiential* affect (temporary, derived from experiences) |
 | `astra/orchestrator.py` | prompt assembly and retrieval |
 | `astra/consolidator.py` | turn -> governed memory decisions |
+| `astra/inquiry.py` | questions, uncertainty, and revisable work knowledge (Slice 2) |
 | `astra/elysium.py` | application-level root command layer |
 | `main.py` | CLI, routing, slash commands |
 | `config/*.yaml` | identity, relationship boundaries, style examples |
 | `storage/*.json` | persistent memory (never hand-edit; never migrate blindly) |
 
-Top-level `memory_store.py`, `orchestrator.py`, `elysium.py`, `consolidator.py`
-and `memory_authority.py` are compatibility shims re-exporting `astra.*`. Import
-from `astra.*` in new code.
+Top-level `memory_store.py`, `orchestrator.py`, `elysium.py`, `consolidator.py`,
+`memory_authority.py`, `affect.py` and `inquiry.py` are compatibility shims
+re-exporting `astra.*`. Import from `astra.*` in new code.
 
 ## Invariants
 
@@ -133,3 +134,29 @@ from `astra.*` in new code.
   history/state, never mislabelled as facts about Roum or tentative inferences.
   Adding an affect dimension without a concrete behavioural consumer is
   discouraged; uncertainty belongs to the question system, not a scalar here.
+- **Questions and uncertainty are memories, not a parallel store.** Slice 2 adds
+  `astra/inquiry.py`, which is a *vocabulary* module only - the records are
+  ordinary memories written through `add_memory`, so they inherit evidence,
+  confidence, decay, dormancy, contradiction handling and supersession. An
+  unresolved line of inquiry is a self-model memory of type `open_question`; a
+  question's lifecycle (open/answered/reopened/abandoned) travels as a
+  `qstatus:` *tag*, NOT as the memory status, so answering a question never
+  deletes it - the history stays readable. "Known", "tentative" and "unresolved"
+  are kept distinct by an `epistemic:` tag, and `CONFIDENCE_CEILING` caps how
+  certain a record may claim to be (an `interpretation` can never look like a
+  fact, however confidently the model worded it). Work-specific understanding
+  (`observation` / `interpretation` / `hypothesis`) is filed under `roum` but
+  scoped by `work_id`, so two works that share a name never blend; the
+  orchestrator presents it in its own labelled block and keeps it out of generic
+  retrieval. Revision rules are unchanged and non-negotiable: only an explicit
+  correction may supersede, an inference weakens, and a conflict the evidence
+  does not settle is *recorded* by `link_conflict` (which weakens neither side)
+  rather than silently decided. `associate_evidence` links evidence by contextual
+  overlap and never resolves a question on its own. Reasons to speak are exposed
+  as `conversation_candidates` and are preserved only - nothing schedules or
+  sends them. Detectors stay narrow: a false question or a false conflict
+  corrupts the epistemic state, so prefer missing one over inventing it. Note
+  `_relevant_work_knowledge` and `_select_relevant_questions` gate on
+  `inquiry.significant_tokens` (stopword-filtered), because the shared retriever
+  does not filter stopwords and a bare "the" would otherwise pull in another
+  work's context.
