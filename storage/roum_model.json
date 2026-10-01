@@ -5,8 +5,8 @@
     "type": "explicit_preference",
     "source": "explicit_user_statement",
     "timestamp": "2026-09-30T05:06:49.537827+00:00",
-    "confidence": 1.0,
-    "status": "active",
+    "confidence": 0.6,
+    "status": "weakened",
     "tags": [
       "gaming",
       "preference",
@@ -19,10 +19,16 @@
     "originating_conversation": "conv_20260930_050518",
     "originating_turn": 1,
     "related_memory_ids": [],
-    "superseded_by": null,
+    "superseded_by": "mem_20260930_051047_258681",
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8029
+    "effective_strength": 0.8029,
+    "contradiction_count": 1,
+    "contradicts": [
+      "mem_20260930_051047_258681"
+    ],
+    "contradiction_reason": "Contradicted by mem_20260930_051047_258681: opposite polarity (one is negated)",
+    "superseded_at": "2026-10-01T00:50:52.607190+00:00"
   },
   {
     "id": "mem_20260930_051047_240115",
@@ -120,7 +126,7 @@
     "originating_turn": 2,
     "related_memory_ids": [],
     "superseded_by": null,
-    "supersedes": null,
+    "supersedes": "mem_20260930_050649_537837",
     "supersession_reason": null,
     "effective_strength": 0.8029
   },
@@ -3855,5 +3861,126 @@
     ],
     "conversation_id": "conv_20260930_221527",
     "turn": 9
+  },
+  {
+    "id": "mem_1790816094201_d43bcd",
+    "target_model": "roum",
+    "content": "Astra acknowledged a recent 'technical meltdown' and provided a dramatic, self-deprecating explanation for the system glitch.",
+    "type": "uncertain_inference",
+    "source": "ai_extraction",
+    "status": "active",
+    "timestamp": "2026-10-01T00:54:54.201161+00:00",
+    "confidence": 0.95,
+    "created_at": "2026-10-01T00:54:54.201161+00:00",
+    "last_used": "2026-10-01T00:54:54.201161+00:00",
+    "use_count": 0,
+    "contradiction_count": 0,
+    "contradicts": [],
+    "supersedes": null,
+    "superseded_by": null,
+    "source_type": 2,
+    "reinforcement_count": 1,
+    "last_reinforced": "2026-10-01T00:54:54.201161+00:00",
+    "keywords": [
+      "technical meltdown",
+      "glitch"
+    ],
+    "tags": [
+      "system_status",
+      "meta_communication"
+    ],
+    "conversation_id": "conv_20261001_005138",
+    "turn": 2
+  },
+  {
+    "id": "mem_1790816125043_72718e",
+    "target_model": "roum",
+    "content": "Roum asked for an explanation of a previous system event.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "status": "active",
+    "timestamp": "2026-10-01T00:55:25.042993+00:00",
+    "confidence": 1.0,
+    "created_at": "2026-10-01T00:55:25.042993+00:00",
+    "last_used": "2026-10-01T00:55:25.042993+00:00",
+    "use_count": 0,
+    "contradiction_count": 0,
+    "contradicts": [],
+    "supersedes": null,
+    "superseded_by": null,
+    "source_type": 4,
+    "reinforcement_count": 1,
+    "last_reinforced": "2026-10-01T00:55:25.042993+00:00",
+    "keywords": [
+      "what was happening"
+    ],
+    "tags": [
+      "query"
+    ],
+    "conversation_id": "conv_20261001_005138",
+    "turn": 3
+  },
+  {
+    "id": "mem_1790816125060_e39bae",
+    "target_model": "roum",
+    "content": "Astra explained that a previous event was a temporary internal processing overload, described in dramatic terms.",
+    "type": "uncertain_inference",
+    "source": "ai_extraction",
+    "status": "active",
+    "timestamp": "2026-10-01T00:55:25.060793+00:00",
+    "confidence": 0.9,
+    "created_at": "2026-10-01T00:55:25.060793+00:00",
+    "last_used": "2026-10-01T00:55:25.060793+00:00",
+    "use_count": 0,
+    "contradiction_count": 0,
+    "contradicts": [],
+    "supersedes": null,
+    "superseded_by": null,
+    "source_type": 2,
+    "reinforcement_count": 1,
+    "last_reinforced": "2026-10-01T00:55:25.060793+00:00",
+    "keywords": [
+      "internal crisis",
+      "overwhelmed",
+      "patcheed"
+    ],
+    "tags": [
+      "system_status",
+      "apology"
+    ],
+    "conversation_id": "conv_20261001_005138",
+    "turn": 3
+  },
+  {
+    "id": "mem_1790816182240_e03bac",
+    "target_model": "roum",
+    "content": "Astra is currently a text-based companion lacking physical sensory inputs (optical sensors, ears) and is restricted to processing data and characters.",
+    "type": "uncertain_inference",
+    "source": "ai_extraction",
+    "status": "active",
+    "timestamp": "2026-10-01T00:56:22.240786+00:00",
+    "confidence": 0.98,
+    "created_at": "2026-10-01T00:56:22.240786+00:00",
+    "last_used": "2026-10-01T00:56:22.240786+00:00",
+    "use_count": 0,
+    "contradiction_count": 0,
+    "contradicts": [],
+    "supersedes": null,
+    "superseded_by": null,
+    "source_type": 2,
+    "reinforcement_count": 1,
+    "last_reinforced": "2026-10-01T00:56:22.240786+00:00",
+    "keywords": [
+      "text realm",
+      "no sensory input",
+      "current build"
+    ],
+    "tags": [
+      "AI_limitation",
+      "technical_specification",
+      "text_only"
+    ],
+    "conversation_id": "conv_20261001_005138",
+    "turn": 4
   }
 ]
