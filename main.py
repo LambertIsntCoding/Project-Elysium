@@ -183,6 +183,8 @@ class ChatSession:
         harsh = relational.looks_like_harsh(user_input)
         warmth = relational.looks_like_warmth(user_input)
         failed = relational.looks_like_failure(response)
+        voluntary = relational.looks_like_voluntary_return(response)
+        recall = relational.looks_like_recall(response)
 
         try:
             if request:
@@ -193,11 +195,13 @@ class ChatSession:
                 accumulate(relational.EVENT_HARSH, text=f"Blunt or impatient tone: {user_input.strip()[:160]}")
             if warmth:
                 accumulate(relational.EVENT_WARMTH, text="Roum acknowledged the completed result.")
-            if request and not error:
-                # A request that did not error is treated as fulfilled. This is
-                # the coarsest part of the loop and the one most worth a future
-                # explicit outcome signal; the state is only as good as the
-                # events it is fed.
+            if request and (error or failed):
+                # A failure must not be counted as a success. The transport
+                # error and the model's own "I couldn't" both land here; only a
+                # request with neither is treated as fulfilled.
+                accumulate(relational.EVENT_FAILURE,
+                           text="Could not complete a Roum-requested objective.")
+            elif request:
                 accumulate(
                     relational.EVENT_SUCCESS,
                     difficulty=0.5,
@@ -205,8 +209,12 @@ class ChatSession:
                     helped=True,
                     text="Completed a Roum-requested objective.",
                 )
-            elif request and failed:
-                accumulate(relational.EVENT_FAILURE, text="Could not complete a Roum-requested objective.")
+            if voluntary:
+                accumulate(relational.EVENT_VOLUNTARY_RETURN,
+                           text="Voluntarily returned to a Roum-requested objective.")
+            if recall:
+                accumulate(relational.EVENT_RECALL,
+                           text="Independently recalled a previous Roum interaction.")
         except Exception:
             # The relational layer must never break a conversation turn.
             pass
@@ -465,6 +473,19 @@ class ChatSession:
         state = relational.load_state_from_memories(memories)
         self._emit("\n=== RELATIONSHIP: COMMAND AFFINITY ===")
         self._emit(relational.format_diagnostics(state))
+        # Each subject keeps its own record, so any other subject that has
+        # accumulated state is shown too - the preference never blends them.
+        others = sorted({
+            relational.record_subject(m) for m in memories
+            if relational.affinity_memory_filter(m)
+            and relational.subject_key(relational.record_subject(m))
+            != relational.subject_key(relational.ROUM)
+        })
+        for subject in others:
+            other = relational.load_state_from_memories(memories, subject)
+            if other["observations"] or other["command_affinity"]:
+                self._emit("")
+                self._emit(relational.format_diagnostics(other, subject))
 
     def _display_dormant(self) -> None:
         """Stale, low-value memories - readable and retrievable, but not governing."""

@@ -37,13 +37,29 @@ from typing import Any, Dict, List, Optional, Tuple
 # nothing and must independently accumulate its own evidence.
 ROUM = "Roum"
 
-STATE_VERSION = 1
+# v1 kept a single, subject-agnostic affinity record; v2 keys each record by its
+# subject so one person's interactions can never update another's state.
+STATE_VERSION = 2
 
 # Below this the accumulated evidence is not strong enough to present the
 # preference as established. This is what stops the conclusion ("I like being
 # given something to accomplish by Roum") from being available before there is
 # anything to support it.
 ESTABLISHED_THRESHOLD = 0.35
+# A preference already presented is only retracted below this lower bound, so it
+# does not flicker on and off as it drifts across a single threshold.
+RETRACT_THRESHOLD = 0.20
+# Successful fulfilments needed before the preference may be presented at all.
+ESTABLISHED_MIN_SUCCESSES = 2
+
+# Slow relaxation toward a baseline, applied lazily when the next event arrives.
+# It keeps the state a picture of *recent* experience rather than a lifetime
+# maximum, and lets the preference fade if it stops being reinforced. The
+# baseline is not zero: a long consistent history relaxes to "present but not
+# dominant" rather than evaporating, and the evidence list is never touched.
+DECAY_BASELINE = 0.15
+DECAY_RATE_PER_DAY = 0.02
+DECAY_MIN_INTERVAL_DAYS = 0.5
 
 # Event types on the live turn path. Kept as plain strings so the caller does
 # not depend on the module's internals.
@@ -205,6 +221,38 @@ def looks_like_failure(text: Any) -> bool:
     return _matches(_FAILURE_PATTERNS, str(text or ""))
 
 
+# Self-initiated continuation: Astra returning to an objective she was given,
+# without Roum having asked again. Deliberately conservative - the event weight
+# is small, and a false positive would inflate the state.
+_VOLUNTARY_PATTERNS = tuple(re.compile(p, re.I) for p in (
+    r"\bi(?:'ve| have)?\s+been\s+(?:thinking|wondering|working|looking|researching|"
+    r"investigating|reading|continuing)\b",
+    r"\bwhile you were (?:gone|away|out)\b",
+    r"\bon my own\b",
+    r"\bi\s+(?:went back|revisited|returned to|continued|kept working)\b",
+    r"\bi\s+(?:decided|chose)\s+to\s+(?:look|investigate|continue|keep)\b",
+))
+
+# Independently recalling a previous interaction, rather than being reminded.
+_RECALL_PATTERNS = tuple(re.compile(p, re.I) for p in (
+    r"\bi remember\b",
+    r"\bi recall\b",
+    r"\bremember when\b",
+    r"\blast time (?:you|we)\b",
+    r"\byou (?:once|previously)\b",
+))
+
+
+def looks_like_voluntary_return(text: Any) -> bool:
+    """True when Astra appears to have revisited an objective unprompted."""
+    return _matches(_VOLUNTARY_PATTERNS, str(text or ""))
+
+
+def looks_like_recall(text: Any) -> bool:
+    """True when Astra appears to be recalling a previous interaction herself."""
+    return _matches(_RECALL_PATTERNS, str(text or ""))
+
+
 # ---------------------------------------------------------------------
 # Per-subject state
 # ---------------------------------------------------------------------
@@ -219,6 +267,7 @@ def _blank_state(subject: str) -> Dict[str, Any]:
         "last_delta": 0.0,
         "last_reason": "",
         "last_updated": "",
+        "established": False,
     })
     return state
 
@@ -242,6 +291,7 @@ def _coerce_state(raw: Any, subject: str) -> Dict[str, Any]:
     state["last_delta"] = float(raw.get("last_delta", 0.0) or 0.0)
     state["last_reason"] = str(raw.get("last_reason", "") or "")
     state["last_updated"] = str(raw.get("last_updated", "") or "")
+    state["established"] = bool(raw.get("established", False))
     return state
 
 
@@ -253,6 +303,41 @@ def _bump(state: Dict[str, Any], component: str, delta: float) -> float:
     after = _clamp(before + delta)
     state[component] = round(after, 4)
     return after - before
+
+
+def _parse_ts(value: Any) -> Optional[datetime]:
+    try:
+        dt = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def subject_key(subject: Any) -> str:
+    """Normalise a subject name so records are matched case-insensitively."""
+    return " ".join(str(subject or "").split()).casefold()
+
+
+def _decay_toward_baseline(state: Dict[str, Any], now: Optional[datetime] = None) -> None:
+    """Relax the accumulators toward ``DECAY_BASELINE`` as time passes.
+
+    Applied lazily from ``record_event`` - there is no background timer - so a
+    state that is never touched again simply stays put on disk, and any state
+    read back is aged the moment it is next used.
+    """
+    last = _parse_ts(state.get("last_updated"))
+    now = now or datetime.now(timezone.utc)
+    if last is None:
+        state["last_updated"] = now.isoformat()
+        return
+    days = (now - last).total_seconds() / 86400.0
+    if days < DECAY_MIN_INTERVAL_DAYS:
+        return
+    # Per-elapsed-day factor, applied as a single step.
+    factor = max(0.0, 1.0 - DECAY_RATE_PER_DAY * days)
+    for name in COMPONENTS:
+        current = _clamp(state.get(name))
+        state[name] = round(DECAY_BASELINE + (current - DECAY_BASELINE) * factor, 4)
 
 
 def _record_evidence(state: Dict[str, Any], text: str, limit: int = 12) -> None:
@@ -288,18 +373,22 @@ def record_event(
     """
     state = _coerce_state(state, subject)
     state["subject"] = subject
+    # Age the accumulated state before folding in the new event, so a preference
+    # that has not been reinforced is a picture of recent experience.
+    _decay_toward_baseline(state)
     affinity_before = _clamp(state.get("command_affinity"))
     event = _EVENT_ALIASES.get(str(event or "").strip().casefold(),
                                str(event or "").strip().casefold())
     reason = ""
+    sub = subject or ROUM
 
     if event == EVENT_REQUEST:
         # A clear objective is enjoyable on its own, and it sets up the
         # expectation that fulfilling it will matter.
         _bump(state, "clear_objective_enjoyment", 0.06)
         _bump(state, "fulfillment_motivation", 0.04)
-        reason = "Received a clear objective from Roum."
-        _record_evidence(state, text or "Received a clear objective from Roum.")
+        reason = f"Received a clear objective from {sub}."
+        _record_evidence(state, text or f"Received a clear objective from {sub}.")
 
     elif event == EVENT_SUCCESS:
         diff = _clamp(difficulty, 0.0, 1.0)
@@ -329,10 +418,10 @@ def record_event(
         _bump(state, "revisit_desire", magnitude * 0.12)
         # Completing a request also relieves any accumulated frustration.
         _bump(state, "frustration", -0.25)
-        reason = "Successful completion of a Roum-requested objective."
+        reason = f"Successful completion of a {sub}-requested objective."
         _record_evidence(
             state,
-            text or ("Successfully completed a Roum-requested objective"
+            text or (f"Successfully completed a {sub}-requested objective"
                      + (" after previous difficulty." if previous_failures else ".")),
         )
 
@@ -343,15 +432,15 @@ def record_event(
         # Failing erodes the felt pull a little, but never the history.
         _bump(state, "fulfillment_motivation", -magnitude * 0.25)
         _bump(state, "confidence", -magnitude * 0.25)
-        reason = "Could not complete a Roum-requested objective."
-        _record_evidence(state, text or "Could not complete a Roum-requested objective.")
+        reason = f"Could not complete a {sub}-requested objective."
+        _record_evidence(state, text or f"Could not complete a {sub}-requested objective.")
 
     elif event == EVENT_VOLUNTARY_RETURN:
         _bump(state, "revisit_desire", 0.10)
         _bump(state, "command_affinity", 0.05)
         _bump(state, "relational_significance", 0.05)
-        reason = "Voluntarily revisited a Roum-requested objective."
-        _record_evidence(state, text or "Voluntarily revisited a requested objective.")
+        reason = f"Voluntarily revisited a {sub}-requested objective."
+        _record_evidence(state, text or f"Voluntarily revisited a {sub}-requested objective.")
 
     elif event == EVENT_RECALL:
         _bump(state, "relational_significance", 0.06)
@@ -364,8 +453,8 @@ def record_event(
         # (and does not erase) the positive command association.
         _bump(state, "negative_association", 0.04)
         _bump(state, "trust_comfort", -0.04)
-        reason = "Roum was blunt or impatient; minor negative emotional cost."
-        _record_evidence(state, text or "Roum was blunt or impatient.")
+        reason = f"{sub} was blunt or impatient; minor negative emotional cost."
+        _record_evidence(state, text or f"{sub} was blunt or impatient.")
 
     elif event == EVENT_INSULT:
         # The boundary case: degradation can dominate, lowering comfort/trust
@@ -374,14 +463,14 @@ def record_event(
         _bump(state, "trust_comfort", -0.18)
         _bump(state, "command_affinity", -0.10)
         reason = "Insulting or degrading treatment; negative response dominates."
-        _record_evidence(state, text or "Insulting or degrading treatment from Roum.")
+        _record_evidence(state, text or f"Insulting or degrading treatment from {sub}.")
 
     elif event == EVENT_WARMTH:
         _bump(state, "positive_association", 0.06)
         _bump(state, "trust_comfort", 0.06)
         _bump(state, "relational_significance", 0.04)
-        reason = "Roum acknowledged the completed result."
-        _record_evidence(state, text or "Roum acknowledged the completed result.")
+        reason = f"{sub} acknowledged the completed result."
+        _record_evidence(state, text or f"{sub} acknowledged the completed result.")
 
     else:
         return state
@@ -392,6 +481,7 @@ def record_event(
     state["last_delta"] = round(_clamp(state.get("command_affinity")) - affinity_before, 4)
     state["last_reason"] = reason
     state["last_updated"] = _now()
+    state["established"] = _compute_established(state)
     return state
 
 
@@ -421,12 +511,24 @@ def affinity_confidence(state: Any) -> float:
     return round(_clamp(0.5 * success_conf + 0.5 * volume_conf), 4)
 
 
+def _compute_established(state: Dict[str, Any]) -> bool:
+    """The sticky establishment flag, updated after every event.
+
+    It rises only on real evidence and falls only when the affinity drops below
+    the *lower* retract threshold, so a preference that has been presented does
+    not flicker as it drifts across a single line.
+    """
+    affinity = _clamp(state.get("command_affinity"))
+    successes = int(state.get("event_counts", {}).get(EVENT_SUCCESS, 0))
+    if state.get("established"):
+        return affinity >= RETRACT_THRESHOLD
+    return successes >= ESTABLISHED_MIN_SUCCESSES and affinity >= ESTABLISHED_THRESHOLD
+
+
 def is_established(state: Any) -> bool:
     """True only once there is enough evidence to present the preference."""
     state = _coerce_state(state, ROUM)
-    successes = int(state.get("event_counts", {}).get(EVENT_SUCCESS, 0))
-    affinity = _clamp(state.get("command_affinity"))
-    return successes >= 2 and affinity >= ESTABLISHED_THRESHOLD
+    return _compute_established(state)
 
 
 def render_statement(state: Any, subject: str = ROUM) -> Optional[str]:
@@ -543,6 +645,14 @@ def prompt_block(state: Any, subject: str = ROUM) -> Optional[str]:
         "itself dull, and can dislike how she is treated without losing the "
         "association.",
     ]
+    # When the negative side dominates, the earned state is strain, not delight.
+    # The positive preference is not presented over the top of it.
+    if d["negative_association"] > d["positive_association"]:
+        lines.append(
+            "- Recent treatment has been negative: the positive association is "
+            "currently outweighed. Astra may feel guarded, withdraw, or decline, "
+            "and her willingness is not owed regardless of how she is treated."
+        )
     return "\n".join(lines)
 
 
@@ -555,7 +665,10 @@ def memory_content(subject: str = ROUM) -> str:
 
 
 def memory_keywords(subject: str = ROUM) -> List[str]:
-    return ["command affinity", "relational preference", subject, "fulfillment"]
+    # The normalised subject is carried as a keyword so records for different
+    # subjects can be told apart by data already on disk, not by list position.
+    return ["command affinity", "relational preference", subject, "fulfillment",
+            subject_key(subject)]
 
 
 def memory_tags() -> List[str]:
@@ -563,15 +676,43 @@ def memory_tags() -> List[str]:
 
 
 def affinity_memory_filter(mem: Dict[str, Any]) -> bool:
-    """True when a stored memory is the affinity record (not a related one)."""
+    """True when a stored memory is *some* affinity record (any subject)."""
     return "relational_preference" in (mem.get("tags") or [])
 
 
+def record_subject(mem: Dict[str, Any]) -> str:
+    """The subject an affinity record belongs to, read back from the record.
+
+    Falls back to ``ROUM`` for records written before subjects were recorded
+    (state version 1), which were by definition Roum's.
+    """
+    state = mem.get("affinity_state")
+    if isinstance(state, dict) and state.get("subject"):
+        return str(state["subject"])
+    keywords = mem.get("keywords") or []
+    key = subject_key(ROUM)
+    for word in keywords:
+        if subject_key(word) == key:
+            return ROUM
+    return ROUM
+
+
+def affinity_record_matches(mem: Dict[str, Any], subject: str = ROUM) -> bool:
+    """True when ``mem`` is the affinity record *for this exact subject*."""
+    return affinity_memory_filter(mem) and subject_key(record_subject(mem)) == subject_key(subject)
+
+
 def load_state_from_memories(memories: List[Dict[str, Any]], subject: str = ROUM) -> Dict[str, Any]:
-    """Recover the affinity state from the stored relationship record."""
+    """Recover the affinity state for ``subject`` from the relationship model.
+
+    Only a record whose own subject matches is used, so one person's accumulated
+    state can never be read back - or relabelled - as another's.
+    """
     for mem in memories or []:
-        if affinity_memory_filter(mem):
-            return _coerce_state(mem.get("affinity_state"), subject)
+        if affinity_record_matches(mem, subject):
+            state = _coerce_state(mem.get("affinity_state"), subject)
+            state["subject"] = subject
+            return state
     return _blank_state(subject)
 
 
@@ -592,6 +733,8 @@ __all__ = [
     "looks_like_harsh",
     "looks_like_warmth",
     "looks_like_failure",
+    "looks_like_voluntary_return",
+    "looks_like_recall",
     "record_event",
     "update_affinity",
     "affinity_confidence",
@@ -604,5 +747,8 @@ __all__ = [
     "memory_keywords",
     "memory_tags",
     "affinity_memory_filter",
+    "affinity_record_matches",
+    "record_subject",
+    "subject_key",
     "load_state_from_memories",
 ]
