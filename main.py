@@ -48,6 +48,7 @@ HELP_TEXT = """
  /governing         : Show the memories that always apply
  /temporary         : Show transient context for this session (not stored)
  /contradictions    : Show memories that were weakened or superseded
+ /reconcile         : Link same-subject contradictions that were never resolved
  /dormant           : Show stale memories that have gone dormant
  /stats             : Memory health summary (counts, types, utility)
  /forget <id>       : Retire a memory without deleting it (archive)
@@ -198,6 +199,8 @@ class ChatSession:
             self._display_temporary()
         elif command == "/contradictions":
             self._display_contradictions()
+        elif command == "/reconcile":
+            self._reconcile_contradictions()
         elif command == "/dormant":
             self._display_dormant()
         elif command == "/stats":
@@ -316,6 +319,22 @@ class ChatSession:
                 self._emit(f"    superseded by: {mem.get('superseded_by')}")
             if mem.get("contradiction_reason"):
                 self._emit(f"    reason: {mem.get('contradiction_reason')}")
+
+    def _reconcile_contradictions(self) -> None:
+        """Resolve same-subject contradictions the detector previously missed.
+
+        A store learned before the detector recognised restatements can hold
+        memories that should already have superseded one another. This replays
+        resolution oldest-first, so the newer statement wins; nothing is deleted
+        and every superseded record stays readable via /contradictions.
+        """
+        self._emit("\n--- RECONCILING CONTRADICTIONS ---")
+        resolved = self.orchestrator.store.reconcile_contradictions()
+        if resolved:
+            self._emit(f"✓ Linked {resolved} previously-unresolved contradiction(s).")
+            self._emit("  Run /contradictions to review the superseded records.")
+        else:
+            self._emit("  (No unresolved contradictions found)")
 
     def _display_dormant(self) -> None:
         """Stale, low-value memories - readable and retrievable, but not governing."""
