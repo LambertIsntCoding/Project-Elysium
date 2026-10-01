@@ -36,6 +36,7 @@ from astra.memory import (
 from astra.orchestrator import CompanionOrchestrator
 from astra import affect
 from astra import inquiry
+from astra import reading
 from astra import relational
 
 # Phrases that indicate the user is *asking* to register a command. Kept
@@ -64,6 +65,9 @@ HELP_TEXT = """
  /experiences       : List stored experiences (what she has actually done or met)
  /questions         : Open lines of inquiry and their evidence (not yet resolved)
  /work [id]         : Work-specific understanding: observations, interpretations
+ /reading           : Background reader status: what she is reading, why (not) now
+ /library           : Local works ingested and Astra's position in each
+ /read [pause|resume|add <path> [title]] : One bounded reading cycle, or control it
  /dormant           : Show stale memories that have gone dormant
  /stats             : Memory health summary (counts, types, utility)
  /timeline [gran] [target] : Memory counts by date; gran = month (default), day, year
@@ -110,12 +114,19 @@ class ChatSession:
         recorder: Optional[ElysiumCommandRecorder] = None,
         consolidator: Optional[Callable[..., None]] = None,
         conversation_id: Optional[str] = None,
+        reader: Any = None,
         input_fn: Callable[[str], str] = input,
         output_fn: Callable[[str], None] = print,
     ):
         self.orchestrator = orchestrator
         self.cmd_store = cmd_store
         self.elysium = elysium
+        # The background reader is optional and low-priority: the session tells
+        # it when Roum is interacting so it yields, but it runs on its own
+        # thread and never blocks a turn.
+        self.reader = reader
+        if reader is not None:
+            self.orchestrator.reader = reader
         # The Elysium root layer always has a handler so an invocation can never
         # fall through into Astra's generation path.
         self.elysium_handler = elysium_handler or ElysiumCommandHandler(elysium)
@@ -132,9 +143,41 @@ class ChatSession:
     def _emit(self, text: str) -> None:
         self.output_fn(text)
 
+    # -- background-reader coordination ------------------------------------
+    def note_activity(self) -> None:
+        """Tell the reader that Roum is interacting, so it yields immediately.
+
+        User interaction and games take priority over background reading; this
+        is the signal that makes that true between reading chunks, not only
+        between cycles.
+        """
+        reader = self.reader
+        if reader is not None and callable(getattr(reader, "note_activity", None)):
+            reader.note_activity()
+
+    def _note_game_pause(self) -> None:
+        """Detect a running game and tell the reader to stand down (GPU shared)."""
+        reader = self.reader
+        if reader is None:
+            return
+        detect = getattr(reader, "process_names_fn", None)
+        if not callable(detect):
+            return
+        try:
+            names = detect()
+        except Exception:
+            names = None
+        if names is None:
+            return  # no process provider: never invent a reason to stop
+        game = reading.looks_like_game(names)
+        if callable(getattr(reader, "note_game_pause", None)):
+            reader.note_game_pause(game, active=bool(game))
+
     # -- routing -----------------------------------------------------------
     def handle(self, user_input: str) -> str:
         """Process a non-slash input and return the text to display."""
+        # Any input at all is interaction: the reader yields for this turn.
+        self.note_activity()
         # 1. Deterministic command: answer from storage, no model call.
         command_response = self.cmd_store.check_trigger(user_input)
         if command_response:
@@ -293,6 +336,12 @@ class ChatSession:
             self._display_questions()
         elif command == "/work":
             self._display_work(parts[1] if len(parts) > 1 else None)
+        elif command == "/reading":
+            self._display_reading()
+        elif command == "/library":
+            self._display_library()
+        elif command == "/read":
+            self._read_now(parts[1:])
         elif command == "/dormant":
             self._display_dormant()
         elif command == "/stats":
@@ -586,6 +635,88 @@ class ChatSession:
                     f"    ({inquiry.epistemic_of(mem)}) {mem.get('content')}"
                 )
 
+    def _display_reading(self) -> None:
+        """What Astra is reading, how far, and why the reader is (not) running."""
+        reader = self.reader
+        if reader is None:
+            self._emit("\n=== BACKGROUND READING ===")
+            self._emit("  (Reader not attached in this session)")
+            return
+        self._emit("\n" + reader.format_diagnostics())
+
+    def _display_library(self) -> None:
+        """The local works Astra has ingested, and her position in each."""
+        reader = self.reader
+        library = getattr(reader, "library", None) if reader is not None else None
+        if library is None:
+            self._emit("\n=== LIBRARY ===")
+            self._emit("  (No library attached in this session)")
+            return
+        works = library.list_works()
+        self._emit(f"\n=== LIBRARY ({len(works)} work(s)) ===")
+        if not works:
+            self._emit("  (Nothing ingested yet)")
+            return
+        current = library.current_work_id()
+        for state in works:
+            marker = "*" if state.get("work_id") == current else " "
+            pct = int(round(reading.progress(state) * 100))
+            self._emit(
+                f" {marker} {state.get('work_id')} | {state.get('status')} | {pct}% "
+                f"| {state.get('chunks', 0)} chunk(s) | {state.get('title') or ''}"
+            )
+        self._emit("\n  (* = current; use /reading for detail)")
+
+    def _read_now(self, args: List[str]) -> None:
+        """Run one bounded reading cycle now, regardless of the idle gate.
+
+        This is the explicit escape hatch: reading is otherwise a background
+        courtesy that waits for idle, but Roum can ask for a cycle directly. It
+        still refuses while a game is running, because the machine is shared.
+        """
+        reader = self.reader
+        if reader is None:
+            self._emit("  (Reader not attached in this session)")
+            return
+        if args and args[0] in ("pause", "stop"):
+            reader.enabled = False
+            self._emit("  Background reading paused.")
+            return
+        if args and args[0] in ("resume", "start"):
+            reader.enabled = True
+            self._emit("  Background reading resumed.")
+            return
+        if args and args[0] == "add":
+            self._library_add(args[1:])
+            return
+        # An explicit request is itself interaction; do not let it block itself.
+        reader.clear_activity()
+        report = reader.run_once()
+        if report.get("read"):
+            self._emit(f"  Read {report['chunks']} chunk(s) from {report.get('work_id')}.")
+        else:
+            self._emit(f"  Did not read: {report.get('reason')}")
+
+    def _library_add(self, args: List[str]) -> None:
+        reader = self.reader
+        library = getattr(reader, "library", None) if reader is not None else None
+        if library is None:
+            self._emit("  (No library attached in this session)")
+            return
+        if not args:
+            self._emit("Usage: /read add <path> [title]")
+            return
+        path, title = args[0], (" ".join(args[1:]) or None)
+        try:
+            state = library.add_file(path, title=title)
+        except Exception as exc:
+            self._emit(f"  Could not ingest {path!r}: {exc}")
+            return
+        self._emit(
+            f"  Added '{state.get('work_id')}' ({state.get('total_units')} chars, "
+            f"{state.get('source_format')})."
+        )
+
     def _display_dormant(self) -> None:
         """Stale, low-value memories - readable and retrievable, but not governing."""
         dormant = [
@@ -776,7 +907,22 @@ class ChatSession:
         self._emit("  Type /help for memory inspection & correction commands.")
         self._emit("==========================================================")
 
+        try:
+            self._run_loop()
+        finally:
+            # The reader is a daemon; stop it so the process can exit cleanly and
+            # no half-cycle is left running against a closed store.
+            reader = self.reader
+            if reader is not None and callable(getattr(reader, "stop", None)):
+                reader.stop()
+
+    def _run_loop(self) -> None:
         while True:
+            # Each loop iteration is a chance to notice Roum has gone quiet and
+            # to re-check for a running game, so the reader's gate is refreshed
+            # without the reader having to poll anything itself.
+            self.note_activity()
+            self._note_game_pause()
             try:
                 user_input = self.input_fn("\nRoum > ").strip()
             except (KeyboardInterrupt, EOFError):
@@ -800,6 +946,7 @@ def build_session(
     storage_dir: str = "./storage",
     *,
     enable_command_extraction: bool = True,
+    enable_reader: bool = True,
 ) -> ChatSession:
     """Construct a ready-to-run session with the default components."""
     store = TripleMemoryStore(data_dir=storage_dir)
@@ -820,9 +967,22 @@ def build_session(
     orchestrator = CompanionOrchestrator(
         store, config_dir=config_dir, elysium=elysium, cmd_store=cmd_store,
     )
+
+    # The background reader is optional and off the critical path: it shares the
+    # same store, reuses the orchestrator's model call, and only ever reads when
+    # Roum is idle and no game is running.
+    reader = None
+    if enable_reader:
+        from astra.library import Library
+        from astra.reader import BackgroundReader
+
+        library = Library(data_dir=storage_dir)
+        reader = BackgroundReader(library, store, orchestrator.query_gemma)
+        reader.start()
+
     return ChatSession(
         orchestrator, cmd_store, elysium=elysium, recorder=recorder,
-        consolidator=_default_consolidator,
+        consolidator=_default_consolidator, reader=reader,
     )
 
 

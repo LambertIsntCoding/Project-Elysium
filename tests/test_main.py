@@ -370,8 +370,56 @@ class TestBuildSession(unittest.TestCase):
             session = build_session(config_dir=tmp, storage_dir=tmp)
             self.assertIsInstance(session, ChatSession)
             self.assertIsNotNone(session.recorder)
+            # The background reader is attached and started by default, and it
+            # is off the critical path.
+            self.assertIsNotNone(session.reader)
+            self.assertTrue(session.reader.running)
+            session.reader.stop()
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_build_session_can_disable_reader(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            session = build_session(config_dir=tmp, storage_dir=tmp, enable_reader=False)
+            self.assertIsNone(session.reader)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+class _StubReader:
+    """Records the signals a ChatSession sends to the background reader."""
+
+    def __init__(self, names=None):
+        self.activity = 0
+        self.paused_for = "unset"
+        self.process_names_fn = (lambda: names) if names is not None else None
+
+    def note_activity(self):
+        self.activity += 1
+
+    def note_game_pause(self, process, active=True):
+        self.paused_for = process if active else None
+
+
+class TestReaderCoordination(_DriverFixture):
+    def test_handle_marks_activity_so_reader_yields(self):
+        reader = _StubReader()
+        self.session.reader = reader
+        self.session.handle("hello")
+        self.assertGreaterEqual(reader.activity, 1)
+
+    def test_game_detection_signals_a_pause(self):
+        reader = _StubReader(names=["chrome.exe", "dota2.exe"])
+        self.session.reader = reader
+        self.session._note_game_pause()
+        self.assertEqual(reader.paused_for, "dota2.exe")
+
+    def test_no_game_provider_never_invents_a_pause(self):
+        reader = _StubReader(names=None)
+        self.session.reader = reader
+        self.session._note_game_pause()
+        self.assertEqual(reader.paused_for, "unset")
 
 
 if __name__ == "__main__":

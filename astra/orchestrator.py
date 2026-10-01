@@ -9,6 +9,7 @@ import yaml
 from . import elysium as _elysium
 from . import affect
 from . import inquiry
+from . import reading
 from . import relational
 from .elysium import (  # noqa: F401 - re-exported for import compatibility
     CommandExtractor,
@@ -261,6 +262,10 @@ class CompanionOrchestrator:
         self.config_dir = os.path.abspath(config_dir)
         self._yaml_cache: Dict[str, tuple] = {}  # filename -> (mtime, data)
         self._session = requests.Session()
+        # The background reader is injected by the session once it exists; the
+        # orchestrator only ever *reads* its position for the prompt, never
+        # starts or advances it (prompt building stays read-only).
+        self.reader: Any = None
 
         # --- Optional ELYSIUM layer -------------------------------------
         # All of this is off unless requested, so the default constructor
@@ -599,6 +604,7 @@ class CompanionOrchestrator:
         self._append_clock(parts)
         self._append_relationship_boundaries(parts, boundaries)
         self._append_affect(parts, affect_state)
+        self._append_reading(parts, self._reading_state())
         self._append_experiences(parts, recent_experiences)
         self._append_questions(parts, relevant_questions)
         self._append_work_knowledge(parts, work_knowledge)
@@ -721,6 +727,39 @@ class CompanionOrchestrator:
     def _append_affect(self, parts: List[str], state: Dict[str, Any]) -> None:
         """Inject the current condition, and only when it is not neutral."""
         block = affect.prompt_block(state)
+        if block:
+            parts.append("\n" + block)
+
+    # ---- background reading (read-only view) ---------------------------
+    def _reading_state(self) -> Dict[str, Any]:
+        """Astra's current reading position, read from the library if present."""
+        reader = self.reader
+        library = getattr(reader, "library", None) if reader is not None else None
+        if library is None:
+            return reading.blank_state("")
+        try:
+            return library.current_state()
+        except Exception:
+            return reading.blank_state("")
+
+    def reading_diagnostics(self) -> Dict[str, Any]:
+        """What the reader is doing and why - never an instruction."""
+        reader = self.reader
+        if reader is not None and callable(getattr(reader, "diagnostics", None)):
+            try:
+                return reader.diagnostics()
+            except Exception:
+                pass
+        state = self._reading_state()
+        return reading.diagnostics(state)
+
+    def _append_reading(self, parts: List[str], state: Dict[str, Any]) -> None:
+        """Inject what Astra is reading, only when she is actually reading."""
+        reader = self.reader
+        # Use the reader's last known reason rather than re-running the gate:
+        # building a prompt must not scan processes or touch the machine.
+        condition = getattr(reader, "last_reason", None) if reader is not None else None
+        block = reading.reader_prompt_block(state, current_condition=condition)
         if block:
             parts.append("\n" + block)
 

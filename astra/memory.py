@@ -36,6 +36,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from . import affect
 from . import inquiry
+from . import reading
 from . import relational
 
 
@@ -2187,6 +2188,126 @@ class TripleMemoryStore:
                         ids.append(evidence["id"])
                     question["question_evidence"] = ids[-20:]
             return [q.get("id") for q in matches]
+
+    # ---- background reading: turn a chunk's digest into governed memories --
+    def apply_reading_results(self, *, work_id: str, title: str = "",
+                              digest: Optional[Dict[str, Any]] = None,
+                              passage: str = "",
+                              source: str = "ai_extraction") -> Dict[str, Any]:
+        """Turn one reading chunk's digest into ordinary, governed memories.
+
+        Reading does not get its own belief store: an observation becomes an
+        ``observation``, an interpretation an ``interpretation``, an open
+        question a ``open_question`` - all written through the existing paths,
+        so they decay, can be contradicted, and can be revised exactly like any
+        other memory. Everything is scoped by ``work_id`` so two works never
+        blend.
+
+        An interpretation raised here is an *inference* (``ai_inference``), so it
+        can never supersede an explicit memory; a question the passage leaves
+        unresolved stays an open question rather than being answered from
+        general knowledge. Returns a small summary for diagnostics.
+        """
+        digest = digest if isinstance(digest, dict) else {}
+        work_id = str(work_id or "").strip()
+        title = str(title or work_id).strip()
+        created: List[Dict[str, Any]] = []
+
+        def _emit(kind: str, text: str, confidence: float,
+                  source_override: Optional[str] = None) -> None:
+            text = self._clean_content(text)
+            if not text:
+                return
+            resolved_source = source_override or source
+            if kind == inquiry.TYPE_QUESTION:
+                mem_id = self.add_question(
+                    text, origin=inquiry.ORIGIN_READING,
+                    motive=inquiry.MOTIVE_UNDERSTANDING, work_id=work_id,
+                    source=resolved_source, confidence=confidence,
+                )
+            else:
+                adder = {
+                    inquiry.TYPE_OBSERVATION: self.add_observation,
+                    inquiry.TYPE_INTERPRETATION: self.add_interpretation,
+                    inquiry.TYPE_HYPOTHESIS: self.add_hypothesis,
+                }[kind]
+                mem_id = adder(text, work_id=work_id, source=resolved_source,
+                               confidence=confidence)
+            created.append({"id": mem_id, "type": kind, "content": text})
+
+        # What the passage states - an observation, not an interpretation.
+        for item in (digest.get("observations") or []):
+            _emit(inquiry.TYPE_OBSERVATION, reading.item_text(item), 0.8)
+        for item in (digest.get("events") or []):
+            _emit(inquiry.TYPE_OBSERVATION, reading.item_text(item), 0.75)
+        for item in (digest.get("relationships") or []):
+            _emit(inquiry.TYPE_OBSERVATION, reading.item_text(item), 0.7)
+        for item in (digest.get("entities") or []):
+            _emit(inquiry.TYPE_OBSERVATION, reading.item_text(item), 0.7)
+
+        # What Astra makes of it - explicitly tentative, and never able to
+        # override an explicit memory because it is filed as an inference.
+        for item in (digest.get("interpretations") or []):
+            _emit(inquiry.TYPE_INTERPRETATION, reading.item_text(item), 0.6,
+                  source_override="ai_inference")
+        for item in (digest.get("ideas") or []):
+            _emit(inquiry.TYPE_INTERPRETATION, reading.item_text(item), 0.55,
+                  source_override="ai_inference")
+        for item in (digest.get("associations") or []):
+            _emit(inquiry.TYPE_HYPOTHESIS, reading.item_text(item), 0.45,
+                  source_override="ai_inference")
+
+        # What the passage leaves unresolved - kept unresolved.
+        for item in (digest.get("questions") or []):
+            _emit(inquiry.TYPE_QUESTION, reading.item_text(item), 0.4)
+
+        # Link the new notes as evidence to any live question they bear on, so a
+        # question accumulates what has been found rather than being silently
+        # answered. A question is not evidence for another question, so those are
+        # skipped.
+        for record in created:
+            if record["type"] == inquiry.TYPE_QUESTION:
+                continue
+            try:
+                self.associate_evidence(
+                    {"id": record["id"], "content": record["content"],
+                     "work_id": work_id, "tags": [f"work:{work_id}"]},
+                )
+            except Exception:
+                pass
+
+        # The experience is Astra's own activity, not a fact about the work. A
+        # short excerpt keeps the memory concrete enough to be recalled later.
+        excerpt = ""
+        if str(passage or "").strip():
+            try:
+                excerpt = self._clean_content(passage)[:140].strip()
+            except Exception:
+                excerpt = str(passage).strip()[:140]
+        content = f"Read a passage of '{title}'."
+        if excerpt:
+            content = f"{content} It began: \"{excerpt}\""
+        self.record_experience(
+            content, kind=reading.reading_experience_kind(
+                discovered=bool(digest.get("ideas") or digest.get("entities")),
+            ),
+            work_id=work_id, source=source,
+            intensity=0.4,
+            significance=reading.significance_for(
+                learned=bool(digest.get("interpretations") or digest.get("ideas")),
+            ),
+        )
+        return {"memories": len(created), "created": created, "work_id": work_id}
+
+    def record_reading_finish(self, *, work_id: str, title: str = "",
+                              chunks: int = 0) -> Dict[str, Any]:
+        """Record finishing a work as a meaningful experience (not a trait)."""
+        return self.record_experience(
+            f"Finished reading '{title or work_id}'.",
+            kind=reading.reading_experience_kind(finished=True),
+            work_id=str(work_id or ""), intensity=0.7,
+            significance=reading.significance_for(difficulty=0.6, finished_work=True),
+        )
 
     def apply_decay(self, now: Optional[datetime] = None) -> Dict[str, int]:
         """Recompute decay for every memory and archive the clearly worthless.
