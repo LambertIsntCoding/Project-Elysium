@@ -34,6 +34,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from . import affect
 from . import relational
 
 
@@ -650,6 +651,7 @@ CLASSIFICATION_PERSISTENT = {
     "persistent_project_information", "behavioral_pattern",
     "uncertain_inference", "self_fact", "self_preference", "self_observation",
     "self_belief", "relationship_event", "relationship_observation", "decision",
+    "experience",
 }
 CLASSIFICATION_TRANSIENT = {"temporary_context", "no_memory"}
 VALID_CLASSIFICATIONS = CLASSIFICATION_PERSISTENT | CLASSIFICATION_TRANSIENT
@@ -668,6 +670,10 @@ CLASSIFICATION_TYPES: Dict[str, Tuple[str, str]] = {
     "relationship_event": ("relationship", "relationship_event"),
     "relationship_observation": ("relationship", "relationship_observation"),
     "decision": ("roum", "decision"),
+    # An experience is Astra's own, so it lives in the self model - but as an
+    # ``experience`` type, never as a self_fact/self_preference, so it cannot
+    # silently redefine her personality (that stays gated on repeated evidence).
+    "experience": ("self", "experience"),
 }
 
 # Reverse of CLASSIFICATION_TYPES, used by ``add_memory`` to recover the
@@ -939,6 +945,10 @@ VALID_MEMORY_TYPES = {
     "self_observation", "self_belief", "self_preference",
     "relationship_event", "relationship_observation", "relationship_boundary",
     "decision", "correction",
+    # A first-class experience: something Astra did or encountered, carrying
+    # its own structured context. The bridge between knowledge and personality
+    # (see ``astra.affect`` and the ``experience`` classification below).
+    "experience",
 }
 # "weakened" joins the existing statuses: a memory contradicted by a stronger
 # one stays readable but is no longer authoritative.
@@ -1128,6 +1138,15 @@ _TIMESTAMP_ALIASES = ("created_at", "last_used", "last_reinforced")
 _NOOP_DEFAULTS = {"use_count": 0, "contradiction_count": 0, "reinforcement_count": 1}
 _EMPTY_LIST_FIELDS = ("tags", "keywords", "contradicts")
 _NULL_DROP_FIELDS = ("supersedes", "superseded_by", "slot")
+# Experience-only structured context. Omitted on disk when it holds its neutral
+# value and re-materialised on read, exactly like the counters above - so an
+# experience costs nothing extra unless it actually carries a work, intensity,
+# or significance.
+_EXPERIENCE_DEFAULTS: Dict[str, Any] = {
+    "work_id": None,
+    "intensity": 0.5,
+    "significance": 0.5,
+}
 
 
 def compact_record(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -1147,6 +1166,9 @@ def compact_record(record: Dict[str, Any]) -> Dict[str, Any]:
             out.pop(field, None)
     for field in _NULL_DROP_FIELDS:
         if out.get(field) is None:
+            out.pop(field, None)
+    for field, default in _EXPERIENCE_DEFAULTS.items():
+        if field in out and out.get(field) == default:
             out.pop(field, None)
     return out
 
@@ -1173,6 +1195,9 @@ def _present(mem: Dict[str, Any]) -> Dict[str, Any]:
         out.setdefault(field, None)
     for field in _LIST_READ_FIELDS:
         out.setdefault(field, [])  # a fresh list per call, never shared
+    if out.get("type") == "experience":
+        for field, default in _EXPERIENCE_DEFAULTS.items():
+            out.setdefault(field, default)
     timestamp = out.get("timestamp")
     for field in _TIMESTAMP_ALIASES:
         out.setdefault(field, timestamp)
@@ -1810,6 +1835,100 @@ class TripleMemoryStore:
                 affinity_state=state,
             )
             return self.get_memory("relationship", existing["id"])
+
+    # ---- experiences & current experiential affect --------------------
+    def record_experience(self, content: str, *, kind: str = "",
+                          source: str = "ai_extraction", work_id: Optional[str] = None,
+                          intensity: float = 0.5, significance: float = 0.5,
+                          tags: Optional[List[str]] = None,
+                          keywords: Optional[List[str]] = None,
+                          confidence: float = 0.7) -> Dict[str, Any]:
+        """Store one experience and fold it into Astra's current affect.
+
+        An experience is a first-class self-model record (type ``experience``),
+        so it participates in the existing evidence, decay, dormancy and
+        supersession machinery exactly like any other memory: isolated events
+        fade, repeated or significant ones persist. Recording it also nudges the
+        temporary affective accumulator, but the two stay separate - the
+        experience is the durable trace, the affect is the transient condition.
+
+        Returns the stored experience record.
+        """
+        work_id = (str(work_id).strip() or None) if work_id is not None else None
+        mem_id = self.add_memory(
+            target_model="self",
+            content=content,
+            mem_type="experience",
+            source=source,
+            confidence=confidence,
+            tags=list(tags or []) + (["work:" + work_id] if work_id else []),
+            keywords=keywords or [],
+            experience_kind=kind or "",
+            work_id=work_id,
+            intensity=_clamp_confidence(intensity, 0.5),
+            significance=_clamp_confidence(significance, 0.5),
+        )
+        self.accumulate_experience_affect(
+            kind, intensity=intensity, significance=significance, text=content,
+        )
+        return self.get_memory("self", mem_id)
+
+    def accumulate_experience_affect(self, kind: str, *, intensity: float = 0.5,
+                                     significance: float = 0.5, text: str = "") -> Dict[str, Any]:
+        """Fold an experience into the single affect-accumulator record.
+
+        Mirrors ``accumulate_relational_event``: the state lives in one
+        self-model memory so it persists and stays auditable, and only an event
+        moves it. It is kept out of generic retrieval (see
+        ``affect.affect_memory_filter``) so the condition is stated once, by its
+        own prompt block, rather than leaking in as a "fact".
+        """
+        with self._lock:
+            existing = None
+            # Matched regardless of status: the accumulator is a single record,
+            # so a dormant one is reused (and updated) rather than duplicated.
+            for mem in self.memories["self"]:
+                if affect.affect_memory_filter(mem):
+                    existing = mem
+                    break
+            state = affect.record_event(
+                existing.get("affect_state") if existing else None,
+                kind, intensity=intensity, significance=significance, text=text,
+            )
+            if existing is None:
+                mem_id = self.add_memory(
+                    target_model="self",
+                    content=affect.memory_content(),
+                    mem_type="self_observation",
+                    source="ai_extraction",
+                    tags=affect.memory_tags(),
+                    keywords=affect.memory_keywords(),
+                    confidence=0.5,
+                    affect_state=state,
+                )
+                return self.get_memory("self", mem_id)
+            self.update_memory(
+                "self", existing["id"],
+                tags=affect.memory_tags(),
+                keywords=affect.memory_keywords(),
+                affect_state=state,
+            )
+            return self.get_memory("self", existing["id"])
+
+    def get_experiences(self, *, work_id: Optional[str] = None,
+                        kind: Optional[str] = None,
+                        status: Optional[str] = "active") -> List[Dict[str, Any]]:
+        """Experiences, optionally scoped to a work and/or an experience kind."""
+        experiences = self.get_memories("self", status=status, mem_type="experience")
+        if work_id is not None:
+            experiences = [m for m in experiences if m.get("work_id") == work_id]
+        if kind is not None:
+            experiences = [m for m in experiences if m.get("experience_kind") == kind]
+        return experiences
+
+    def current_affect(self) -> Dict[str, Any]:
+        """The stored experiential-affect state, or a blank state if none yet."""
+        return affect.load_state_from_memories(self.get_memories("self", status=None))
 
     def apply_decay(self, now: Optional[datetime] = None) -> Dict[str, int]:
         """Recompute decay for every memory and archive the clearly worthless.
