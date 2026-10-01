@@ -34,6 +34,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from . import relational
+
 
 # ---------------------------------------------------------------------
 # 1. Source hierarchy (section 2)
@@ -1024,10 +1026,16 @@ def _days_since(value: Any, now: Optional[datetime] = None) -> Optional[float]:
 # ---------------------------------------------------------------------
 # Safe file IO
 # ---------------------------------------------------------------------
-def atomic_save(filepath: str, data: Any, backup: bool = True) -> None:
+def atomic_save(filepath: str, data: Any, backup: bool = True,
+                *, compact: bool = True) -> None:
     """
     Save JSON atomically: write to a temp file, fsync, then replace.
     If `backup` is set, the previous version is kept as "<file>.bak".
+
+    Files are written in a dense one-record-per-line layout by default. The
+    format is plain JSON (no custom decoder), it is still readable, and it is
+    ~30% smaller than ``indent=2``; `compact=False` keeps the pretty form for
+    one-off, human-facing dumps.
     """
     filepath = os.path.abspath(filepath)
     dir_name = os.path.dirname(filepath)
@@ -1037,7 +1045,10 @@ def atomic_save(filepath: str, data: Any, backup: bool = True) -> None:
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+            if compact:
+                json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
+            else:
+                json.dump(data, f, indent=2, ensure_ascii=False)
             f.flush()
             os.fsync(f.fileno())
         if backup and os.path.exists(filepath):
@@ -1093,6 +1104,121 @@ def _load_dict_list(path: str) -> List[Dict[str, Any]]:
     if len(valid) != len(data):
         logger.warning("Ignored %d non-object entries in %s", len(data) - len(valid), path)
     return valid
+
+
+# ---------------------------------------------------------------------
+# Compact on-disk layout
+# ---------------------------------------------------------------------
+# A record's *meaning* is a small core; the rest is either derived at read time
+# or a no-op default. Storing only the core keeps the files from growing without
+# bound, without changing a single reader - every reader already uses ``.get``
+# with a safe default. These are the fields dropped on write:
+#
+#   * ``effective_strength`` - recomputed by ``effective_strength()``; the cached
+#     copy was written by ``apply_decay`` and never read.
+#   * ``source_type``       - a duplicate of ``source_tier(source)``.
+#   * ``created_at``/``last_used``/``last_reinforced`` - all default to
+#     ``timestamp``; only kept when they actually differ (i.e. after real use).
+#   * empty ``tags``/``keywords``/``contradicts``, and the no-op defaults
+#     ``use_count``/``contradiction_count``/``reinforcement_count`` - all
+#     re-created on read.
+#   * ``None`` supersession pointers and ``slot``.
+_DERIVED_FIELDS = ("effective_strength", "source_type")
+_TIMESTAMP_ALIASES = ("created_at", "last_used", "last_reinforced")
+_NOOP_DEFAULTS = {"use_count": 0, "contradiction_count": 0, "reinforcement_count": 1}
+_EMPTY_LIST_FIELDS = ("tags", "keywords", "contradicts")
+_NULL_DROP_FIELDS = ("supersedes", "superseded_by", "slot")
+
+
+def compact_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Return ``record`` with redundant/no-op fields removed (never mutates)."""
+    out = dict(record)
+    for field in _DERIVED_FIELDS:
+        out.pop(field, None)
+    timestamp = out.get("timestamp")
+    for field in _TIMESTAMP_ALIASES:
+        if out.get(field) == timestamp:
+            out.pop(field, None)
+    for field, default in _NOOP_DEFAULTS.items():
+        if out.get(field) == default:
+            out.pop(field, None)
+    for field in _EMPTY_LIST_FIELDS:
+        if not out.get(field):
+            out.pop(field, None)
+    for field in _NULL_DROP_FIELDS:
+        if out.get(field) is None:
+            out.pop(field, None)
+    return out
+
+
+# Fields a reader may subscript directly. The compact layout omits them when
+# they hold their default, so reads re-materialise them: an absent counter means
+# "never used/contradicted", and an absent lifecycle stamp means "same as
+# creation". Callers keep the old contract without the bytes on disk.
+_READ_DEFAULTS: Dict[str, Any] = {
+    "use_count": 0,
+    "contradiction_count": 0,
+    "reinforcement_count": 1,
+}
+_NULL_READ_FIELDS = ("supersedes", "superseded_by")
+_LIST_READ_FIELDS = ("tags", "keywords", "contradicts")
+
+
+def _present(mem: Dict[str, Any]) -> Dict[str, Any]:
+    """A deep copy of ``mem`` with compact-layout defaults restored for reading."""
+    out = copy.deepcopy(mem)
+    for field, default in _READ_DEFAULTS.items():
+        out.setdefault(field, default)
+    for field in _NULL_READ_FIELDS:
+        out.setdefault(field, None)
+    for field in _LIST_READ_FIELDS:
+        out.setdefault(field, [])  # a fresh list per call, never shared
+    timestamp = out.get("timestamp")
+    for field in _TIMESTAMP_ALIASES:
+        out.setdefault(field, timestamp)
+    return out
+
+
+# ---------------------------------------------------------------------
+# Time-based views
+# ---------------------------------------------------------------------
+TIMELINE_GRANULARITIES = ("day", "month", "year")
+_UNKNOWN_PERIOD = "unknown"
+
+
+def _period_key(timestamp: Any, granularity: str) -> str:
+    ts = _parse_ts(timestamp)
+    if ts is None:
+        return _UNKNOWN_PERIOD
+    if granularity == "day":
+        return ts.strftime("%Y-%m-%d")
+    if granularity == "year":
+        return ts.strftime("%Y")
+    return ts.strftime("%Y-%m")
+
+
+def timeline(memories: Iterable[Dict[str, Any]], granularity: str = "month") -> Dict[str, List[Dict[str, Any]]]:
+    """Bucket memories by day/month/year (from ``timestamp``) - a cheap index.
+
+    Pure and read-only: it groups the copies the store already hands out, so it
+    adds no storage and cannot disturb the byte-for-byte read guarantees.
+    """
+    if granularity not in TIMELINE_GRANULARITIES:
+        raise ValueError(f"granularity must be one of {TIMELINE_GRANULARITIES}")
+    buckets: Dict[str, List[Dict[str, Any]]] = {}
+    for mem in memories:
+        buckets.setdefault(_period_key(mem.get("timestamp"), granularity), []).append(mem)
+    return buckets
+
+
+def timeline_summary(memories: Iterable[Dict[str, Any]],
+                     granularity: str = "month") -> List[Tuple[str, int]]:
+    """``[(period, count), ...]`` newest first, with any undated bucket last."""
+    buckets = timeline(memories, granularity)
+    ordered = sorted((k for k in buckets if k != _UNKNOWN_PERIOD), reverse=True)
+    if _UNKNOWN_PERIOD in buckets:
+        ordered.append(_UNKNOWN_PERIOD)
+    return [(period, len(buckets[period])) for period in ordered]
 
 
 # ---------------------------------------------------------------------
@@ -1350,7 +1476,10 @@ class TripleMemoryStore:
         return self.journal_file if key == "journal" else self.files[key]
 
     def _persist(self, key: str) -> None:
-        atomic_save(self._path(key), self._get_list(key))
+        data = self._get_list(key)
+        if key != "journal":
+            data = [compact_record(m) for m in data]
+        atomic_save(self._path(key), data)
 
     def _save_model(self, target_model: str) -> None:
         """Immediately persists a specific model upon change."""
@@ -1398,6 +1527,11 @@ class TripleMemoryStore:
     def _build_memory(self, target_model, content, mem_type, source,
                       keywords, tags, confidence, extra) -> Dict[str, Any]:
         now = _now()
+        # Only the meaningful core is seeded. Everything a reader can derive or
+        # default (created_at/last_used, use_count, contradiction_count,
+        # reinforcement_count, empty lists, null pointers, source_type) is left
+        # off disk entirely - ``compact_record`` enforces the same shape on the
+        # way out, so a record stays small however it was built.
         memory: Dict[str, Any] = {
             "id": _new_id("mem"),
             "target_model": target_model,
@@ -1407,21 +1541,6 @@ class TripleMemoryStore:
             "status": "active",
             "timestamp": now,
             "confidence": _clamp_confidence(confidence),
-            # --- reliability metadata (sections 1, 4, 13) ----------------
-            # All optional on disk: a memory written before this change simply
-            # loads without them and the readers fall back to safe defaults.
-            # ``importance`` is only stored when given; otherwise it is derived
-            # from the memory type at read time.
-            "created_at": now,
-            "last_used": now,
-            "use_count": 0,
-            "contradiction_count": 0,
-            "contradicts": [],
-            "supersedes": None,
-            "superseded_by": None,
-            "source_type": source_tier(source),
-            "reinforcement_count": 1,
-            "last_reinforced": now,
         }
         importance = extra.pop("importance", None)
         if importance is not None:
@@ -1649,6 +1768,49 @@ class TripleMemoryStore:
                     mem["last_used"] = _now()
                     mem["use_count"] = int(mem.get("use_count", 0)) + 1
 
+    # ---- relational preference (Astra -> Roum) -------------------------
+    def accumulate_relational_event(self, event: str, *, subject: str = relational.ROUM,
+                                    text: str = "", **context) -> Dict[str, Any]:
+        """Fold one command-fulfilment event into Astra's relational state.
+
+        The state lives in a single relationship-model memory so it persists,
+        stays auditable (via ``/relationship``), and keeps its evidence on disk
+        alongside everything else. Only an *event* moves it - never a prompt
+        build - and each subject accumulates separately, so nothing here can
+        generalize a Roum-specific preference to another person.
+        """
+        content = relational.memory_content(subject)
+        with self._lock:
+            existing = None
+            for mem in self.memories["relationship"]:
+                if (mem.get("status") == "active"
+                        and relational.affinity_memory_filter(mem)):
+                    existing = mem
+                    break
+            state = relational.record_event(
+                existing.get("affinity_state") if existing else None,
+                event, subject=subject, text=text, **context,
+            )
+            if existing is None:
+                mem_id = self.add_memory(
+                    target_model="relationship",
+                    content=content,
+                    mem_type="relationship_observation",
+                    source="ai_extraction",
+                    tags=relational.memory_tags(),
+                    keywords=relational.memory_keywords(subject),
+                    confidence=0.5,
+                    affinity_state=state,
+                )
+                return self.get_memory("relationship", mem_id)
+            self.update_memory(
+                "relationship", existing["id"],
+                tags=relational.memory_tags(),
+                keywords=relational.memory_keywords(subject),
+                affinity_state=state,
+            )
+            return self.get_memory("relationship", existing["id"])
+
     def apply_decay(self, now: Optional[datetime] = None) -> Dict[str, int]:
         """Recompute decay for every memory and archive the clearly worthless.
 
@@ -1667,7 +1829,6 @@ class TripleMemoryStore:
                     if status not in ("active", "weakened"):
                         continue
                     strength = effective_strength(mem, now)
-                    mem["effective_strength"] = round(strength, 4)
 
                     if is_governing_eligible(mem):
                         continue  # core boundaries never decay into worthlessness
@@ -1795,7 +1956,7 @@ class TripleMemoryStore:
             for name in models:
                 for mem in self.memories[name]:
                     if is_governing(mem) and mem.get("content"):
-                        out.append(copy.deepcopy(mem))
+                        out.append(_present(mem))
         out.sort(key=self._authority_key, reverse=True)
         return out
 
@@ -1810,15 +1971,21 @@ class TripleMemoryStore:
                         continue
                     current = state.get(slot)
                     if current is None or str(mem.get("timestamp", "")) > str(current.get("timestamp", "")):
-                        state[slot] = copy.deepcopy(mem)
+                        state[slot] = _present(mem)
         return [state[k] for k in sorted(state)]
 
     def update_memory(self, target_model: str, mem_id: str, *, content: Optional[str] = None,
                       confidence: Optional[float] = None, keywords: Optional[List[str]] = None,
-                      tags: Optional[List[str]] = None, mem_type: Optional[str] = None) -> Dict[str, Any]:
-        """Edit selected fields of a memory; returns a copy of the updated memory."""
+                      tags: Optional[List[str]] = None, mem_type: Optional[str] = None,
+                      **extra) -> Dict[str, Any]:
+        """Edit selected fields of a memory; returns a copy of the updated memory.
+
+        ``extra`` lets a caller persist a structured field that belongs to the
+        record (e.g. accumulated relational state). Store-managed identity
+        fields stay off-limits; everything else is written as given.
+        """
         self._check_target(target_model)
-        if all(v is None for v in (content, confidence, keywords, tags, mem_type)):
+        if all(v is None for v in (content, confidence, keywords, tags, mem_type)) and not extra:
             raise ValueError("Nothing to update")
         if mem_type is not None:
             self._check_type(mem_type)
@@ -1838,8 +2005,12 @@ class TripleMemoryStore:
                     mem["tags"] = _clean_str_list(tags)
                 if mem_type is not None:
                     mem["type"] = mem_type
+                for field, value in extra.items():
+                    if field in _STORE_MANAGED_FIELDS:
+                        raise ValueError(f"'{field}' is managed by the store and cannot be overridden")
+                    mem[field] = value
                 mem["updated_at"] = _now()
-            return copy.deepcopy(mem)
+            return _present(mem)
 
     def archive_memory(self, target_model: str, mem_id: str, reason: Optional[str] = None) -> None:
         """Retire a memory without deleting it. Archived memories are never injected into prompts."""
@@ -1912,7 +2083,7 @@ class TripleMemoryStore:
     def get_memory(self, target_model: str, mem_id: str) -> Dict[str, Any]:
         self._check_target(target_model)
         with self._lock:
-            return copy.deepcopy(self._locate(target_model, mem_id)[1])
+            return _present(self._locate(target_model, mem_id)[1])
 
     def get_memories(self, target_model: str, status: Optional[str] = "active",
                      mem_type: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -1920,7 +2091,7 @@ class TripleMemoryStore:
         self._check_target(target_model)
         with self._lock:
             return [
-                copy.deepcopy(m) for m in self.memories[target_model]
+                _present(m) for m in self.memories[target_model]
                 if (status is None or m.get("status") == status)
                 and (mem_type is None or m.get("type") == mem_type)
             ]
@@ -1944,7 +2115,7 @@ class TripleMemoryStore:
                 if mem.get("status") != "active":
                     continue
                 if detect_contradiction(mem, probe):
-                    return copy.deepcopy(mem)
+                    return _present(mem)
         return None
 
     def get_retrievable_memories(self, target_model: str) -> List[Dict[str, Any]]:
@@ -1956,9 +2127,32 @@ class TripleMemoryStore:
         self._check_target(target_model)
         with self._lock:
             return [
-                copy.deepcopy(m) for m in self.memories[target_model]
+                _present(m) for m in self.memories[target_model]
                 if m.get("status") in ("active", "weakened")
             ]
+
+    def get_timeline(self, target_model: Optional[str] = None, *,
+                     granularity: str = "month") -> List[Tuple[str, int]]:
+        """``[(period, count), ...]`` newest first, across one or all models.
+
+        A cheap date index over the records already in memory - no extra storage
+        and no prompt cost, so "what happened in August" is a single call.
+        """
+        memories: List[Dict[str, Any]] = []
+        for name in ([target_model] if target_model else sorted(VALID_TARGET_MODELS)):
+            memories.extend(self.get_memories(name, status=None))
+        return timeline_summary(memories, granularity)
+
+    def get_period(self, period: str, target_model: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Every memory in a day/month/year bucket (e.g. ``"2026-09"``), newest first."""
+        text = str(period).strip()
+        granularity = "year" if len(text) == 4 else "day" if len(text) == 10 else "month"
+        memories: List[Dict[str, Any]] = []
+        for name in ([target_model] if target_model else sorted(VALID_TARGET_MODELS)):
+            memories.extend(self.get_memories(name, status=None))
+        bucket = [m for m in memories if _period_key(m.get("timestamp"), granularity) == text]
+        bucket.sort(key=lambda m: str(m.get("timestamp", "")), reverse=True)
+        return bucket
 
     def stats(self) -> Dict[str, Any]:
         with self._lock:

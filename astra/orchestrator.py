@@ -7,6 +7,7 @@ import requests
 import yaml
 
 from . import elysium as _elysium
+from . import relational
 from .elysium import (  # noqa: F401 - re-exported for import compatibility
     CommandExtractor,
     ElysiumCommandRecorder,
@@ -509,6 +510,10 @@ class CompanionOrchestrator:
         all_roum = self._load_memories("roum")
         all_self = self._load_memories("self")
         all_rel = self._load_memories("relationship")
+        # The accumulated relational state is presented through its own block
+        # (below), so its raw backing record is kept out of generic retrieval:
+        # that way the preference is stated once, and only when it is earned.
+        all_rel = [m for m in all_rel if not relational.affinity_memory_filter(m)]
         everything = all_roum + all_self + all_rel
 
         # 2. Governing memories: always applied, regardless of the query words.
@@ -628,6 +633,23 @@ class CompanionOrchestrator:
             "replaced by ordinary affection, closeness, or nicknames."
         )
         parts.extend(f"- {b}" for b in boundaries)
+        self._append_affinity(parts)
+
+    def _affinity_state(self) -> Dict[str, Any]:
+        """Astra's accumulated relational state, read from the relationship model."""
+        getter = getattr(self.store, "get_memories", None)
+        memories = getter("relationship", status=None) if callable(getter) else []
+        return relational.load_state_from_memories(memories)
+
+    def affinity_diagnostics(self) -> Dict[str, Any]:
+        """The relational preference as diagnostics (never an instruction)."""
+        return relational.affinity_diagnostics(self._affinity_state())
+
+    def _append_affinity(self, parts: List[str]) -> None:
+        """Inject the earned preference, and only once the evidence supports it."""
+        block = relational.prompt_block(self._affinity_state())
+        if block:
+            parts.append("\n" + block)
 
     def _append_current_state(self, parts: List[str], current_state: List[Dict[str, Any]]) -> None:
         rows = [
@@ -684,6 +706,7 @@ class CompanionOrchestrator:
             "total_governing": sum(1 for m in everything if is_governing(m) and m.get("content")),
             "current_state_slots": {m.get("slot"): _clean_text(m.get("content")) for m in current_state},
             "boundaries": boundaries,
+            "relational_affinity": self.affinity_diagnostics(),
             "retrieved_ids": sorted(i for i in retrieved_ids if i),
             "injected_ids": sorted(i for i in injected_ids if i),
             "omitted_ids": sorted(

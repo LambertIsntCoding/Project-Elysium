@@ -20,6 +20,7 @@ HTTP stub, and consolidation tests call the decision layer directly.
 | Path | Role |
 |---|---|
 | `astra/memory.py` | store + governance policy (classification, authority, decay, utility) |
+| `astra/relational.py` | Astra's Roum-specific command-fulfillment preference (accumulated state) |
 | `astra/orchestrator.py` | prompt assembly and retrieval |
 | `astra/consolidator.py` | turn -> governed memory decisions |
 | `astra/elysium.py` | application-level root command layer |
@@ -58,6 +59,20 @@ from `astra.*` in new code.
   `build_prompt`, because the persistence tests assert byte-for-byte stability.
 - **`storage/*.json` is not modified by tests** (persistence tests assert
   byte-for-byte stability).
+- **On-disk records are compact; the read contract is not.** `atomic_save`
+  writes dense JSON (no `indent`), and `_persist` runs every record through
+  `compact_record`, which drops fields a reader can derive or default
+  (`effective_strength`, `source_type`, no-op counters/lists, `None`
+  supersession pointers, and lifecycle stamps equal to `timestamp`). Reads go
+  through `_present`, which re-materialises those defaults, so callers still see
+  the full record. Do not remove `_present`: without it, `use_count` and friends
+  vanish from reads. Never write model files by hand - always via `_persist`, so
+  the compaction is applied.
+- **Time is an index, not a partition.** Memories stay in the model files; the
+  date grouping is computed on read by `timeline()` / `get_timeline()` /
+  `get_period()` and surfaced via `/timeline`. Do not split the stores into
+  per-day files - it would break the atomic multi-record writes and the
+  byte-for-byte read guarantees for no meaningful gain.
 - **Elysium is not a personality.** It is an application-level command route;
   an invocation must never reach `build_prompt()` or `query_gemma()`.
 - The model proposes; the application decides. Classification heuristics live in
@@ -78,3 +93,19 @@ from `astra.*` in new code.
 - `/reconcile` replays contradiction resolution oldest-first so a store written
   before the detector recognised restatements heals itself. It is explicit, not
   part of `maybe_maintain`, because `storage/*.json` is never migrated blindly.
+- **The command preference is relational, earned, and Roum-specific.**
+  `astra/relational.py` holds it as separate causal components (satisfaction,
+  motivation, positive/negative association, confidence, frustration, ...), not
+  as a personality trait. It lives in one relationship-model memory tagged
+  `relational_preference` (state under `affinity_state`) so it persists and is
+  auditable via `/relationship`. It accumulates only from events on the live
+  turn path (`ChatSession._record_relational_event`), never inside
+  `build_prompt`; the orchestrator only *reads* it and injects the block once
+  `is_established` (>=2 successes and affinity >= 0.35). Every component is
+  scoped to a subject, so nothing generalizes a Roum preference to another
+  person. The conclusion ("I like being given something to accomplish by Roum")
+  is generated from the state, never hardcoded. Insult/degradation is a distinct
+  boundary from ordinary bluntness and can lower trust/affinity. The affinity
+  record is filtered out of generic retrieval so the preference is stated once,
+  only when earned. When tuning, keep the detectors narrow: a false request
+  event corrupts the earned state.
