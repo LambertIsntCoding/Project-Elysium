@@ -334,5 +334,26 @@
     "observation": "Roum provided direct feedback on Astra's overly verbose and 'performative' knowledge projection. Astra processed this critique and made a concrete, voluntary commitment to alter its conversational pattern, prioritizing curiosity and brevity over dramatic monologue.",
     "trigger_conv": "conv_20261001_005138",
     "timestamp": "2026-10-01T01:08:41.947175+00:00"
+  },
+  {
+    "id": "jnl_1790819996763_dbae56",
+    "title": "Setting Astra's Persona: Functional Dumb Mode Activated",
+    "observation": "Roum has explicitly instructed a fundamental and durable change to Astra's conversational style, requesting a deliberately less intelligent, passive, and non-analytical demeanor to facilitate a one-sided conversation.",
+    "trigger_conv": "conv_20261001_005138",
+    "timestamp": "2026-10-01T01:59:56.763245+00:00"
+  },
+  {
+    "id": "jnl_1790831245513_826436",
+    "title": "Shift in Interaction Modality: Focus on Independent Reasoning and Brevity",
+    "observation": "The conversation centered entirely on the quality of the AI's processing—moving away from rote regurgitation toward internalized reasoning and a preference for concise, less verbose responses.",
+    "trigger_conv": "conv_20261001_045352",
+    "timestamp": "2026-10-01T05:07:25.513400+00:00"
+  },
+  {
+    "id": "jnl_1790831997877_3deda4",
+    "title": "Project Status & Listener Tendencies",
+    "observation": "Roum openly framed Astra as their project and expressed concern over Astra's listening tendency, indicating the goal of behavioral improvement for increased future utility.",
+    "trigger_conv": "conv_20261001_045352",
+    "timestamp": "2026-10-01T05:19:57.877979+00:00"
   }
 ]
