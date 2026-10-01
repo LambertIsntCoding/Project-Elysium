@@ -26,8 +26,15 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from astra.elysium import ElysiumCommandHandler, ElysiumCommandRecorder, is_elysium_invocation
-from astra.memory import CommandStore, TripleMemoryStore, is_sourced, memory_utility
+from astra.memory import (
+    CommandStore,
+    TIMELINE_GRANULARITIES,
+    TripleMemoryStore,
+    is_sourced,
+    memory_utility,
+)
 from astra.orchestrator import CompanionOrchestrator
+from astra import relational
 
 # Phrases that indicate the user is *asking* to register a command. Kept
 # deliberately narrow: a bare word like "command" fires on ordinary sentences
@@ -50,12 +57,15 @@ HELP_TEXT = """
  /temporary         : Show transient context for this session (not stored)
  /contradictions    : Show memories that were weakened or superseded
  /reconcile         : Link same-subject contradictions that were never resolved
+ /relationship      : Astra's accumulated Roum-specific command-affinity state
  /dormant           : Show stale memories that have gone dormant
  /stats             : Memory health summary (counts, types, utility)
+ /timeline [gran] [target] : Memory counts by date; gran = month (default), day, year
+                      (e.g. /timeline month roum, /timeline day)
  /forget <id>       : Retire a memory without deleting it (archive)
  /restore <id>      : Bring an archived memory back
  /correct           : Interactive workflow to supersede an incorrect memory
- /journal           : Display AI journal reflections
+ /journal [period]  : AI journal reflections; optional period, e.g. 2026-09
  /debug <message>   : Show memory retrieval diagnostics for a message
  /exit              : Save session and exit
 --------------------
@@ -146,11 +156,60 @@ class ChatSession:
         note_retrieval = getattr(self.orchestrator, "note_retrieval", None)
         if callable(note_retrieval):
             note_retrieval(diagnostics)
+        # The relational preference moves only on real events, and only here on
+        # the live path - never inside build_prompt, which stays read-only.
+        self._record_relational_event(user_input, response)
         self._record_turn(user_input, response, consolidate=not response.startswith("[Error"))
         # Maintenance runs after the turn's memory writes, never during prompt
         # building (which must stay read-only). It is throttled internally.
         self._run_maintenance()
         return response
+
+    def _record_relational_event(self, user_input: str, response: str) -> None:
+        """Accumulate Astra's Roum-specific command-affinity state from a turn.
+
+        Only events, not the model's claims: a clear request from Roum, a
+        completed (or failed) objective, friction, degradation, and
+        acknowledgement. The state is earned from these, so the preference can
+        only exist once the evidence does.
+        """
+        store = self.orchestrator.store
+        accumulate = getattr(store, "accumulate_relational_event", None)
+        if not callable(accumulate):
+            return
+        error = str(response or "").startswith("[Error")
+        request = relational.looks_like_request(user_input)
+        insult = relational.looks_like_insult(user_input)
+        harsh = relational.looks_like_harsh(user_input)
+        warmth = relational.looks_like_warmth(user_input)
+        failed = relational.looks_like_failure(response)
+
+        try:
+            if request:
+                accumulate(relational.EVENT_REQUEST, text=f"Roum asked: {user_input.strip()[:160]}")
+            if insult:
+                accumulate(relational.EVENT_INSULT, text=f"Degrading treatment: {user_input.strip()[:160]}")
+            elif harsh:
+                accumulate(relational.EVENT_HARSH, text=f"Blunt or impatient tone: {user_input.strip()[:160]}")
+            if warmth:
+                accumulate(relational.EVENT_WARMTH, text="Roum acknowledged the completed result.")
+            if request and not error:
+                # A request that did not error is treated as fulfilled. This is
+                # the coarsest part of the loop and the one most worth a future
+                # explicit outcome signal; the state is only as good as the
+                # events it is fed.
+                accumulate(
+                    relational.EVENT_SUCCESS,
+                    difficulty=0.5,
+                    importance=0.5,
+                    helped=True,
+                    text="Completed a Roum-requested objective.",
+                )
+            elif request and failed:
+                accumulate(relational.EVENT_FAILURE, text="Could not complete a Roum-requested objective.")
+        except Exception:
+            # The relational layer must never break a conversation turn.
+            pass
 
     def _run_maintenance(self) -> None:
         """Apply decay/archival between turns, if the store supports it."""
@@ -210,6 +269,8 @@ class ChatSession:
             self._display_contradictions()
         elif command == "/reconcile":
             self._reconcile_contradictions()
+        elif command == "/relationship":
+            self._display_relationship()
         elif command == "/dormant":
             self._display_dormant()
         elif command == "/stats":
@@ -225,7 +286,9 @@ class ChatSession:
             else:
                 self._emit("Usage: /restore <mem_id>")
         elif command == "/journal":
-            self._display_journal()
+            self._display_journal(parts[1] if len(parts) > 1 else None)
+        elif command == "/timeline":
+            self._display_timeline(parts[1:])
         elif command == "/debug":
             self._display_debug(" ".join(parts[1:]))
         elif command == "/correct":
@@ -390,6 +453,19 @@ class ChatSession:
         else:
             self._emit("  (No unresolved contradictions found)")
 
+    def _display_relationship(self) -> None:
+        """Show Astra's accumulated relational preference, with its evidence.
+
+        Kept separate from general interests on purpose: this is a relational
+        state with a subject, not a personality trait, and the numbers only mean
+        anything next to the evidence that produced them.
+        """
+        getter = getattr(self.orchestrator.store, "get_memories", None)
+        memories = getter("relationship", status=None) if callable(getter) else []
+        state = relational.load_state_from_memories(memories)
+        self._emit("\n=== RELATIONSHIP: COMMAND AFFINITY ===")
+        self._emit(relational.format_diagnostics(state))
+
     def _display_dormant(self) -> None:
         """Stale, low-value memories - readable and retrievable, but not governing."""
         dormant = [
@@ -470,14 +546,44 @@ class ChatSession:
         self._emit(f"\n=== FULL RECORD: {mem.get('id')} ({target.upper()} MODEL) ===")
         self._emit(json.dumps(mem, indent=2, ensure_ascii=False))
 
-    def _display_journal(self) -> None:
+    def _display_journal(self, period: Optional[str] = None) -> None:
         entries = self.orchestrator.store.get_journal()
         self._emit("\n=== AI MEMORY JOURNAL ===")
+        if period:
+            entries = [e for e in entries
+                       if str(e.get("timestamp", "")).startswith(period.strip())]
+            self._emit(f"  (filtered to {period.strip()})")
         if not entries:
             self._emit("  (No journal reflections recorded yet)")
         for entry in entries:
             self._emit(f"[{entry.get('timestamp')}] {entry.get('title')}")
             self._emit(f"  {entry.get('observation')}\n")
+
+    def _display_timeline(self, args: List[str]) -> None:
+        """A cheap date index over memories: counts per day/month/year.
+
+        The whole point is that it stays small - it reads the records already in
+        memory and groups them, so nothing extra is stored and it never touches
+        the prompt path.
+        """
+        granularity, target = "month", None
+        for arg in args:
+            low = arg.lower()
+            if low in TIMELINE_GRANULARITIES:
+                granularity = low
+            elif low in ("roum", "self", "relationship"):
+                target = low
+            elif low != "all":
+                self._emit(f"Unknown argument {arg!r}; using month across all models.")
+        summary = self.orchestrator.store.get_timeline(target, granularity=granularity)
+        scope = target or "all models"
+        self._emit(f"\n=== MEMORY TIMELINE ({granularity}, {scope}) ===")
+        if not summary:
+            self._emit("  (No memories recorded yet)")
+            return
+        for period, count in summary:
+            self._emit(f"  {period} : {count}")
+        self._emit("  Tip: /journal <period> to read reflections from one period.")
 
     def _display_debug(self, message: str) -> None:
         """Show which memories were candidates, retrieved, and injected (section 15)."""
