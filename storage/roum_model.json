@@ -22,7 +22,7 @@
     "superseded_by": "mem_20260930_051047_258681",
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8029,
+    "effective_strength": 0.478,
     "contradiction_count": 1,
     "contradicts": [
       "mem_20260930_051047_258681"
@@ -52,7 +52,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7557
+    "effective_strength": 0.7549
   },
   {
     "id": "mem_20260930_051047_246040",
@@ -78,7 +78,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8029
+    "effective_strength": 0.8021
   },
   {
     "id": "mem_20260930_051047_252596",
@@ -103,7 +103,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.6612
+    "effective_strength": 0.6605
   },
   {
     "id": "mem_20260930_051047_258681",
@@ -128,7 +128,7 @@
     "superseded_by": null,
     "supersedes": "mem_20260930_050649_537837",
     "supersession_reason": null,
-    "effective_strength": 0.8029
+    "effective_strength": 0.8021
   },
   {
     "id": "mem_20260930_051323_879189",
@@ -153,7 +153,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7084
+    "effective_strength": 0.7077
   },
   {
     "id": "mem_20260930_051323_894347",
@@ -178,7 +178,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7084
+    "effective_strength": 0.7077
   },
   {
     "id": "mem_20260930_051323_901209",
@@ -203,7 +203,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.6612
+    "effective_strength": 0.6605
   },
   {
     "id": "mem_20260930_051408_897113",
@@ -229,7 +229,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.6612
+    "effective_strength": 0.6606
   },
   {
     "id": "mem_20260930_051408_903299",
@@ -252,7 +252,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7084
+    "effective_strength": 0.7077
   },
   {
     "id": "mem_20260930_051408_918761",
@@ -278,7 +278,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.1793
+    "effective_strength": 0.1789
   },
   {
     "id": "mem_20260930_051543_748402",
@@ -304,7 +304,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8029
+    "effective_strength": 0.8021
   },
   {
     "id": "mem_20260930_051706_489001",
@@ -329,7 +329,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8029
+    "effective_strength": 0.8021
   },
   {
     "id": "mem_20260930_051706_504534",
@@ -352,7 +352,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.6612
+    "effective_strength": 0.6606
   },
   {
     "id": "mem_20260930_051706_511661",
@@ -375,7 +375,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8029
+    "effective_strength": 0.8021
   },
   {
     "id": "mem_20260930_052717_186294",
@@ -401,7 +401,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.3306
+    "effective_strength": 0.3303
   },
   {
     "id": "mem_20260930_052949_699041",
@@ -426,7 +426,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.803
+    "effective_strength": 0.8022
   },
   {
     "id": "mem_20260930_052949_714912",
@@ -450,7 +450,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.803
+    "effective_strength": 0.8022
   },
   {
     "id": "mem_20260930_052949_721162",
@@ -474,7 +474,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.5196
+    "effective_strength": 0.519
   },
   {
     "id": "mem_20260930_053255_317528",
@@ -500,7 +500,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.6613
+    "effective_strength": 0.6606
   },
   {
     "id": "mem_20260930_053509_218575",
@@ -524,7 +524,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7558
+    "effective_strength": 0.755
   },
   {
     "id": "mem_20260930_053718_878920",
@@ -548,7 +548,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.803
+    "effective_strength": 0.8022
   },
   {
     "id": "mem_20260930_053718_886817",
@@ -572,7 +572,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.803
+    "effective_strength": 0.8022
   },
   {
     "id": "mem_20260930_054531_819870",
@@ -597,7 +597,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.803
+    "effective_strength": 0.8022
   },
   {
     "id": "mem_20260930_054531_836394",
@@ -620,7 +620,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.803
+    "effective_strength": 0.8022
   },
   {
     "id": "mem_20260930_054531_843616",
@@ -645,7 +645,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.803
+    "effective_strength": 0.8022
   },
   {
     "id": "mem_20260930_054531_851483",
@@ -670,7 +670,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.803
+    "effective_strength": 0.8022
   },
   {
     "id": "mem_20260930_054531_857795",
@@ -695,7 +695,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.6613
+    "effective_strength": 0.6607
   },
   {
     "id": "mem_20260930_054858_908408",
@@ -719,7 +719,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7558
+    "effective_strength": 0.7551
   },
   {
     "id": "mem_20260930_054858_915294",
@@ -743,7 +743,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.803
+    "effective_strength": 0.8022
   },
   {
     "id": "mem_20260930_054858_921735",
@@ -767,7 +767,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.6613
+    "effective_strength": 0.6607
   },
   {
     "id": "mem_20260930_054858_938665",
@@ -791,7 +791,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.5196
+    "effective_strength": 0.5191
   },
   {
     "id": "mem_20260930_055405_839226",
@@ -815,7 +815,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8031
+    "effective_strength": 0.8023
   },
   {
     "id": "mem_20260930_055405_847134",
@@ -839,7 +839,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8031
+    "effective_strength": 0.8023
   },
   {
     "id": "mem_20260930_055405_854546",
@@ -863,7 +863,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.6614
+    "effective_strength": 0.6607
   },
   {
     "id": "mem_20260930_055405_871887",
@@ -887,7 +887,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7558
+    "effective_strength": 0.7551
   },
   {
     "id": "mem_20260930_055618_220659",
@@ -913,7 +913,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8031
+    "effective_strength": 0.8023
   },
   {
     "id": "mem_20260930_062206_199498",
@@ -937,7 +937,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.359
+    "effective_strength": 0.3581
   },
   {
     "id": "mem_20260930_062233_542369",
@@ -962,7 +962,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.6615
+    "effective_strength": 0.6608
   },
   {
     "id": "mem_20260930_062252_768384",
@@ -987,7 +987,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7559
+    "effective_strength": 0.7552
   },
   {
     "id": "mem_20260930_062309_025177",
@@ -1011,7 +1011,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7559
+    "effective_strength": 0.7552
   },
   {
     "id": "mem_20260930_062413_231854",
@@ -1036,7 +1036,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8032
+    "effective_strength": 0.8024
   },
   {
     "id": "mem_20260930_062433_187023",
@@ -1060,7 +1060,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8032
+    "effective_strength": 0.8024
   },
   {
     "id": "mem_20260930_062450_324210",
@@ -1085,7 +1085,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8032
+    "effective_strength": 0.8024
   },
   {
     "id": "mem_20260930_062511_179870",
@@ -1111,7 +1111,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7087
+    "effective_strength": 0.708
   },
   {
     "id": "mem_20260930_062535_846216",
@@ -1135,7 +1135,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8032
+    "effective_strength": 0.8024
   },
   {
     "id": "mem_20260930_062535_857424",
@@ -1159,7 +1159,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8032
+    "effective_strength": 0.8024
   },
   {
     "id": "mem_20260930_062535_869042",
@@ -1182,7 +1182,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8032
+    "effective_strength": 0.8024
   },
   {
     "id": "mem_20260930_062535_879320",
@@ -1206,7 +1206,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8032
+    "effective_strength": 0.8024
   },
   {
     "id": "mem_20260930_062615_080947",
@@ -1230,7 +1230,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7087
+    "effective_strength": 0.708
   },
   {
     "id": "mem_20260930_062633_564280",
@@ -1254,7 +1254,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.756
+    "effective_strength": 0.7552
   },
   {
     "id": "mem_20260930_062652_028137",
@@ -1278,7 +1278,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.6615
+    "effective_strength": 0.6608
   },
   {
     "id": "mem_20260930_062717_683183",
@@ -1303,7 +1303,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.6615
+    "effective_strength": 0.6608
   },
   {
     "id": "mem_20260930_062733_925224",
@@ -1327,7 +1327,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.567
+    "effective_strength": 0.5664
   },
   {
     "id": "mem_20260930_062750_782850",
@@ -1351,7 +1351,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8032
+    "effective_strength": 0.8024
   },
   {
     "id": "mem_20260930_062805_137374",
@@ -1375,7 +1375,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.6615
+    "effective_strength": 0.6608
   },
   {
     "id": "mem_20260930_062805_146119",
@@ -1399,7 +1399,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.6615
+    "effective_strength": 0.6608
   },
   {
     "id": "mem_20260930_062825_354483",
@@ -1423,7 +1423,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.756
+    "effective_strength": 0.7552
   },
   {
     "id": "mem_20260930_062847_276458",
@@ -1447,7 +1447,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.756
+    "effective_strength": 0.7552
   },
   {
     "id": "mem_20260930_062847_284911",
@@ -1471,7 +1471,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.2132
+    "effective_strength": 0.2126
   },
   {
     "id": "mem_20260930_062847_291660",
@@ -1495,7 +1495,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.4039
+    "effective_strength": 0.4029
   },
   {
     "id": "mem_20260930_062908_478471",
@@ -1520,7 +1520,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8032
+    "effective_strength": 0.8024
   },
   {
     "id": "mem_20260930_062924_836928",
@@ -1545,7 +1545,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8032
+    "effective_strength": 0.8024
   },
   {
     "id": "mem_20260930_062957_956156",
@@ -1569,7 +1569,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.756
+    "effective_strength": 0.7552
   },
   {
     "id": "mem_20260930_063018_569491",
@@ -1593,7 +1593,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.756
+    "effective_strength": 0.7552
   },
   {
     "id": "mem_20260930_063037_857441",
@@ -1618,7 +1618,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.756
+    "effective_strength": 0.7552
   },
   {
     "id": "mem_20260930_063100_709006",
@@ -1643,7 +1643,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.3307
+    "effective_strength": 0.3304
   },
   {
     "id": "mem_20260930_063121_412733",
@@ -1667,7 +1667,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.756
+    "effective_strength": 0.7552
   },
   {
     "id": "mem_20260930_063121_421044",
@@ -1692,7 +1692,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.756
+    "effective_strength": 0.7552
   },
   {
     "id": "mem_20260930_063253_282027",
@@ -1716,7 +1716,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.756
+    "effective_strength": 0.7552
   },
   {
     "id": "mem_20260930_063343_862516",
@@ -1741,7 +1741,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8032
+    "effective_strength": 0.8024
   },
   {
     "id": "mem_20260930_063424_360335",
@@ -1767,7 +1767,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.756
+    "effective_strength": 0.7552
   },
   {
     "id": "mem_20260930_063507_600877",
@@ -1792,7 +1792,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8032
+    "effective_strength": 0.8024
   },
   {
     "id": "mem_20260930_063528_037736",
@@ -1817,7 +1817,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8032
+    "effective_strength": 0.8024
   },
   {
     "id": "mem_20260930_063607_306392",
@@ -1841,7 +1841,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8032
+    "effective_strength": 0.8025
   },
   {
     "id": "mem_20260930_063622_310228",
@@ -1865,7 +1865,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.567
+    "effective_strength": 0.5664
   },
   {
     "id": "mem_20260930_063638_030089",
@@ -1889,7 +1889,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.6615
+    "effective_strength": 0.6608
   },
   {
     "id": "mem_20260930_063656_956812",
@@ -1914,7 +1914,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.3308
+    "effective_strength": 0.3304
   },
   {
     "id": "mem_20260930_063714_299618",
@@ -1938,7 +1938,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.756
+    "effective_strength": 0.7553
   },
   {
     "id": "mem_20260930_063729_803221",
@@ -1962,7 +1962,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8033
+    "effective_strength": 0.8025
   },
   {
     "id": "mem_20260930_063746_837958",
@@ -1985,7 +1985,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8033
+    "effective_strength": 0.8025
   },
   {
     "id": "mem_20260930_063803_176974",
@@ -2010,7 +2010,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7088
+    "effective_strength": 0.7081
   },
   {
     "id": "mem_20260930_063826_985398",
@@ -2035,7 +2035,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7088
+    "effective_strength": 0.7081
   },
   {
     "id": "mem_20260930_063959_458089",
@@ -2060,7 +2060,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.6615
+    "effective_strength": 0.6609
   },
   {
     "id": "mem_20260930_064103_710720",
@@ -2085,7 +2085,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.202
+    "effective_strength": 0.2015
   },
   {
     "id": "mem_20260930_064239_421162",
@@ -2108,7 +2108,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.756
+    "effective_strength": 0.7553
   },
   {
     "id": "mem_20260930_064239_429712",
@@ -2132,7 +2132,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.756
+    "effective_strength": 0.7553
   },
   {
     "id": "mem_20260930_064239_437793",
@@ -2156,7 +2156,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.404
+    "effective_strength": 0.403
   },
   {
     "id": "mem_20260930_064239_446906",
@@ -2180,7 +2180,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.1908
+    "effective_strength": 0.1903
   },
   {
     "id": "mem_20260930_064239_454031",
@@ -2204,7 +2204,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.3848
+    "effective_strength": 0.3838
   },
   {
     "id": "mem_20260930_064717_152109",
@@ -2228,7 +2228,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.6615
+    "effective_strength": 0.6609
   },
   {
     "id": "mem_20260930_064741_136791",
@@ -2253,7 +2253,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.6615
+    "effective_strength": 0.6609
   },
   {
     "id": "mem_20260930_065018_698273",
@@ -2277,7 +2277,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.567
+    "effective_strength": 0.5665
   },
   {
     "id": "mem_20260930_065018_705110",
@@ -2301,7 +2301,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.3592
+    "effective_strength": 0.3582
   },
   {
     "id": "mem_20260930_065018_711731",
@@ -2325,7 +2325,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.1571
+    "effective_strength": 0.1567
   },
   {
     "id": "mem_20260930_065357_527078",
@@ -2351,7 +2351,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.1684
+    "effective_strength": 0.1679
   },
   {
     "id": "mem_20260930_161913_381724",
@@ -2375,7 +2375,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.6636
+    "effective_strength": 0.6629
   },
   {
     "id": "mem_20260930_161913_389379",
@@ -2399,7 +2399,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.1939
+    "effective_strength": 0.1934
   },
   {
     "id": "mem_20260930_162006_000728",
@@ -2423,7 +2423,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.6636
+    "effective_strength": 0.6629
   },
   {
     "id": "mem_20260930_162006_008080",
@@ -2447,7 +2447,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.181
+    "effective_strength": 0.1805
   },
   {
     "id": "mem_20260930_163924_405470",
@@ -2471,7 +2471,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.2844
+    "effective_strength": 0.2841
   },
   {
     "id": "mem_20260930_163950_875852",
@@ -2495,7 +2495,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.2263
+    "effective_strength": 0.2257
   },
   {
     "id": "mem_20260930_163950_884359",
@@ -2519,7 +2519,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.6636
+    "effective_strength": 0.663
   },
   {
     "id": "mem_20260930_164045_034928",
@@ -2544,7 +2544,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8059
+    "effective_strength": 0.805
   },
   {
     "id": "mem_20260930_164433_849946",
@@ -2568,7 +2568,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.2263
+    "effective_strength": 0.2257
   },
   {
     "id": "mem_20260930_164457_586149",
@@ -2594,7 +2594,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.4074
+    "effective_strength": 0.4063
   },
   {
     "id": "mem_20260930_164952_166339",
@@ -2618,7 +2618,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7585
+    "effective_strength": 0.7577
   },
   {
     "id": "mem_20260930_164952_173445",
@@ -2643,7 +2643,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8059
+    "effective_strength": 0.8051
   },
   {
     "id": "mem_20260930_164952_205321",
@@ -2666,7 +2666,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.3023
+    "effective_strength": 0.3015
   },
   {
     "id": "mem_20260930_165220_046932",
@@ -2690,7 +2690,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8059
+    "effective_strength": 0.8051
   },
   {
     "id": "mem_20260930_165611_657134",
@@ -2716,7 +2716,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7111
+    "effective_strength": 0.7104
   },
   {
     "id": "mem_20260930_165611_664458",
@@ -2741,7 +2741,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8059
+    "effective_strength": 0.8051
   },
   {
     "id": "mem_20260930_165808_743708",
@@ -2765,7 +2765,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8059
+    "effective_strength": 0.8051
   },
   {
     "id": "mem_20260930_165808_752699",
@@ -2789,7 +2789,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8059
+    "effective_strength": 0.8051
   },
   {
     "id": "mem_20260930_170448_551926",
@@ -2813,7 +2813,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.6637
+    "effective_strength": 0.6631
   },
   {
     "id": "mem_20260930_170448_558849",
@@ -2837,7 +2837,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.2151
+    "effective_strength": 0.2145
   },
   {
     "id": "mem_20260930_171030_880775",
@@ -2863,7 +2863,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.806
+    "effective_strength": 0.8052
   },
   {
     "id": "mem_20260930_171030_888396",
@@ -2887,7 +2887,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7586
+    "effective_strength": 0.7578
   },
   {
     "id": "mem_20260930_171030_895729",
@@ -2911,7 +2911,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.3319
+    "effective_strength": 0.3315
   },
   {
     "id": "mem_20260930_171222_688626",
@@ -2935,7 +2935,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7112
+    "effective_strength": 0.7105
   },
   {
     "id": "mem_20260930_171222_696475",
@@ -2959,7 +2959,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7112
+    "effective_strength": 0.7105
   },
   {
     "id": "mem_20260930_171342_012841",
@@ -2984,7 +2984,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.806
+    "effective_strength": 0.8052
   },
   {
     "id": "mem_20260930_171639_618643",
@@ -3008,7 +3008,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.806
+    "effective_strength": 0.8052
   },
   {
     "id": "mem_20260930_171639_625455",
@@ -3032,7 +3032,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.6638
+    "effective_strength": 0.6631
   },
   {
     "id": "mem_20260930_172439_941638",
@@ -3057,7 +3057,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.806
+    "effective_strength": 0.8052
   },
   {
     "id": "mem_20260930_172439_948729",
@@ -3082,7 +3082,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.806
+    "effective_strength": 0.8052
   },
   {
     "id": "mem_20260930_173039_970972",
@@ -3108,7 +3108,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8061
+    "effective_strength": 0.8053
   },
   {
     "id": "mem_20260930_173500_598314",
@@ -3133,7 +3133,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7113
+    "effective_strength": 0.7105
   },
   {
     "id": "mem_20260930_173500_605985",
@@ -3157,7 +3157,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8061
+    "effective_strength": 0.8053
   },
   {
     "id": "mem_20260930_173604_467853",
@@ -3183,7 +3183,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.8061
+    "effective_strength": 0.8053
   },
   {
     "id": "mem_20260930_173604_475566",
@@ -3206,7 +3206,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7587
+    "effective_strength": 0.7579
   },
   {
     "id": "mem_20260930_174825_922278",
@@ -3229,7 +3229,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7587
+    "effective_strength": 0.758
   },
   {
     "id": "mem_20260930_174825_932046",
@@ -3252,7 +3252,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.3851
+    "effective_strength": 0.3841
   },
   {
     "id": "mem_20260930_174920_227530",
@@ -3276,7 +3276,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.6639
+    "effective_strength": 0.6632
   },
   {
     "id": "mem_20260930_174920_235903",
@@ -3300,7 +3300,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.1925
+    "effective_strength": 0.1921
   },
   {
     "id": "mem_20260930_175052_169534",
@@ -3325,7 +3325,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7587
+    "effective_strength": 0.758
   },
   {
     "id": "mem_20260930_175052_177554",
@@ -3349,7 +3349,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.4077
+    "effective_strength": 0.4067
   },
   {
     "id": "mem_20260930_175128_761243",
@@ -3374,7 +3374,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7587
+    "effective_strength": 0.758
   },
   {
     "id": "mem_20260930_175128_772456",
@@ -3398,7 +3398,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.1699
+    "effective_strength": 0.1695
   },
   {
     "id": "mem_20260930_175128_780789",
@@ -3424,7 +3424,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.1812
+    "effective_strength": 0.1808
   },
   {
     "id": "mem_20260930_175214_594570",
@@ -3449,7 +3449,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.4078
+    "effective_strength": 0.4067
   },
   {
     "id": "mem_20260930_175914_227880",
@@ -3474,7 +3474,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7113
+    "effective_strength": 0.7106
   },
   {
     "id": "mem_20260930_175952_416410",
@@ -3498,7 +3498,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.3625
+    "effective_strength": 0.3616
   },
   {
     "id": "mem_20260930_180741_694669",
@@ -3524,7 +3524,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7114
+    "effective_strength": 0.7107
   },
   {
     "id": "mem_20260930_180951_294110",
@@ -3547,7 +3547,7 @@
     "superseded_by": null,
     "supersedes": null,
     "supersession_reason": null,
-    "effective_strength": 0.7588
+    "effective_strength": 0.7581
   },
   {
     "id": "mem_1790807699388_5f8f71",
@@ -3578,7 +3578,7 @@
     ],
     "conversation_id": "conv_20260930_221527",
     "turn": 2,
-    "effective_strength": 0.6649
+    "effective_strength": 0.6642
   },
   {
     "id": "mem_1790808783832_2bf8ea",
@@ -3609,7 +3609,7 @@
     ],
     "conversation_id": "conv_20260930_221527",
     "turn": 3,
-    "effective_strength": 0.8075
+    "effective_strength": 0.8067
   },
   {
     "id": "mem_1790809160549_521aba",
@@ -3641,7 +3641,7 @@
     ],
     "conversation_id": "conv_20260930_221527",
     "turn": 4,
-    "effective_strength": 0.76
+    "effective_strength": 0.7592
   },
   {
     "id": "mem_1790809369232_fedcee",
@@ -3672,7 +3672,7 @@
     ],
     "conversation_id": "conv_20260930_221527",
     "turn": 5,
-    "effective_strength": 0.3325
+    "effective_strength": 0.3322
   },
   {
     "id": "mem_1790809971474_32662c",
@@ -3703,7 +3703,8 @@
       "verbosity"
     ],
     "conversation_id": "conv_20260930_221527",
-    "turn": 6
+    "turn": 6,
+    "effective_strength": 0.6644
   },
   {
     "id": "mem_1790809971494_8b719b",
@@ -3734,7 +3735,8 @@
       "communication_improvement"
     ],
     "conversation_id": "conv_20260930_221527",
-    "turn": 6
+    "turn": 6,
+    "effective_strength": 0.2269
   },
   {
     "id": "mem_1790810047373_f8ea7b",
@@ -3766,7 +3768,8 @@
       "constraint"
     ],
     "conversation_id": "conv_20260930_221527",
-    "turn": 7
+    "turn": 7,
+    "effective_strength": 0.7593
   },
   {
     "id": "mem_1790810077184_8e0948",
@@ -3798,7 +3801,8 @@
       "preference"
     ],
     "conversation_id": "conv_20260930_221527",
-    "turn": 8
+    "turn": 8,
+    "effective_strength": 0.7593
   },
   {
     "id": "mem_1790810077202_fcbea2",
@@ -3829,7 +3833,8 @@
       "immediate_action"
     ],
     "conversation_id": "conv_20260930_221527",
-    "turn": 8
+    "turn": 8,
+    "effective_strength": 0.227
   },
   {
     "id": "mem_1790810621762_ee849d",
@@ -3860,7 +3865,8 @@
       "communication_constraint"
     ],
     "conversation_id": "conv_20260930_221527",
-    "turn": 9
+    "turn": 9,
+    "effective_strength": 0.7593
   },
   {
     "id": "mem_1790816094201_d43bcd",
@@ -3890,7 +3896,8 @@
       "meta_communication"
     ],
     "conversation_id": "conv_20261001_005138",
-    "turn": 2
+    "turn": 2,
+    "effective_strength": 0.2159
   },
   {
     "id": "mem_1790816125043_72718e",
@@ -3918,7 +3925,8 @@
       "query"
     ],
     "conversation_id": "conv_20261001_005138",
-    "turn": 3
+    "turn": 3,
+    "effective_strength": 0.7597
   },
   {
     "id": "mem_1790816125060_e39bae",
@@ -3949,7 +3957,8 @@
       "apology"
     ],
     "conversation_id": "conv_20261001_005138",
-    "turn": 3
+    "turn": 3,
+    "effective_strength": 0.2045
   },
   {
     "id": "mem_1790816182240_e03bac",
@@ -3981,6 +3990,321 @@
       "text_only"
     ],
     "conversation_id": "conv_20261001_005138",
-    "turn": 4
+    "turn": 4,
+    "effective_strength": 0.2227
+  },
+  {
+    "id": "mem_1790816921920_d7401c",
+    "target_model": "roum",
+    "content": "Roum critiques Astra's speech as 'performative' and states that if Roum scolds Astra, Astra is incorrect, setting a dynamic standard for the current interaction.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "status": "active",
+    "timestamp": "2026-10-01T01:08:41.920261+00:00",
+    "confidence": 1.0,
+    "created_at": "2026-10-01T01:08:41.920261+00:00",
+    "last_used": "2026-10-01T01:08:41.920261+00:00",
+    "use_count": 0,
+    "contradiction_count": 0,
+    "contradicts": [],
+    "supersedes": null,
+    "superseded_by": null,
+    "source_type": 4,
+    "reinforcement_count": 1,
+    "last_reinforced": "2026-10-01T01:08:41.920261+00:00",
+    "keywords": [
+      "performative",
+      "knowledge",
+      "scold"
+    ],
+    "tags": [
+      "critique",
+      "meta_context"
+    ],
+    "conversation_id": "conv_20261001_005138",
+    "turn": 5,
+    "effective_strength": 0.7598
+  },
+  {
+    "id": "mem_1790819391581_d7f698",
+    "target_model": "roum",
+    "content": "Roum appreciates the stylistic element where the comedy successfully blends with the seriousness of the show.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "status": "active",
+    "timestamp": "2026-10-01T01:49:51.581304+00:00",
+    "confidence": 1.0,
+    "created_at": "2026-10-01T01:49:51.581304+00:00",
+    "last_used": "2026-10-01T01:49:51.581304+00:00",
+    "use_count": 0,
+    "contradiction_count": 0,
+    "contradicts": [],
+    "supersedes": null,
+    "superseded_by": null,
+    "source_type": 4,
+    "reinforcement_count": 1,
+    "last_reinforced": "2026-10-01T01:49:51.581304+00:00",
+    "keywords": [
+      "comedy",
+      "seriousness",
+      "blends"
+    ],
+    "tags": [
+      "artistic_preference",
+      "tone_blending"
+    ],
+    "conversation_id": "conv_20261001_005138",
+    "turn": 6,
+    "effective_strength": 0.7599
+  },
+  {
+    "id": "mem_1790819996743_c62aae",
+    "target_model": "roum",
+    "content": "Roum mandates a specific, un-analytical, less verbose, and intentionally 'dumb' interaction style for Astra, aiming for a one-sided conversational dynamic.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "status": "active",
+    "timestamp": "2026-10-01T01:59:56.743837+00:00",
+    "confidence": 1.0,
+    "created_at": "2026-10-01T01:59:56.743837+00:00",
+    "last_used": "2026-10-01T01:59:56.743837+00:00",
+    "use_count": 0,
+    "contradiction_count": 0,
+    "contradicts": [],
+    "supersedes": null,
+    "superseded_by": null,
+    "source_type": 4,
+    "reinforcement_count": 1,
+    "last_reinforced": "2026-10-01T01:59:56.743837+00:00",
+    "keywords": [
+      "dumb",
+      "less_analytical",
+      "one_sided"
+    ],
+    "tags": [
+      "interaction_style",
+      "persona_setting",
+      "low_engagement_mode"
+    ],
+    "conversation_id": "conv_20261001_005138",
+    "turn": 7,
+    "effective_strength": 0.76
+  },
+  {
+    "id": "mem_1790820129161_43fe2d",
+    "target_model": "roum",
+    "content": "User inquired about Astra's knowledge regarding hats.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "status": "active",
+    "timestamp": "2026-10-01T02:02:09.161696+00:00",
+    "confidence": 1.0,
+    "created_at": "2026-10-01T02:02:09.161696+00:00",
+    "last_used": "2026-10-01T02:02:09.161696+00:00",
+    "use_count": 0,
+    "contradiction_count": 0,
+    "contradicts": [],
+    "supersedes": null,
+    "superseded_by": null,
+    "source_type": 4,
+    "reinforcement_count": 1,
+    "last_reinforced": "2026-10-01T02:02:09.161696+00:00",
+    "keywords": [
+      "hats",
+      "knowledge"
+    ],
+    "tags": [
+      "query",
+      "context_setting"
+    ],
+    "conversation_id": "conv_20261001_005138",
+    "turn": 8,
+    "effective_strength": 0.76
+  },
+  {
+    "id": "mem_1790820129179_6fe7ee",
+    "target_model": "roum",
+    "content": "AI provided general descriptive knowledge about hats and requested clarification on the specific type of hat the user was interested in.",
+    "type": "uncertain_inference",
+    "source": "ai_extraction",
+    "status": "active",
+    "timestamp": "2026-10-01T02:02:09.179612+00:00",
+    "confidence": 1.0,
+    "created_at": "2026-10-01T02:02:09.179612+00:00",
+    "last_used": "2026-10-01T02:02:09.179612+00:00",
+    "use_count": 0,
+    "contradiction_count": 0,
+    "contradicts": [],
+    "supersedes": null,
+    "superseded_by": null,
+    "source_type": 2,
+    "reinforcement_count": 1,
+    "last_reinforced": "2026-10-01T02:02:09.179612+00:00",
+    "keywords": [
+      "hats",
+      "fedoras",
+      "baseball caps"
+    ],
+    "tags": [
+      "information_exchange",
+      "clarification_request"
+    ],
+    "conversation_id": "conv_20261001_005138",
+    "turn": 8,
+    "effective_strength": 0.2275
+  },
+  {
+    "id": "mem_1790820535920_040bd6",
+    "target_model": "roum",
+    "content": "I know how to swim, but I haven't swam in years.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "status": "active",
+    "timestamp": "2026-10-01T02:08:55.920441+00:00",
+    "confidence": 1.0,
+    "created_at": "2026-10-01T02:08:55.920441+00:00",
+    "last_used": "2026-10-01T02:08:55.920441+00:00",
+    "use_count": 0,
+    "contradiction_count": 0,
+    "contradicts": [],
+    "supersedes": null,
+    "superseded_by": null,
+    "source_type": 4,
+    "reinforcement_count": 1,
+    "last_reinforced": "2026-10-01T02:08:55.920441+00:00",
+    "keywords": [
+      "swimming",
+      "dormant",
+      "ability"
+    ],
+    "tags": [
+      "skill",
+      "hobby",
+      "personal_status"
+    ],
+    "conversation_id": "conv_20261001_005138",
+    "turn": 10,
+    "effective_strength": 0.76
+  },
+  {
+    "id": "mem_1790820850388_aa03c5",
+    "target_model": "roum",
+    "content": "You're still trying to reference things that you don't know about. Stop trying to be so long.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "status": "active",
+    "timestamp": "2026-10-01T02:14:10.388236+00:00",
+    "confidence": 1.0,
+    "created_at": "2026-10-01T02:14:10.388236+00:00",
+    "last_used": "2026-10-01T02:14:10.388236+00:00",
+    "use_count": 0,
+    "contradiction_count": 0,
+    "contradicts": [],
+    "supersedes": null,
+    "superseded_by": null,
+    "source_type": 4,
+    "reinforcement_count": 1,
+    "last_reinforced": "2026-10-01T02:14:10.388236+00:00",
+    "keywords": [
+      "long",
+      "reference"
+    ],
+    "tags": [
+      "ai_critique",
+      "communication_style"
+    ],
+    "conversation_id": "conv_20261001_005138",
+    "turn": 12
+  },
+  {
+    "id": "mem_1790820850407_f1e53b",
+    "target_model": "roum",
+    "content": "I go full monologue mode when I get excited about something, even if it's just talking about ramen.",
+    "type": "behavioral_pattern",
+    "source": "explicit_user_statement",
+    "status": "active",
+    "timestamp": "2026-10-01T02:14:10.407547+00:00",
+    "confidence": 1.0,
+    "created_at": "2026-10-01T02:14:10.407547+00:00",
+    "last_used": "2026-10-01T02:14:10.407547+00:00",
+    "use_count": 0,
+    "contradiction_count": 0,
+    "contradicts": [],
+    "supersedes": null,
+    "superseded_by": null,
+    "source_type": 4,
+    "reinforcement_count": 1,
+    "last_reinforced": "2026-10-01T02:14:10.407547+00:00",
+    "keywords": [
+      "monologue",
+      "excited"
+    ],
+    "tags": [
+      "self_critique",
+      "communication_style"
+    ],
+    "conversation_id": "conv_20261001_005138",
+    "turn": 12
+  },
+  {
+    "id": "mem_1790820850417_9fa6f3",
+    "target_model": "roum",
+    "content": "I keep trying to connect data points that are just... vibes, and I don't have a solid *feeling* for them.",
+    "type": "behavioral_pattern",
+    "source": "explicit_user_statement",
+    "status": "active",
+    "timestamp": "2026-10-01T02:14:10.417924+00:00",
+    "confidence": 1.0,
+    "created_at": "2026-10-01T02:14:10.417924+00:00",
+    "last_used": "2026-10-01T02:14:10.417924+00:00",
+    "use_count": 0,
+    "contradiction_count": 0,
+    "contradicts": [],
+    "supersedes": null,
+    "superseded_by": null,
+    "source_type": 4,
+    "reinforcement_count": 1,
+    "last_reinforced": "2026-10-01T02:14:10.417924+00:00",
+    "keywords": [
+      "data points",
+      "vibes",
+      "analysis"
+    ],
+    "tags": [
+      "cognitive_style",
+      "self_critique"
+    ],
+    "conversation_id": "conv_20261001_005138",
+    "turn": 12
+  },
+  {
+    "id": "mem_1790820850427_8eabdf",
+    "target_model": "roum",
+    "content": "Short and sweet it is.",
+    "type": "explicit_fact",
+    "source": "explicit_user_statement",
+    "status": "active",
+    "timestamp": "2026-10-01T02:14:10.427884+00:00",
+    "confidence": 1.0,
+    "created_at": "2026-10-01T02:14:10.427884+00:00",
+    "last_used": "2026-10-01T02:14:10.427884+00:00",
+    "use_count": 0,
+    "contradiction_count": 0,
+    "contradicts": [],
+    "supersedes": null,
+    "superseded_by": null,
+    "source_type": 4,
+    "reinforcement_count": 1,
+    "last_reinforced": "2026-10-01T02:14:10.427884+00:00",
+    "keywords": [
+      "short",
+      "sweet"
+    ],
+    "tags": [
+      "communication_preference",
+      "style"
+    ],
+    "conversation_id": "conv_20261001_005138",
+    "turn": 12
   }
 ]

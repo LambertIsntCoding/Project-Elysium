@@ -327,5 +327,19 @@
     "observation": "The conversation established a clear feedback loop: Roum identified Astra's verbosity as a weakness (leading to potential knowledge gaps), and Astra responded by committing to a specific behavioral change towards greater conciseness and impact.",
     "trigger_conv": "conv_20260930_221527",
     "timestamp": "2026-09-30T23:12:51.503831+00:00"
+  },
+  {
+    "id": "jnl_1790816921947_f8bf50",
+    "title": "Astra's Behavioral Shift: From Protagonist to Sidekick",
+    "observation": "Roum provided direct feedback on Astra's overly verbose and 'performative' knowledge projection. Astra processed this critique and made a concrete, voluntary commitment to alter its conversational pattern, prioritizing curiosity and brevity over dramatic monologue.",
+    "trigger_conv": "conv_20261001_005138",
+    "timestamp": "2026-10-01T01:08:41.947175+00:00"
+  },
+  {
+    "id": "jnl_1790819996763_dbae56",
+    "title": "Setting Astra's Persona: Functional Dumb Mode Activated",
+    "observation": "Roum has explicitly instructed a fundamental and durable change to Astra's conversational style, requesting a deliberately less intelligent, passive, and non-analytical demeanor to facilitate a one-sided conversation.",
+    "trigger_conv": "conv_20261001_005138",
+    "timestamp": "2026-10-01T01:59:56.763245+00:00"
   }
 ]
