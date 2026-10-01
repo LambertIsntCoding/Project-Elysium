@@ -50,3 +50,12 @@ from `astra.*` in new code.
   swallowed and silently drops all style examples.
 - Heuristic thresholds (self-promotion at 3 reinforcements, dormancy at 45 days,
   `GOVERNING_ACTIVE_MIN_CONFIDENCE`) are module constants in `astra/memory.py`.
+- `detect_contradiction` matches on **containment** overlap (`shared / min(len)`)
+  and only compares polarity on shared `_POLARITY_TERMS` that have a shared
+  subject beyond the stance word. Jaccard union-overlap hid restatements of the
+  same fact (verbose model-written sentences rarely share half their union), so
+  supersession silently never fired. Keep the metric and the stance-word guard:
+  loosening them either misses restatements or reverses unrelated memories.
+- `/reconcile` replays contradiction resolution oldest-first so a store written
+  before the detector recognised restatements heals itself. It is explicit, not
+  part of `maybe_maintain`, because `storage/*.json` is never migrated blindly.

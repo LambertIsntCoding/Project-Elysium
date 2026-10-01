@@ -16,6 +16,8 @@ I. project state is revisable rather than a permanent contradiction
 J. no memory is ever deleted - superseded/dormant history stays readable
 """
 
+import json
+import os
 import shutil
 import tempfile
 import unittest
@@ -402,6 +404,118 @@ class TestJHistoryPreserved(_GovernanceCase):
         all_mems = self.store.get_memories("roum", status=None)
         self.assertEqual(len(all_mems), 1)  # exact duplicate reinforced, not duplicated
         self.assertGreaterEqual(all_mems[0]["reinforcement_count"], 2)
+
+
+# ---------------------------------------------------------------------
+# K. Restatements are recognised even when worded differently
+# ---------------------------------------------------------------------
+class TestKRestatementSupersession(_GovernanceCase):
+    def test_restated_preference_supersedes_the_original(self):
+        _, old_id = self.ingest({
+            "classification": "persistent_user_preference",
+            "content": "Sonic Adventure is Roum's favorite game.",
+            "is_explicit_user_statement": True,
+        })
+        _, new_id = self.ingest({
+            "classification": "persistent_user_preference",
+            "content": "He likes Sonic Adventure even though it is not his absolute favorite game.",
+            "is_explicit_user_statement": True,
+        }, turn=2)
+
+        old = self.store.get_memory("roum", old_id)
+        self.assertIn(old["status"], ("superseded", "weakened"))
+        self.assertEqual(old["superseded_by"], new_id)
+        self.assertEqual(self.store.get_memory("roum", new_id)["status"], "active")
+
+    def test_incidental_negation_does_not_reverse_the_subject(self):
+        # The second sentence negates a detail, not the shared preference, so it
+        # must not be read as a reversal of the first.
+        self.ingest({
+            "classification": "persistent_user_fact",
+            "content": "The AI maintains its core function is learning.",
+            "is_explicit_user_statement": True,
+        })
+        _, b = self.ingest({
+            "classification": "persistent_user_fact",
+            "content": (
+                "Astra understands that its core statement regarding its nature "
+                "is not intended as a disclaimer."
+            ),
+            "is_explicit_user_statement": True,
+        }, turn=2)
+        self.assertEqual(self.store.get_memory("roum", b)["status"], "active")
+
+    def test_learning_again_does_not_re_count_the_contradiction(self):
+        _, old_id = self.ingest({
+            "classification": "persistent_user_preference",
+            "content": "Roum likes being called Bryson.",
+            "is_explicit_user_statement": True,
+        })
+        self.ingest({
+            "classification": "persistent_user_preference",
+            "content": "Roum does not like being called Bryson.",
+            "is_explicit_user_statement": True,
+        }, turn=2)
+        first = self.store.get_memory("roum", old_id)
+        self.ingest({
+            "classification": "persistent_user_preference",
+            "content": "Roum does not like being called Bryson.",
+            "is_explicit_user_statement": True,
+        }, turn=3)
+        second = self.store.get_memory("roum", old_id)
+        self.assertEqual(first["contradiction_count"], second["contradiction_count"])
+
+
+# ---------------------------------------------------------------------
+# L. Reconciliation heals a store written before restatements were detected
+# ---------------------------------------------------------------------
+class TestLReconciliation(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_legacy_store(self, contents):
+        """Write a store file the way the pre-fix code left it: all active."""
+        seed_dir = tempfile.mkdtemp()
+        try:
+            seed = TripleMemoryStore(data_dir=seed_dir)
+            records = []
+            for content in contents:
+                mid = seed.add_memory("roum", content, "explicit_preference",
+                                      "explicit_user_statement")
+                records.append(seed.get_memory("roum", mid))
+            for rec in records:  # undo any resolution the live store applied
+                rec["status"] = "active"
+                rec["superseded_by"] = None
+                rec["supersedes"] = None
+                rec.pop("contradiction_reason", None)
+                rec["contradicts"] = []
+                rec["contradiction_count"] = 0
+        finally:
+            shutil.rmtree(seed_dir, ignore_errors=True)
+        with open(os.path.join(self.tmp, "roum_model.json"), "w", encoding="utf-8") as f:
+            json.dump(records, f)
+
+    def test_reconcile_links_unresolved_restatements(self):
+        self._write_legacy_store([
+            "Sonic Adventure is Roum's favorite game.",
+            "He likes Sonic Adventure even though it is not his absolute favorite game.",
+        ])
+        store = TripleMemoryStore(data_dir=self.tmp)
+        old, new = (m["id"] for m in store.get_memories("roum", status="active"))
+        self.assertEqual(store.get_memory("roum", old)["status"], "active")
+
+        resolved = store.reconcile_contradictions()
+        self.assertGreaterEqual(resolved, 1)
+        self.assertIn(store.get_memory("roum", old)["status"],
+                      ("superseded", "weakened"))
+        self.assertEqual(store.get_memory("roum", old)["superseded_by"], new)
+        # Nothing is deleted, and a second pass is a no-op.
+        self.assertEqual(store.get_memory("roum", old)["content"],
+                         "Sonic Adventure is Roum's favorite game.")
+        self.assertEqual(store.reconcile_contradictions(), 0)
 
 
 if __name__ == "__main__":

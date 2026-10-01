@@ -282,8 +282,35 @@ def _content_tokens(text: Any) -> set:
     return {_stem(w) for w in words if w not in _STOPWORDS and w not in _NEGATIONS and len(w) > 1}
 
 
-def _negated(text: Any) -> bool:
-    return bool(set(re.findall(r"[a-z0-9']+", str(text or "").casefold())) & _NEGATIONS)
+# Terms whose polarity (asserted vs negated) actually decides a contradiction.
+# A shared negation elsewhere ("not intended as a disclaimer") is a detail, not
+# a reversal, so only these carry polarity.
+_POLARITY_TERMS = {
+    "like", "love", "enjoy", "prefer", "want", "need", "hate", "dislike",
+    "favor", "favourite", "favorite", "care", "support", "agree", "approve",
+    "allow", "permit", "believe", "trust", "accept", "tolerate", "mind",
+    "interested", "oppose", "reject", "recommend", "value", "desire",
+}
+
+
+def _negated_terms(text: Any, vocabulary: set) -> set:
+    """Shared terms the text negates, e.g. ``not like`` -> ``{"like"}``.
+
+    Scope is narrow on purpose: a negation only counts when it lands within a
+    few words of a term both statements share, so a negation about something
+    else in the sentence never registers as a reversal of that term.
+    """
+    words = re.findall(r"[a-z0-9']+", str(text or "").casefold())
+    hit = set()
+    for idx, word in enumerate(words):
+        if word not in _NEGATIONS:
+            continue
+        for nxt in words[idx + 1:idx + 4]:
+            stem = _stem(nxt)
+            if stem in vocabulary:
+                hit.add(stem)
+                break
+    return hit
 
 
 def _opposing_pair(tokens: Iterable[str]) -> Optional[Tuple[str, str]]:
@@ -299,15 +326,21 @@ def detect_contradiction(
 ) -> Optional[str]:
     """Return a short reason string if ``a`` and ``b`` contradict, else ``None``.
 
-    Deliberately conservative: requires strong lexical overlap AND either a
-    negation difference or an opposite verb. This avoids weakening unrelated
-    memories that merely share a word.
+    Deliberately conservative: requires that the two statements are about the
+    same subject (most of the *shorter* one's content words recur in the other)
+    AND that a shared term's polarity differs, or an opposite verb is present.
+    This avoids weakening unrelated memories that merely share a word.
     """
     ta, tb = _content_tokens(a.get("content")), _content_tokens(b.get("content"))
     if not ta or not tb:
         return None
-    union = ta | tb
-    overlap = len(ta & tb) / len(union) if union else 0.0
+    shared = ta & tb
+    # Containment, not Jaccard: a restatement of the same fact is often longer
+    # or shorter than the original ("Roum's favorite game is Sonic Adventure."
+    # vs a sentence about Sonic Adventure), which inflates the union and hides
+    # the shared subject. What matters is that most of the smaller statement's
+    # content is accounted for.
+    overlap = len(shared) / min(len(ta), len(tb))
     if overlap < min_overlap:
         return None
 
@@ -317,8 +350,17 @@ def detect_contradiction(
             _matches(_TEMPORARY_PATTERNS, str(b.get("content") or "").casefold()):
         return None
 
-    if _negated(a.get("content")) != _negated(b.get("content")):
-        return "opposite polarity (one is negated)"
+    # Polarity is only compared on shared terms that carry a stance, and only
+    # when the statements share a subject beyond that stance word. A negation
+    # about an incidental detail ("not his absolute favorite") is therefore not
+    # mistaken for a reversal, and "likes tea" never contradicts "does not like
+    # coffee" just because both contain a negated "like".
+    vocabulary = shared & _POLARITY_TERMS
+    if vocabulary and (shared - _POLARITY_TERMS):
+        negated_a = _negated_terms(a.get("content"), vocabulary)
+        negated_b = _negated_terms(b.get("content"), vocabulary)
+        if bool(negated_a) != bool(negated_b):
+            return "opposite polarity (one is negated)"
 
     pair = _opposing_pair(ta | tb)
     if pair:
@@ -1345,18 +1387,25 @@ class TripleMemoryStore:
             str(mem.get("last_used") or mem.get("timestamp") or ""),
         )
 
-    def _resolve_contradictions(self, target_model: str, new_mem: Dict[str, Any]) -> List[str]:
+    def _resolve_contradictions(self, target_model: str, new_mem: Dict[str, Any],
+                                candidates: Optional[List[Dict[str, Any]]] = None) -> List[str]:
         """Weaken older memories the new one contradicts. Never deletes them.
 
         Returns the ids of the memories that were weakened. The weaker side
         keeps its content (history is preserved) but loses authority, gains a
-        ``contradiction_reason`` and a ``superseded_by`` pointer.
+        ``contradiction_reason`` and a ``superseded_by`` pointer. ``candidates``
+        overrides which memories are compared (used by reconciliation to
+        consider only the strictly older records).
         """
         weakened: List[str] = []
-        for old in self.memories[target_model]:
+        for old in (self.memories[target_model] if candidates is None else candidates):
             if old is new_mem or old.get("status") in ("superseded", "archived"):
                 continue
             if old.get("id") == new_mem.get("id"):
+                continue
+            # Already linked: re-learning the same content must not re-count the
+            # contradiction or weaken the same memory twice.
+            if new_mem.get("id") in (old.get("contradicts") or []):
                 continue
             reason = detect_contradiction(old, new_mem)
 
@@ -1538,6 +1587,34 @@ class TripleMemoryStore:
                         mem["supersession_reason"] = f"stale slot '{slot}' value"
                         expired += 1
         return expired
+
+    def reconcile_contradictions(self) -> int:
+        """Link same-subject contradictions that were never resolved.
+
+        A store written before the detector recognised restatements can hold
+        memories that should have superseded one another but are all still
+        ``active``. Replaying resolution oldest-first lets the newer statement
+        win, exactly as if it had just been learned, so the store heals without
+        any memory being deleted.
+        """
+        resolved = 0
+        for target_model in sorted(VALID_TARGET_MODELS):
+            ordered = sorted(
+                self.memories[target_model],
+                key=lambda m: str(m.get("timestamp", "")),
+            )
+            with self._lock:
+                snapshot = copy.deepcopy(self.memories[target_model])
+                earlier: List[Dict[str, Any]] = []
+                for mem in ordered:
+                    if mem.get("status") == "active":
+                        resolved += len(self._resolve_contradictions(target_model, mem, earlier))
+                    earlier.append(mem)
+                if self.memories[target_model] != snapshot:
+                    self._save_model(target_model)
+                else:
+                    self.memories[target_model] = snapshot
+        return resolved
 
     # ---- current state & governing reads ------------------------------
     def get_governing_memories(self, target_model: Optional[str] = None) -> List[Dict[str, Any]]:
