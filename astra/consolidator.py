@@ -21,6 +21,7 @@ from typing import Any, Dict, Optional
 
 import requests
 
+from . import inquiry
 from .memory import (
     VALID_CLASSIFICATIONS,
     VALID_MEMORY_TYPES,
@@ -50,6 +51,8 @@ _EXPLICIT_CLASSIFICATIONS = {
     "persistent_user_fact", "persistent_user_preference",
     "persistent_project_information", "decision",
 }
+# Slice 2 labels whose memory type is implied by the classification itself.
+_INQUIRY_CLASSIFICATIONS = {"open_question", "observation", "interpretation", "hypothesis"}
 
 
 CONSOLIDATION_PROMPT = """
@@ -62,6 +65,12 @@ PERSISTENT (becomes a durable memory):
   'persistent_project_information', 'behavioral_pattern',
   'uncertain_inference', 'self_fact', 'self_preference', 'self_observation',
   'self_belief', 'relationship_event', 'relationship_observation', 'decision'
+- 'open_question' (an unresolved thing Astra genuinely wants to find out or
+  ask Roum about later - a line of inquiry, not a fact)
+- 'observation' (something Astra encountered, stated as observed)
+- 'interpretation' (Astra's tentative reading of what she observed)
+- 'hypothesis' (a possibility she is entertaining that the evidence does not
+  yet support)
 
 TRANSIENT (NOT remembered):
 - 'temporary_context' (worth understanding now, not worth remembering)
@@ -78,7 +87,11 @@ CLASSIFICATION RULES:
 4. 'self_preference' / 'self_fact' about Astra require repeated evidence or an
    explicit declaration by Astra's governing system. Otherwise use
    'self_observation'.
-5. Questions and passing context are 'temporary_context'.
+5. Questions and passing context are 'temporary_context' - EXCEPT an unresolved
+   question Astra raises that she wants to pursue or put to Roum later, which is
+   'open_question'. When unsure, prefer 'temporary_context'.
+6. Use 'observation' for what happened or was read; use 'interpretation' or
+   'hypothesis' for what Astra makes of it. Never record a guess as a fact.
 
 Conversation Turn:
 User (Roum): {user_input}
@@ -130,12 +143,22 @@ def resolve_candidate(candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         proposed_target = ""
     source = "explicit_user_statement" if explicit else "ai_extraction"
 
+    # The model usually omits ``type``; the classification it chose implies one.
+    # Only the Slice 2 labels are resolved this way - every other classification
+    # keeps the historical ``explicit_fact`` fallback, because the deterministic
+    # layer is what decides a fact-vs-preference mismatch and must not be fed a
+    # type it did not previously see.
+    fallback_type = proposed_type or (
+        classification_to_type(classification)[1]
+        if classification in _INQUIRY_CLASSIFICATIONS else "explicit_fact"
+    )
+
     # Deterministic policy re-derivation. It is the safety net for transient
     # cues and empty content, and it reconciles a fact/preference mismatch, but
     # a well-formed persistent label is otherwise preserved.
     derived = classify_candidate(
         content, explicit=explicit,
-        mem_type=proposed_type or "explicit_fact",
+        mem_type=fallback_type,
         target_model=proposed_target or "roum",
         source=source,
         confidence=float(candidate.get("confidence", 0.7) or 0.7),
@@ -197,6 +220,17 @@ def apply_decision(store: TripleMemoryStore, decision: Dict[str, Any],
 
     target = decision["target_model"]
     content = decision["content"]
+    tags = list(decision.get("tags") or [])
+    if decision["classification"] == "open_question" and not any(
+            str(t).startswith("qstatus:") for t in tags):
+        # A question written through consolidation must carry its lifecycle tags
+        # just like one written through ``add_question``; otherwise it would
+        # never appear as open. The consolidator supplies the classification,
+        # the module supplies the vocabulary.
+        tags = store._inquiry_tags(
+            tags, inquiry.epistemic_tag(inquiry.EPISTEMIC_UNKNOWN),
+            inquiry.qstatus_tag(inquiry.Q_OPEN),
+        )
 
     # Contradiction -> supersede, but only an explicit statement may do so.
     if may_supersede(decision["source"], decision["classification"]):
@@ -209,7 +243,7 @@ def apply_decision(store: TripleMemoryStore, decision: Dict[str, Any],
                 mem_type=decision["type"],
                 source="user_correction",
                 keywords=decision.get("keywords"),
-                tags=decision.get("tags"),
+                tags=tags,
                 confidence=decision["confidence"],
                 reason="Explicit user statement contradicts an existing memory",
             )
@@ -220,7 +254,7 @@ def apply_decision(store: TripleMemoryStore, decision: Dict[str, Any],
         mem_type=decision["type"],
         source=decision["source"],
         confidence=decision["confidence"],
-        tags=decision.get("tags", []),
+        tags=tags,
         keywords=decision.get("keywords", []),
         conversation_id=conversation_id,
         turn=turn_num,

@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from . import affect
+from . import inquiry
 from . import relational
 
 
@@ -126,6 +127,14 @@ IMPORTANCE_BY_TYPE: Dict[str, float] = {
     "uncertain_inference": 0.35,
     "relationship_observation": 0.30,
     "self_observation": 0.25,
+    # Slice 2: an unresolved question matters a little more than a passing
+    # observation (it is a live line of inquiry), while a tentative
+    # interpretation or hypothesis is deliberately low - it is not knowledge yet.
+    "open_question": 0.40,
+    "observation": 0.30,
+    "interpretation": 0.30,
+    "hypothesis": 0.25,
+    "experience": 0.30,
 }
 DEFAULT_IMPORTANCE = 0.45
 
@@ -652,6 +661,11 @@ CLASSIFICATION_PERSISTENT = {
     "uncertain_inference", "self_fact", "self_preference", "self_observation",
     "self_belief", "relationship_event", "relationship_observation", "decision",
     "experience",
+    # Persistent questions and revisable work-specific understanding (Slice 2).
+    # An open question is a durable line of inquiry; observations,
+    # interpretations and hypotheses are how Astra records what she encountered
+    # and what she tentatively makes of it - all revisable, none a trait.
+    "open_question", "observation", "interpretation", "hypothesis",
 }
 CLASSIFICATION_TRANSIENT = {"temporary_context", "no_memory"}
 VALID_CLASSIFICATIONS = CLASSIFICATION_PERSISTENT | CLASSIFICATION_TRANSIENT
@@ -674,6 +688,17 @@ CLASSIFICATION_TYPES: Dict[str, Tuple[str, str]] = {
     # ``experience`` type, never as a self_fact/self_preference, so it cannot
     # silently redefine her personality (that stays gated on repeated evidence).
     "experience": ("self", "experience"),
+    # A persistent question is Astra's own unresolved line of inquiry, so it is
+    # a self memory too. Its type is ``open_question``, never self_belief, so it
+    # cannot become a personality trait - and its question status travels as a
+    # tag, not as the memory status, so an answered question stays readable.
+    "open_question": ("self", "open_question"),
+    # Work-specific understanding: what Astra encountered and tentatively made
+    # of it. Filed under Roum (the knowledge model, as facts are) with an
+    # explicit epistemic label; a ``work:<id>`` tag/field keeps two works apart.
+    "observation": ("roum", "observation"),
+    "interpretation": ("roum", "interpretation"),
+    "hypothesis": ("roum", "hypothesis"),
 }
 
 # Reverse of CLASSIFICATION_TYPES, used by ``add_memory`` to recover the
@@ -782,6 +807,14 @@ def classify_candidate(content: str, *, explicit: bool, mem_type: str,
     if not text:
         return "no_memory"
     lowered = text.casefold()
+
+    # A genuine unresolved question Astra wants to keep is a persistent
+    # ``open_question`` - but only when the caller already proposed that label.
+    # A user merely asking a question is still transient context (below), so
+    # this never turns every question mark in a transcript into a stored line of
+    # inquiry.
+    if mem_type == "open_question" and inquiry.looks_like_question(text):
+        return "open_question"
 
     # A question, or a one-off activity report, is context rather than a fact -
     # unless the wording itself establishes a recurring trait ("I always...").
@@ -949,6 +982,10 @@ VALID_MEMORY_TYPES = {
     # its own structured context. The bridge between knowledge and personality
     # (see ``astra.affect`` and the ``experience`` classification below).
     "experience",
+    # Persistent questions and revisable understanding (Slice 2, see
+    # ``astra.inquiry``): an unresolved line of inquiry, plus the observed and
+    # tentatively-interpreted material that surrounds it.
+    "open_question", "observation", "interpretation", "hypothesis",
 }
 # "weakened" joins the existing statuses: a memory contradicted by a stronger
 # one stays readable but is no longer authoritative.
@@ -1147,6 +1184,12 @@ _EXPERIENCE_DEFAULTS: Dict[str, Any] = {
     "intensity": 0.5,
     "significance": 0.5,
 }
+# Work-specific knowledge (Slice 2) reuses ``work_id``; nothing else is new, so
+# a bare observation with no work costs no extra bytes and re-materialises on
+# read exactly like the experience fields above.
+_KNOWLEDGE_DEFAULTS: Dict[str, Any] = {
+    "work_id": None,
+}
 
 
 def compact_record(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -1168,6 +1211,9 @@ def compact_record(record: Dict[str, Any]) -> Dict[str, Any]:
         if out.get(field) is None:
             out.pop(field, None)
     for field, default in _EXPERIENCE_DEFAULTS.items():
+        if field in out and out.get(field) == default:
+            out.pop(field, None)
+    for field, default in _KNOWLEDGE_DEFAULTS.items():
         if field in out and out.get(field) == default:
             out.pop(field, None)
     return out
@@ -1197,6 +1243,9 @@ def _present(mem: Dict[str, Any]) -> Dict[str, Any]:
         out.setdefault(field, [])  # a fresh list per call, never shared
     if out.get("type") == "experience":
         for field, default in _EXPERIENCE_DEFAULTS.items():
+            out.setdefault(field, default)
+    if out.get("type") in inquiry.KNOWLEDGE_TYPES:
+        for field, default in _KNOWLEDGE_DEFAULTS.items():
             out.setdefault(field, default)
     timestamp = out.get("timestamp")
     for field in _TIMESTAMP_ALIASES:
@@ -1929,6 +1978,215 @@ class TripleMemoryStore:
     def current_affect(self) -> Dict[str, Any]:
         """The stored experiential-affect state, or a blank state if none yet."""
         return affect.load_state_from_memories(self.get_memories("self", status=None))
+
+    # ---- persistent questions & revisable understanding (Slice 2) ------
+    # These are thin conveniences over ``add_memory``/``update_memory``: the
+    # record is an ordinary memory, so it inherits evidence, decay, dormancy,
+    # contradiction handling and supersession unchanged. The only new thing is
+    # the epistemic/question vocabulary carried in the tags.
+    @staticmethod
+    def _inquiry_tags(base: Any, *extra: Optional[str]) -> List[str]:
+        tags = list(base or [])
+        for tag in extra:
+            if tag and tag not in tags:
+                tags.append(tag)
+        return tags
+
+    def add_question(self, content: str, *, origin: str = inquiry.ORIGIN_SPONTANEOUS,
+                     motive: str = inquiry.MOTIVE_FACTUAL, work_id: Optional[str] = None,
+                     source: str = "ai_extraction", confidence: float = 0.5,
+                     keywords: Optional[List[str]] = None,
+                     tags: Optional[List[str]] = None, **extra) -> str:
+        """Record an unresolved line of inquiry as a persistent question.
+
+        The question status is a tag, not the memory status, so answering a
+        question never hides or deletes the record - it stays readable history.
+        """
+        merged = self._inquiry_tags(
+            tags, inquiry.epistemic_tag(inquiry.EPISTEMIC_UNKNOWN),
+            inquiry.qstatus_tag(inquiry.Q_OPEN), inquiry.origin_tag(origin),
+            inquiry.motive_tag(motive), inquiry.work_tag(work_id),
+        )
+        return self.add_memory(
+            "self", content, inquiry.TYPE_QUESTION, source,
+            keywords=keywords, tags=merged, confidence=confidence,
+            work_id=work_id, **extra,
+        )
+
+    def _add_knowledge(self, mem_type: str, content: str, *, work_id: Optional[str],
+                       source: str, confidence: float, epistemic: Optional[str],
+                       keywords: Optional[List[str]], tags: Optional[List[str]],
+                       **extra) -> str:
+        label = epistemic or inquiry.DEFAULT_EPISTEMIC[mem_type]
+        merged = self._inquiry_tags(
+            tags, inquiry.epistemic_tag(label), inquiry.work_tag(work_id),
+        )
+        # The epistemic label caps how certain the record may claim to be, so a
+        # confidently-worded interpretation can never masquerade as a fact.
+        return self.add_memory(
+            "roum", content, mem_type, source, keywords=keywords, tags=merged,
+            confidence=inquiry.clamped_confidence(label, confidence, default=0.5),
+            work_id=work_id, **extra,
+        )
+
+    def add_observation(self, content: str, *, work_id: Optional[str] = None,
+                        source: str = "ai_extraction", confidence: float = 0.8,
+                        epistemic: Optional[str] = inquiry.EPISTEMIC_KNOWN,
+                        keywords: Optional[List[str]] = None,
+                        tags: Optional[List[str]] = None, **extra) -> str:
+        """What Astra encountered, recorded as such (not as an interpretation)."""
+        return self._add_knowledge(
+            inquiry.TYPE_OBSERVATION, content, work_id=work_id, source=source,
+            confidence=confidence, epistemic=epistemic, keywords=keywords,
+            tags=tags, **extra,
+        )
+
+    def add_interpretation(self, content: str, *, work_id: Optional[str] = None,
+                           source: str = "ai_inference", confidence: float = 0.6,
+                           epistemic: Optional[str] = inquiry.EPISTEMIC_INTERPRETATION,
+                           keywords: Optional[List[str]] = None,
+                           tags: Optional[List[str]] = None, **extra) -> str:
+        """A tentative reading of something observed - explicitly revisable."""
+        return self._add_knowledge(
+            inquiry.TYPE_INTERPRETATION, content, work_id=work_id, source=source,
+            confidence=confidence, epistemic=epistemic, keywords=keywords,
+            tags=tags, **extra,
+        )
+
+    def add_hypothesis(self, content: str, *, work_id: Optional[str] = None,
+                       source: str = "ai_inference", confidence: float = 0.4,
+                       epistemic: Optional[str] = inquiry.EPISTEMIC_POSSIBLE,
+                       keywords: Optional[List[str]] = None,
+                       tags: Optional[List[str]] = None, **extra) -> str:
+        """A possibility Astra is entertaining, weaker than an interpretation."""
+        return self._add_knowledge(
+            inquiry.TYPE_HYPOTHESIS, content, work_id=work_id, source=source,
+            confidence=confidence, epistemic=epistemic, keywords=keywords,
+            tags=tags, **extra,
+        )
+
+    def get_questions(self, *, status: Optional[str] = None,
+                      work_id: Optional[str] = None,
+                      open_only: bool = False) -> List[Dict[str, Any]]:
+        """Questions, optionally filtered by question status, work, or liveness."""
+        questions = self.get_memories("self", status=status, mem_type=inquiry.TYPE_QUESTION)
+        if open_only:
+            questions = [q for q in questions if inquiry.is_open_question(q)]
+        if work_id is not None:
+            questions = [q for q in questions if inquiry.work_of(q) == work_id]
+        return questions
+
+    def get_work_context(self, work_id: str, *,
+                         status: Optional[str] = "active") -> List[Dict[str, Any]]:
+        """The observations/interpretations/hypotheses Astra has for one work.
+
+        Scoped by ``work_id`` so two works that share a name (two different
+        Alices, two readings of the same event) never blend into one context.
+        """
+        return [
+            m for m in self.get_memories("roum", status=status)
+            if inquiry.is_knowledge(m) and inquiry.work_of(m) == work_id
+        ]
+
+    def _set_question_status(self, question_id: str, status: str, *,
+                             evidence_id: Optional[str] = None,
+                             evidence_text: Optional[str] = None) -> Dict[str, Any]:
+        if status not in inquiry.QUESTION_STATUSES:
+            raise ValueError(f"Unknown question status {status!r}")
+        with self._lock:
+            _, question = self._locate("self", question_id)
+            with self._transaction("self"):
+                tags = [t for t in (question.get("tags") or [])
+                        if not str(t).startswith("qstatus:")]
+                tags.append(inquiry.qstatus_tag(status))
+                question["tags"] = _clean_str_list(tags)
+                question["question_status_at"] = _now()
+                if evidence_id:
+                    question["resolved_by"] = evidence_id
+                if evidence_text:
+                    history = list(question.get("question_history") or [])
+                    history.append({
+                        "at": _now(), "status": status,
+                        "evidence": str(evidence_text)[:400],
+                    })
+                    question["question_history"] = history[-20:]
+            return self.get_memory("self", question_id)
+
+    def resolve_question(self, question_id: str, *,
+                         status: str = inquiry.Q_ANSWERED,
+                         evidence_id: Optional[str] = None,
+                         evidence_text: Optional[str] = None) -> Dict[str, Any]:
+        """Mark a question answered (or partially answered). History is kept."""
+        return self._set_question_status(
+            question_id, status, evidence_id=evidence_id, evidence_text=evidence_text,
+        )
+
+    def reopen_question(self, question_id: str,
+                        reason: Optional[str] = None) -> Dict[str, Any]:
+        """Reopen something previously considered settled - without erasing it."""
+        return self._set_question_status(
+            question_id, inquiry.Q_REOPENED, evidence_text=reason,
+        )
+
+    def abandon_question(self, question_id: str,
+                         reason: Optional[str] = None) -> Dict[str, Any]:
+        """Set a question aside because it no longer matters. Never deleted."""
+        return self._set_question_status(
+            question_id, inquiry.Q_ABANDONED, evidence_text=reason,
+        )
+
+    def link_conflict(self, first_id: str, second_id: str, *,
+                      target: str = "roum",
+                      reason: Optional[str] = None) -> None:
+        """Record that two memories conflict, *without* deciding between them.
+
+        Unlike ``_resolve_contradictions`` (which weakens the weaker side), this
+        deliberately weakens neither: both interpretations stay active and
+        equally readable, each pointing at the other, so an ambiguity the
+        evidence does not settle is preserved rather than "solved".
+        """
+        with self._lock:
+            _, first = self._locate(target, first_id)
+            _, second = self._locate(target, second_id)
+            if first.get("id") == second.get("id"):
+                return
+            reason = reason or "unresolved conflict (competing evidence)"
+            with self._transaction(target):
+                for src, other in ((first, second), (second, first)):
+                    other_id = other.get("id")
+                    if other_id not in (src.get("contradicts") or []):
+                        src["contradicts"] = _clean_str_list(
+                            list(src.get("contradicts") or []) + [other_id]
+                        )
+                    src.setdefault("contradiction_reason", reason)
+
+    def associate_evidence(self, evidence: Dict[str, Any], *,
+                           question_ids: Optional[List[str]] = None) -> List[str]:
+        """Attach a piece of evidence to any live question it plausibly bears on.
+
+        Uses contextual overlap (shared subject/work), never exact string
+        matching, and never resolves anything by itself - it only records the
+        association so the question's history shows what has accumulated.
+        """
+        if not isinstance(evidence, dict) or not evidence.get("content"):
+            return []
+        with self._lock:
+            matches = [
+                q for q in self.memories["self"]
+                if q.get("type") == inquiry.TYPE_QUESTION
+                and inquiry.is_open_question(_present(q))
+                and (question_ids is None or q.get("id") in question_ids)
+                and inquiry.question_evidence_span(_present(q), evidence)
+            ]
+            if not matches:
+                return []
+            with self._transaction("self"):
+                for question in matches:
+                    ids = list(question.get("question_evidence") or [])
+                    if evidence.get("id") and evidence["id"] not in ids:
+                        ids.append(evidence["id"])
+                    question["question_evidence"] = ids[-20:]
+            return [q.get("id") for q in matches]
 
     def apply_decay(self, now: Optional[datetime] = None) -> Dict[str, int]:
         """Recompute decay for every memory and archive the clearly worthless.

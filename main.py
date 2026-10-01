@@ -35,6 +35,7 @@ from astra.memory import (
 )
 from astra.orchestrator import CompanionOrchestrator
 from astra import affect
+from astra import inquiry
 from astra import relational
 
 # Phrases that indicate the user is *asking* to register a command. Kept
@@ -61,6 +62,8 @@ HELP_TEXT = """
  /relationship      : Astra's accumulated Roum-specific command-affinity state
  /affect            : Astra's current experiential affect (temporary, not memory)
  /experiences       : List stored experiences (what she has actually done or met)
+ /questions         : Open lines of inquiry and their evidence (not yet resolved)
+ /work [id]         : Work-specific understanding: observations, interpretations
  /dormant           : Show stale memories that have gone dormant
  /stats             : Memory health summary (counts, types, utility)
  /timeline [gran] [target] : Memory counts by date; gran = month (default), day, year
@@ -286,6 +289,10 @@ class ChatSession:
             self._display_affect()
         elif command == "/experiences":
             self._display_experiences()
+        elif command == "/questions":
+            self._display_questions()
+        elif command == "/work":
+            self._display_work(parts[1] if len(parts) > 1 else None)
         elif command == "/dormant":
             self._display_dormant()
         elif command == "/stats":
@@ -530,6 +537,54 @@ class ChatSession:
             suffix = f" [work: {work}]" if work else ""
             self._emit(f"  {mem.get('timestamp', '')[:19]} | {kind}{suffix} | {mem.get('status')}")
             self._emit(f"    {mem.get('content')}")
+
+    def _display_questions(self) -> None:
+        """Open lines of inquiry and what evidence has accumulated for each.
+
+        Shows the question's own lifecycle status, which is deliberately not the
+        memory status: an answered question is still listed (as history) rather
+        than disappearing.
+        """
+        getter = getattr(self.orchestrator.store, "get_questions", None)
+        questions = getter(status=None) if callable(getter) else []
+        open_q = [q for q in questions if inquiry.is_open_question(q)]
+        self._emit(f"\n=== OPEN QUESTIONS ({len(open_q)} of {len(questions)}) ===")
+        if not questions:
+            self._emit("  (No questions recorded yet)")
+            return
+        for mem in questions:
+            self._emit(f"  {inquiry.render_question(mem)}")
+            evidence = mem.get("question_evidence") or []
+            if evidence:
+                self._emit(f"      evidence: {len(evidence)} linked observation(s)")
+            for entry in (mem.get("question_history") or [])[-2:]:
+                self._emit(f"      {entry.get('status')}: {entry.get('evidence')}")
+
+    def _display_work(self, work_id: Optional[str]) -> None:
+        """Work-specific understanding, grouped by work.
+
+        Kept separate from general memory so two works that share a name (or
+        conflict on the same event) never blend into one context.
+        """
+        getter = getattr(self.orchestrator.store, "get_memories", None)
+        roum = getter("roum", status=None) if callable(getter) else []
+        knowledge = [m for m in roum if inquiry.is_knowledge(m)]
+        if work_id:
+            knowledge = [m for m in knowledge if inquiry.work_of(m) == work_id]
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for mem in knowledge:
+            grouped.setdefault(inquiry.work_of(mem) or "(unscoped)", []).append(mem)
+        label = f" for '{work_id}'" if work_id else ""
+        self._emit(f"\n=== WORK CONTEXT{label} ===")
+        if not grouped:
+            self._emit("  (No work-specific knowledge recorded yet)")
+            return
+        for work in sorted(grouped):
+            self._emit(f"\n  [{work}]")
+            for mem in grouped[work]:
+                self._emit(
+                    f"    ({inquiry.epistemic_of(mem)}) {mem.get('content')}"
+                )
 
     def _display_dormant(self) -> None:
         """Stale, low-value memories - readable and retrievable, but not governing."""
