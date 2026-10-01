@@ -34,7 +34,23 @@ Usage
 -----
     python repair_null_fields.py                 # cleans ./storage
     python repair_null_fields.py --dry-run       # preview only
+    python repair_null_fields.py --audit         # integrity check (read-only)
     python repair_null_fields.py storage test_storage
+
+Audit mode
+----------
+``--audit`` never writes. It reports records whose supersession fields are
+inconsistent, so you can tell a harmless placeholder from a real breakage:
+
+* broken -- ``status == "superseded"`` with no ``superseded_by`` (the app always
+  sets these together); or a pointer that is self-referential or points at an id
+  that does not exist in the same store (dangling).
+* warning -- ``status == "weakened"`` with no pointer (valid when this record is
+  the newer, weaker side); ``contradiction_count`` with an empty ``contradicts``;
+  or a pointer whose target does not link back (normal for slot expiry, which
+  only updates the loser).
+
+It exits non-zero when any *broken* finding exists, so it can gate a build.
 """
 from __future__ import annotations
 
@@ -93,14 +109,76 @@ def clean_file(path, dry_run=False):
     return changed_records, removed_total, by_field
 
 
+def audit_file(path):
+    """Read-only integrity check of supersession links. Returns (broken, warnings).
+
+    A "broken" finding is a state the app never produces; a "warning" is
+    suspicious but reachable through normal operation, so it needs a human eye.
+    """
+    records = [item for item in load_json(path, list, list) if isinstance(item, dict)]
+    # Only memory records carry an id; other lists (e.g. history_log) are skipped.
+    by_id = {r["id"]: r for r in records if r.get("id")}
+    broken = []
+    warnings = []
+    for rec in records:
+        rid = rec.get("id")
+        if not rid:
+            continue
+        status = rec.get("status")
+        pointer = rec.get("superseded_by")
+
+        if status == "superseded" and not pointer:
+            broken.append(f"{rid}: status=superseded but superseded_by is empty")
+        if pointer and pointer == rid:
+            broken.append(f"{rid}: superseded_by points at itself")
+        if pointer and pointer not in by_id:
+            broken.append(f"{rid}: superseded_by={pointer} does not exist in this store")
+
+        if status == "weakened" and not pointer:
+            warnings.append(f"{rid}: status=weakened with no superseded_by (valid if this is the newer side)")
+        if rec.get("contradiction_count") and not rec.get("contradicts"):
+            warnings.append(f"{rid}: contradiction_count={rec.get('contradiction_count')} but contradicts is empty")
+
+        back = rec.get("supersedes")
+        if back and back not in by_id:
+            broken.append(f"{rid}: supersedes={back} does not exist in this store")
+        if pointer and pointer in by_id:
+            target = by_id[pointer]
+            if target.get("supersedes") != rid and rid not in (target.get("contradicts") or []):
+                warnings.append(f"{rid}: {pointer} does not link back (normal for slot expiry)")
+    return broken, warnings
+
+
+def run_audit(paths):
+    total_broken = total_warn = 0
+    for path in _json_files(paths):
+        broken, warnings = audit_file(path)
+        if not broken and not warnings:
+            continue
+        total_broken += len(broken)
+        total_warn += len(warnings)
+        print(f"{path}: {len(broken)} broken, {len(warnings)} warning(s)")
+        for line in broken:
+            print(f"  BROKEN  {line}")
+        for line in warnings:
+            print(f"  warn    {line}")
+    print(f"\nAudit: {total_broken} broken, {total_warn} warning(s).")
+    return 1 if total_broken else 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("dirs", nargs="*", default=DEFAULT_DIRS,
                         help="Files or directories to scan (default: storage)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Report what would change without writing")
+    parser.add_argument("--audit", action="store_true",
+                        help="Read-only check for inconsistent supersession links")
     args = parser.parse_args(argv)
     dirs = args.dirs or DEFAULT_DIRS
+
+    if args.audit:
+        return run_audit(dirs)
 
     grand_records = grand_nulls = 0
     for path in _json_files(dirs):
