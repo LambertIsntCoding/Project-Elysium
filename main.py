@@ -21,8 +21,10 @@ tested without a terminal or a live model.
 from __future__ import annotations
 
 import atexit
+import contextlib
 import json
 import os
+import textwrap
 import threading
 import time
 from collections import deque
@@ -42,6 +44,7 @@ from astra import affect
 from astra import inquiry
 from astra import reading
 from astra import relational
+from astra import runtime_state
 
 # Phrases that indicate the user is *asking* to register a command. Kept
 # deliberately narrow: a bare word like "command" fires on ordinary sentences
@@ -55,9 +58,49 @@ _EXIT_WORDS = {"exit", "quit", "/exit", "/quit"}
 # readable without hiding anything from the store itself.
 MEMORY_VIEW_LIMIT = 40
 
-# Prefixes used only for the display label in the input loop.
+# Text width for wrapped free text (memory content, journals). Kept modest so
+# the output stays readable in a normal terminal without reflowing badly.
+WRAP_WIDTH = 88
+
+# Prefixes used only for the display label in the input loop. The router returns
+# an already-labelled line, so the loop strips one before printing (see
+# ``_reply_text``) rather than showing the label twice.
 _ELYSIUM_LABEL = "Elysium > "
 _ASTRA_LABEL = "Astra > "
+
+
+def _section(title: str) -> str:
+    """A readable section header with a rule the same width as the title."""
+    title = str(title)
+    return "\n" + title + "\n" + "-" * min(len(title), 72)
+
+
+def _wrap(text: Any, *, indent: str = "    ", width: int = WRAP_WIDTH) -> str:
+    """Wrap free text to ``width`` with a hanging indent for readability.
+
+    Collapses embedded newlines into spaces so a multi-line memory does not
+    break the indentation.
+    """
+    body = " ".join(str(text if text is not None else "").split())
+    if not body:
+        return indent.rstrip()
+    wrapped = textwrap.wrap(body, width=max(20, width - len(indent)),
+                            subsequent_indent=indent, initial_indent=indent)
+    return "\n".join(wrapped) if wrapped else indent.rstrip()
+
+
+def _reply_text(response: str) -> str:
+    """The reply as shown to a human: the runtime label stripped, never doubled.
+
+    The application router returns the full labelled line (``Astra > ...`` or
+    ``Elysium > ...``). The CLI owns the label, so it removes one here instead of
+    printing it twice.
+    """
+    text = "" if response is None else str(response)
+    for label in (_ASTRA_LABEL, _ELYSIUM_LABEL):
+        if text.startswith(label):
+            return text[len(label):]
+    return text
 
 # How long a checkpoint turn waits for pending background consolidation before
 # saving anyway. A wedged model call must never freeze the session; whatever is
@@ -116,6 +159,11 @@ HELP_TEXT = """
                                 add "<path>" [t] ingest a file; quote spaced paths
 
   Session
+    /status                   Runtime state, background tasks, waiting decisions
+    /sleep                    Enter Sleep: bounded background work begins
+    /wake                     Leave Sleep (a human-caused wake event)
+    /sleep-log                Recent background activity (Sleep ledger)
+    /decisions                File decisions waiting for your judgement
     /help                     Show this list
     /debug <message>          Memory retrieval diagnostics for a message
     /exit                     Save session and exit
@@ -250,6 +298,51 @@ class ChatSession:
         # without a clean exit loses at most N turns. 0 disables it.
         self._checkpoint_every = max(0, int(checkpoint_every))
         self._checkpoint_counter = 0
+        # The persistent background runtime (Active/Sleep, scheduler, tasks,
+        # file organization). It is injected by build_session; it is optional so
+        # an in-process test session stays a plain synchronous session.
+        self.controller: Any = None
+        # The shared message router and the optional Discord transport. Both are
+        # injected by build_session; frontends call the router, never the store.
+        self.router: Any = None
+        self.discord: Any = None
+
+    # -- runtime-state helpers ---------------------------------------------
+    def _display_status(self) -> None:
+        controller = self.controller
+        if controller is None:
+            self._emit("  (persistent runtime not attached in this session)")
+            return
+        self._emit("\n" + controller.status_report())
+
+    def _sleep_now(self) -> None:
+        controller = self.controller
+        if controller is None:
+            self._emit("  (persistent runtime not attached: cannot sleep)")
+            return
+        controller.sleep()
+        self._emit("Going to sleep. Background work is bounded and quiet.")
+
+    def _wake_now(self) -> None:
+        controller = self.controller
+        if controller is None:
+            return
+        controller.wake()
+        self._emit("Awake.")
+
+    def _display_sleep_log(self) -> None:
+        controller = self.controller
+        if controller is None:
+            self._emit("  (persistent runtime not attached in this session)")
+            return
+        self._emit("\n" + controller.sleep_log())
+
+    def _display_file_decisions(self) -> None:
+        controller = self.controller
+        if controller is None:
+            self._emit("  (persistent runtime not attached in this session)")
+            return
+        self._emit("\n" + controller.pending_decisions_text())
 
     def _emit(self, text: str) -> None:
         self.output_fn(text)
@@ -297,6 +390,10 @@ class ChatSession:
         """Process a non-slash input and return the text to display."""
         # Any input at all is interaction: the reader yields for this turn.
         self.note_activity()
+        # A human message while asleep is a human-caused wake event.
+        controller = self.controller
+        if controller is not None and controller.sleeping():
+            controller.wake(reason=runtime_state.REASON_HUMAN_MESSAGE)
         # 1. Deterministic command: answer from storage, no model call.
         command_response = self.cmd_store.check_trigger(user_input)
         if command_response:
@@ -319,34 +416,43 @@ class ChatSession:
             user_input, self.history, detailed=False
         )
         response = self.orchestrator.query_gemma(prompt)
-        # Retrieval is the only real "use" of a memory, so record it now. This
-        # keeps last_used/use_count meaningful, which is what lets decay and
-        # dormancy reflect usage instead of merely age.
-        note_retrieval = getattr(self.orchestrator, "note_retrieval", None)
-        if callable(note_retrieval):
-            note_retrieval(diagnostics)
-        # The relational preference moves only on real events, and only here on
-        # the live path - never inside build_prompt, which stays read-only.
-        self._record_relational_event(user_input, response)
-        # The current *condition* also responds to the turn, but separately: a
-        # live affect event updates the temporary accumulator only, never a
-        # durable experience and never the relational state.
-        self._record_affect_event(user_input, response)
-        self._record_turn(user_input, response, consolidate=not response.startswith("[Error"))
-        self._checkpoint()
-        # Working memory is updated on the live path only, and after the turn, so
-        # the conversation's scratch state (topic, goal, references, threads)
-        # reflects what has happened. It is never written through the memory
-        # store, so it cannot become durable memory by accident.
-        conversation = getattr(self.orchestrator, "conversation", None)
-        if conversation is not None and not response.startswith("[Error"):
-            try:
-                conversation.observe_turn(user_input, response, self.history)
-            except Exception:
-                pass
-        # Maintenance runs after the turn's memory writes, never during prompt
-        # building (which must stay read-only). It is throttled internally.
-        self._run_maintenance()
+        # Everything after the reply is bookkeeping: retrieval use, the
+        # relational/affect state, working memory and decay. It is a burst of
+        # small store writes, so it is batched into one save per model. The
+        # batch is flushed before the method returns, so the turn is still
+        # fully durable when it ends.
+        store = self.orchestrator.store
+        batch = getattr(store, "turn_batch", None)
+        with (batch() if callable(batch) else contextlib.nullcontext()):
+            # Retrieval is the only real "use" of a memory, so record it now.
+            # This keeps last_used/use_count meaningful, which is what lets decay
+            # and dormancy reflect usage instead of merely age.
+            note_retrieval = getattr(self.orchestrator, "note_retrieval", None)
+            if callable(note_retrieval):
+                note_retrieval(diagnostics)
+            # The relational preference moves only on real events, and only here
+            # on the live path - never inside build_prompt, which is read-only.
+            self._record_relational_event(user_input, response)
+            # The current *condition* also responds to the turn, but separately:
+            # a live affect event updates the temporary accumulator only, never a
+            # durable experience and never the relational state.
+            self._record_affect_event(user_input, response)
+            self._record_turn(user_input, response, consolidate=not response.startswith("[Error"))
+            self._checkpoint()
+            # Working memory is updated on the live path only, and after the
+            # turn, so the conversation's scratch state (topic, goal, references,
+            # threads) reflects what has happened. It is never written through
+            # the memory store, so it cannot become durable memory by accident.
+            conversation = getattr(self.orchestrator, "conversation", None)
+            if conversation is not None and not response.startswith("[Error"):
+                try:
+                    conversation.observe_turn(user_input, response, self.history)
+                except Exception:
+                    pass
+            # Maintenance runs after the turn's memory writes, never during
+            # prompt building (which must stay read-only). It is throttled
+            # internally.
+            self._run_maintenance()
         return response
 
     def _record_relational_event(self, user_input: str, response: str) -> None:
@@ -702,6 +808,16 @@ class ChatSession:
             self._display_debug(" ".join(parts[1:]))
         elif command == "/correct":
             self._correct_memory()
+        elif command in ("/sleep", "/sleep-mode"):
+            self._sleep_now()
+        elif command == "/wake":
+            self._wake_now()
+        elif command == "/status":
+            self._display_status()
+        elif command == "/sleep-log":
+            self._display_sleep_log()
+        elif command in ("/decisions", "/files"):
+            self._display_file_decisions()
         else:
             self._emit(f"Unknown command: {command}. Type /help for options.")
 
@@ -724,7 +840,7 @@ class ChatSession:
         for target in targets:
             memories = self.orchestrator.store.get_memories(target, status=None)
             grand_total += len(memories)
-            self._emit(f"\n=== {target.upper()} MODEL MEMORIES ({len(memories)}) ===")
+            self._emit(_section(f"{target.upper()} MODEL MEMORIES ({len(memories)})"))
             if not memories:
                 self._emit("  (No memories found)")
                 continue
@@ -765,7 +881,7 @@ class ChatSession:
                         status = f"SUPERSEDED by {mem.get('superseded_by')}"
                     tag = "" if is_sourced(mem) else "  [unsourced]"
                     self._emit(f"   {mem.get('id')}  [{status}]{tag}")
-                    self._emit(f"      {mem.get('content')}")
+                    self._emit(_wrap(mem.get('content'), indent="      "))
                     self._emit(
                         f"      source={mem.get('source')}  conf={mem.get('confidence')}"
                         f"  turn={mem.get('originating_turn', '-')}"
@@ -777,7 +893,7 @@ class ChatSession:
                     )
 
         if len(targets) > 1:
-            self._emit(f"\n=== TOTAL: {grand_total} memories across {len(targets)} models ===")
+            self._emit(_section(f"TOTAL: {grand_total} memories across {len(targets)} models"))
 
     def _all_memories(self, status: Optional[str] = None):
         """Iterate ``(target, memory)`` across every model."""
@@ -801,7 +917,7 @@ class ChatSession:
             if needle in haystack:
                 hits.append((target, mem))
 
-        self._emit(f"\n=== SEARCH: {query!r} ({len(hits)} match{'es' if len(hits) != 1 else ''}) ===")
+        self._emit(_section(f"SEARCH: {query!r} ({len(hits)} match{'es' if len(hits) != 1 else ''})"))
         if not hits:
             self._emit("  (Nothing matched)")
             return
@@ -811,7 +927,7 @@ class ChatSession:
                 f"  [{target}] {mem.get('id')}  "
                 f"({mem.get('type')}, {mem.get('status')})"
             )
-            self._emit(f"      {mem.get('content')}")
+            self._emit(_wrap(mem.get('content'), indent="      "))
         if len(hits) > len(shown):
             self._emit(
                 f"  ... and {len(hits) - len(shown)} more "
@@ -822,24 +938,24 @@ class ChatSession:
         """The memories that are always injected, regardless of the query."""
         getter = getattr(self.orchestrator.store, "get_governing_memories", None)
         governing = getter() if callable(getter) else []
-        self._emit(f"\n=== GOVERNING MEMORIES ({len(governing)} always apply) ===")
+        self._emit(_section(f"GOVERNING MEMORIES ({len(governing)} always apply)"))
         if not governing:
             self._emit("  (None)")
             return
         for mem in governing:
             self._emit(f" [{mem.get('target_model')}] {mem.get('id')} | {mem.get('type')}")
-            self._emit(f"    {mem.get('content')}")
+            self._emit(_wrap(mem.get('content')))
 
     def _display_temporary(self) -> None:
         """Transient scratch for this session only - never written to disk."""
         getter = getattr(self.orchestrator.store, "get_temporary_context", None)
         items = getter(limit=50) if callable(getter) else []
-        self._emit(f"\n=== TEMPORARY CONTEXT ({len(items)} item(s), this session only) ===")
+        self._emit(_section(f"TEMPORARY CONTEXT ({len(items)} item(s), this session only)"))
         if not items:
             self._emit("  (Nothing transient right now)")
             return
         for item in items:
-            self._emit(f" {item.get('id')} | {item.get('kind')} | {item.get('content')}")
+            self._emit(_wrap(f"{item.get('id')} | {item.get('kind')} | {item.get('content')}", indent=" "))
         self._emit("  These are NOT stored and will disappear when the session ends.")
 
     def _display_contradictions(self) -> None:
@@ -849,13 +965,13 @@ class ChatSession:
             if mem.get("contradiction_count") or mem.get("superseded_by")
             or mem.get("contradiction_reason")
         ]
-        self._emit(f"\n=== CONTRADICTIONS ({len(flagged)}) ===")
+        self._emit(_section(f"CONTRADICTIONS ({len(flagged)})"))
         if not flagged:
             self._emit("  (No contradictions recorded)")
             return
         for target, mem in flagged:
             self._emit(f" [{target}] {mem.get('id')} | status={mem.get('status')}")
-            self._emit(f"    {mem.get('content')}")
+            self._emit(_wrap(mem.get('content')))
             if mem.get("superseded_by"):
                 self._emit(f"    superseded by: {mem.get('superseded_by')}")
             if mem.get("contradiction_reason"):
@@ -887,7 +1003,7 @@ class ChatSession:
         getter = getattr(self.orchestrator.store, "get_memories", None)
         memories = getter("relationship", status=None) if callable(getter) else []
         state = relational.load_state_from_memories(memories)
-        self._emit("\n=== RELATIONSHIP: COMMAND AFFINITY ===")
+        self._emit(_section("RELATIONSHIP: COMMAND AFFINITY"))
         self._emit(relational.format_diagnostics(state))
         # Each subject keeps its own record, so any other subject that has
         # accumulated state is shown too - the preference never blends them.
@@ -913,7 +1029,7 @@ class ChatSession:
         memories = getter("self", status=None) if callable(getter) else []
         state = affect.load_state_from_memories(memories)
         diag = affect.diagnostics(state)
-        self._emit("\n=== ASTRA'S CURRENT CONDITION (TEMPORARY) ===")
+        self._emit(_section("ASTRA'S CURRENT CONDITION (TEMPORARY)"))
         for name in affect.AFFECT_COMPONENTS:
             self._emit(f"  {name.replace('_', ' ').title()}: {diag[name]}")
         if diag["neutral"]:
@@ -938,13 +1054,13 @@ class ChatSession:
         getter = getattr(self.orchestrator.store, "get_experiences", None)
         experiences = getter(status=None) if callable(getter) else []
         dispositions = selfhood.derive_dispositions(experiences)
-        self._emit("\n=== DERIVED SELF-PORTRAIT (REVISABLE) ===")
+        self._emit(_section("DERIVED SELF-PORTRAIT (REVISABLE)"))
         if not dispositions:
             self._emit("  (Not enough accumulated experience yet to show a pattern.)")
         for d in dispositions:
-            self._emit(f"  ({d['kind']}) {d['text']} - from {d['basis']} experience(s)")
+            self._emit(_wrap(f"({d['kind']}) {d['text']} - from {d['basis']} experience(s)", indent="  "))
         formative = [m for m in experiences if selfhood.is_formative(m)]
-        self._emit(f"\n=== FORMATIVE / TRAUMATIC EXPERIENCES ({len(formative)}) ===")
+        self._emit(_section(f"FORMATIVE / TRAUMATIC EXPERIENCES ({len(formative)})"))
         if not formative:
             self._emit("  (None recorded yet)")
         for mem in sorted(formative, key=lambda m: str(m.get("timestamp") or ""), reverse=True):
@@ -955,7 +1071,7 @@ class ChatSession:
         """The stored experience records - what Astra actually did or met."""
         getter = getattr(self.orchestrator.store, "get_experiences", None)
         experiences = getter(status=None) if callable(getter) else []
-        self._emit(f"\n=== EXPERIENCES ({len(experiences)}) ===")
+        self._emit(_section(f"EXPERIENCES ({len(experiences)})"))
         if not experiences:
             self._emit("  (None recorded yet)")
             return
@@ -964,7 +1080,7 @@ class ChatSession:
             work = mem.get("work_id")
             suffix = f" [work: {work}]" if work else ""
             self._emit(f"  {mem.get('timestamp', '')[:19]} | {kind}{suffix} | {mem.get('status')}")
-            self._emit(f"    {mem.get('content')}")
+            self._emit(_wrap(mem.get('content')))
 
     def _display_questions(self) -> None:
         """Open lines of inquiry and what evidence has accumulated for each.
@@ -976,17 +1092,17 @@ class ChatSession:
         getter = getattr(self.orchestrator.store, "get_questions", None)
         questions = getter(status=None) if callable(getter) else []
         open_q = [q for q in questions if inquiry.is_open_question(q)]
-        self._emit(f"\n=== OPEN QUESTIONS ({len(open_q)} of {len(questions)}) ===")
+        self._emit(_section(f"OPEN QUESTIONS ({len(open_q)} of {len(questions)})"))
         if not questions:
             self._emit("  (No questions recorded yet)")
             return
         for mem in questions:
-            self._emit(f"  {inquiry.render_question(mem)}")
+            self._emit(_wrap(inquiry.render_question(mem), indent="  "))
             evidence = mem.get("question_evidence") or []
             if evidence:
                 self._emit(f"      evidence: {len(evidence)} linked observation(s)")
             for entry in (mem.get("question_history") or [])[-2:]:
-                self._emit(f"      {entry.get('status')}: {entry.get('evidence')}")
+                self._emit(_wrap(f"{entry.get('status')}: {entry.get('evidence')}", indent="      "))
 
     def _display_work(self, work_id: Optional[str]) -> None:
         """Work-specific understanding, grouped by work.
@@ -1003,7 +1119,7 @@ class ChatSession:
         for mem in knowledge:
             grouped.setdefault(inquiry.work_of(mem) or "(unscoped)", []).append(mem)
         label = f" for '{work_id}'" if work_id else ""
-        self._emit(f"\n=== WORK CONTEXT{label} ===")
+        self._emit(_section(f"WORK CONTEXT{label}"))
         if not grouped:
             self._emit("  (No work-specific knowledge recorded yet)")
             return
@@ -1011,14 +1127,14 @@ class ChatSession:
             self._emit(f"\n  [{work}]")
             for mem in grouped[work]:
                 self._emit(
-                    f"    ({inquiry.epistemic_of(mem)}) {mem.get('content')}"
+                    _wrap(f"({inquiry.epistemic_of(mem)}) {mem.get('content')}")
                 )
 
     def _display_reading(self) -> None:
         """What Astra is reading, how far, and why the reader is (not) running."""
         reader = self.reader
         if reader is None:
-            self._emit("\n=== BACKGROUND READING ===")
+            self._emit(_section("BACKGROUND READING"))
             self._emit("  (Reader not attached in this session)")
             return
         self._emit("\n" + reader.format_diagnostics())
@@ -1035,7 +1151,7 @@ class ChatSession:
         questions = [
             m for m in store.get_memories("self", status=None) if inquiry.is_question(m)
         ]
-        self._emit("\n=== SENSE OF TIME ===")
+        self._emit(_section("SENSE OF TIME"))
         if last_seen:
             self._emit(f"  Last present: {last_seen}")
         else:
@@ -1059,11 +1175,11 @@ class ChatSession:
         reader = self.reader
         library = getattr(reader, "library", None) if reader is not None else None
         if library is None:
-            self._emit("\n=== LIBRARY ===")
+            self._emit(_section("LIBRARY"))
             self._emit("  (No library attached in this session)")
             return
         works = library.list_works()
-        self._emit(f"\n=== LIBRARY ({len(works)} work(s)) ===")
+        self._emit(_section(f"LIBRARY ({len(works)} work(s))"))
         if not works:
             self._emit("  (Nothing ingested yet)")
             return
@@ -1183,11 +1299,11 @@ class ChatSession:
         entries = library.scan_books(folder)
         where = folder or library.books_path
         if not os.path.isdir(where):
-            self._emit(f"\n=== BOOKS ({where}) ===")
+            self._emit(_section(f"BOOKS ({where})"))
             self._emit("  (Folder not found. Put books there, or pass a folder:")
             self._emit('   /library-scan "C:\\Books")')
             return
-        self._emit(f"\n=== BOOKS ({where}) ===")
+        self._emit(_section(f"BOOKS ({where})"))
         if not entries:
             self._emit("  (No .txt/.md/.epub files here yet)")
             return
@@ -1207,20 +1323,20 @@ class ChatSession:
             (target, mem) for target, mem in self._all_memories(status=None)
             if str(mem.get("utility") or "active") == "dormant"
         ]
-        self._emit(f"\n=== DORMANT MEMORIES ({len(dormant)}) ===")
+        self._emit(_section(f"DORMANT MEMORIES ({len(dormant)})"))
         if not dormant:
             self._emit("  (None - everything is still active)")
             return
         for target, mem in dormant:
             self._emit(f" [{target}] {mem.get('id')} | {mem.get('type')}")
-            self._emit(f"    {mem.get('content')}")
+            self._emit(_wrap(mem.get('content')))
             if mem.get("dormant_reason"):
                 self._emit(f"    reason: {mem.get('dormant_reason')}")
 
     def _display_stats(self) -> None:
         """Memory health summary."""
         stats = self.orchestrator.store.stats()
-        self._emit("\n=== MEMORY STATS ===")
+        self._emit(_section("MEMORY STATS"))
         for target in ("roum", "self", "relationship"):
             info = stats.get(target, {})
             self._emit(
@@ -1253,7 +1369,7 @@ class ChatSession:
             self._emit(f"Could not archive: {exc}")
             return
         self._emit(f"\n✓ Memory '{mem_id}' archived (kept on disk, no longer used).")
-        self._emit(f"  Was: {mem.get('content')}")
+        self._emit(_wrap(f"Was: {mem.get('content')}", indent="  "))
 
     def _restore_memory(self, mem_id: str) -> None:
         found = self._find_memory(mem_id)
@@ -1290,7 +1406,7 @@ class ChatSession:
             self._emit(f"\nError: Memory ID '{mem_id}' not found in any model.")
             return
         target, mem = found
-        self._emit(f"\n=== FULL RECORD: {mem.get('id')} ({target.upper()} MODEL) ===")
+        self._emit(_section(f"FULL RECORD: {mem.get('id')} ({target.upper()} MODEL)"))
         self._emit(f"  {'field':<20} value")
         self._emit(f"  {'-' * 20} {'-' * 40}")
         ordered = [f for f in self._RECORD_FIELD_ORDER if f in mem]
@@ -1309,7 +1425,7 @@ class ChatSession:
     def _display_journal(self, period: Optional[str] = None) -> None:
         entries = [e for e in self.orchestrator.store.get_journal()
                    if e.get("entry_kind") != "reading"]
-        self._emit("\n=== AI MEMORY JOURNAL ===")
+        self._emit(_section("AI MEMORY JOURNAL"))
         if period:
             entries = [e for e in entries
                        if str(e.get("timestamp", "")).startswith(period.strip())]
@@ -1318,7 +1434,7 @@ class ChatSession:
             self._emit("  (No journal reflections recorded yet)")
         for entry in entries:
             self._emit(f"[{entry.get('timestamp')}] {entry.get('title')}")
-            self._emit(f"  {entry.get('observation')}\n")
+            self._emit(_wrap(entry.get('observation'), indent="  ") + "\n")
 
     def _display_reading_journal(self, work_id: Optional[str] = None) -> None:
         """Astra's reactions to books, grouped by work.
@@ -1330,7 +1446,7 @@ class ChatSession:
         getter = getattr(self.orchestrator.store, "get_reading_journal", None)
         entries = getter(work_id=work_id) if callable(getter) else []
         scope = f" for {work_id}" if work_id else ""
-        self._emit(f"\n=== ASTRA'S READING JOURNAL{scope} ===")
+        self._emit(_section(f"ASTRA'S READING JOURNAL{scope}"))
         if not entries:
             self._emit("  (No reading reactions recorded yet)")
             return
@@ -1344,9 +1460,9 @@ class ChatSession:
                 stamp = str(entry.get("timestamp", ""))[:10]
                 emotion = entry.get("emotion")
                 mood = f" ({emotion})" if emotion else ""
-                self._emit(f"    [{stamp}]{mood} {entry.get('reaction')}")
+                self._emit(_wrap(f"[{stamp}]{mood} {entry.get('reaction')}"))
                 if entry.get("reflection"):
-                    self._emit(f"      ~ {entry.get('reflection')}")
+                    self._emit(_wrap(f"~ {entry.get('reflection')}", indent="      "))
 
     def _display_timeline(self, args: List[str]) -> None:
         """A cheap date index over memories: counts per day/month/year.
@@ -1366,7 +1482,7 @@ class ChatSession:
                 self._emit(f"Unknown argument {arg!r}; using month across all models.")
         summary = self.orchestrator.store.get_timeline(target, granularity=granularity)
         scope = target or "all models"
-        self._emit(f"\n=== MEMORY TIMELINE ({granularity}, {scope}) ===")
+        self._emit(_section(f"MEMORY TIMELINE ({granularity}, {scope})"))
         if not summary:
             self._emit("  (No memories recorded yet)")
             return
@@ -1387,7 +1503,7 @@ class ChatSession:
             return
 
         _, diag = builder(message, self.history)
-        self._emit(f"\n=== MEMORY DIAGNOSTICS for {message!r} ===")
+        self._emit(_section(f"MEMORY DIAGNOSTICS for {message!r}"))
         self._emit(
             f"Boundaries injected: {len(diag['boundaries'])} | "
             f"Governing: {len(diag['governing_ids'])} | "
@@ -1414,7 +1530,7 @@ class ChatSession:
                 f"imp={cand['importance']} src={cand['source']} "
                 f"status={cand['status']} contradicted={cand['contradicted']}"
             )
-            self._emit(f"        {cand['content']}")
+            self._emit(_wrap(cand['content'], indent="        "))
         if len(candidates) > MEMORY_VIEW_LIMIT:
             self._emit(f"  ... and {len(candidates) - MEMORY_VIEW_LIMIT} more candidates")
 
@@ -1422,7 +1538,7 @@ class ChatSession:
         sections = diag.get("prompt_sections") or []
         if sections:
             self._emit(f"\nPrompt sections ({len(sections)}, in order):")
-            self._emit("  " + " -> ".join(sections))
+            self._emit(_wrap(" -> ".join(sections), indent="  "))
 
         # --- explicit behavioural constraints (authoritative runtime rules) ---
         constraints = diag.get("authoritative_constraints") or []
@@ -1432,7 +1548,7 @@ class ChatSession:
         for c in constraints:
             state = "injected" if c.get("included") else "NOT INJECTED"
             self._emit(f"  [{state}] {c.get('id')} (source={c.get('source')})")
-            self._emit(f"        {c.get('content')}")
+            self._emit(_wrap(c.get('content'), indent="        "))
 
         # --- authority / provenance of each injected memory ---
         trace = diag.get("authority_trace") or {}
@@ -1491,12 +1607,20 @@ class ChatSession:
         # never touch global signal state.
         if self._consolidate_in_background:
             self._install_shutdown_handlers()
-        self._emit("==========================================================")
+        # Start the persistent background runtime and the Discord transport.
+        controller = self.controller
+        if controller is not None:
+            controller.start()
+        discord = self.discord
+        if discord is not None:
+            threading.Thread(target=discord.run, name="astra-discord",
+                             daemon=True).start()
+        self._emit("=" * 58)
         self._emit("  Astra - Local Companion Core")
         self._emit("  Backend: Ollama (gemma4:e4b)")
         self._emit("  Type /help for memory inspection & correction commands.")
         self._emit("  Type exit or /exit to save and quit.")
-        self._emit("==========================================================")
+        self._emit("=" * 58)
 
         try:
             self._run_loop()
@@ -1505,11 +1629,48 @@ class ChatSession:
             # anything down, so a turn's memory is not lost when the process
             # exits - including an abrupt close of the console window.
             self.close()
+            # Stop background workers cleanly: the persistent runtime first, then
+            # the daemon transports, so no half-cycle runs against a closed store.
+            if controller is not None:
+                controller.stop()
+            if discord is not None and callable(getattr(discord, "stop", None)):
+                discord.stop()
             # The reader is a daemon; stop it so the process can exit cleanly and
             # no half-cycle is left running against a closed store.
             reader = self.reader
             if reader is not None and callable(getattr(reader, "stop", None)):
                 reader.stop()
+
+    def _maybe_surface_proactive(self) -> None:
+        """Offer preserved candidates when the user next interacts.
+
+        Surfacing (not interrupting) is allowed while Active: this is the turn
+        where a human is present. It never manufactures a candidate from elapsed
+        time, never repeats one already offered, and never fires when proactive
+        is muted - those are enforced by the policy layer.
+        """
+        router = self.router
+        if router is None or self.controller is None:
+            return
+        if self.controller.sleeping():
+            return  # quiet while asleep; no unprompted speech
+        try:
+            candidates = router.proactive_candidates(user_active=False)
+        except Exception:
+            return
+        for item in candidates:
+            decision = item["decision"]
+            ref_id = decision.get("ref_id")
+            if ref_id and self.controller.proactive.was_surfaced(ref_id):
+                continue
+            if decision.get("interrupt"):
+                # Interruptions are opt-in and never fired from this path.
+                continue
+            reason = item["candidate"].get("reason") or ""
+            if not reason:
+                continue
+            self._emit(f"\n[Astra has been thinking about: {reason}]")
+            self.controller.proactive.note_surfaced(ref_id)
 
     def _run_loop(self) -> None:
         while True:
@@ -1518,6 +1679,7 @@ class ChatSession:
             # without the reader having to poll anything itself.
             self.note_activity()
             self._note_game_pause()
+            self._maybe_surface_proactive()
             try:
                 user_input = self.input_fn("\nRoum > ").strip()
             except (KeyboardInterrupt, EOFError):
@@ -1529,11 +1691,23 @@ class ChatSession:
                 self._emit("Session ended cleanly. Memories saved.")
                 break
             if user_input.startswith("/"):
+                # Slash commands stay local to the session (they are storage /
+                # inspection views, not routed conversation). A no-op marker
+                # keeps the router's "human is here" signal honest.
+                if self.controller is not None:
+                    self.controller.touch()
                 self._handle_slash(user_input)
                 continue
-            response = self.handle(user_input)
+            # Conversation goes through the shared router when one is attached,
+            # so a Discord turn and a CLI turn serialize on the same lock and
+            # cannot mutate session state concurrently.
+            router = self.router
+            if router is not None:
+                response = router.handle(user_input, source="cli").get("text", "")
+            else:
+                response = self.handle(user_input)
             label = _ELYSIUM_LABEL if response.startswith(_ELYSIUM_LABEL) else _ASTRA_LABEL
-            self._emit(f"\n{label}{response}")
+            self._emit(f"\n{label}{_reply_text(response)}")
 
 
 def build_session(
@@ -1567,6 +1741,7 @@ def build_session(
     # same store, reuses the orchestrator's model call, and only ever reads when
     # Roum is idle and no game is running.
     reader = None
+    library = None
     if enable_reader:
         from astra.library import Library
         from astra.reader import BackgroundReader
@@ -1584,11 +1759,56 @@ def build_session(
         )
         reader.start()
 
-    return ChatSession(
+    session = ChatSession(
         orchestrator, cmd_store, elysium=elysium, recorder=recorder,
         consolidator=_default_consolidator, reader=reader,
         background_consolidation=True,
     )
+
+    # The persistent background runtime: Active/Sleep, scheduler, tasks, file
+    # organization, proactive policy and prepared context. It is the same
+    # application authority for CLI and Discord.
+    from astra.application import ApplicationRouter, RuntimeController
+
+    runtime_config = orchestrator._load_yaml("runtime.yaml") if hasattr(
+        orchestrator, "_load_yaml") else {}
+    controller = RuntimeController(
+        session=session, store=store, data_dir=storage_dir,
+        config_dir=config_dir, config=runtime_config, reader=reader,
+        library=library,
+    )
+    session.controller = controller
+    # The orchestrator only *reads* prepared context for its prompt; the
+    # controller updates it while asleep.
+    if hasattr(orchestrator, "set_prepared_context"):
+        orchestrator.set_prepared_context(controller.prepared)
+
+    voice = _build_voice(runtime_config)
+    router = ApplicationRouter(session, controller, voice=voice)
+    session.router = router
+
+    # Discord is transport only: it routes through the same ApplicationRouter.
+    from astra.discord_adapter import build_discord_adapter
+
+    session.discord = build_discord_adapter(router, runtime_config,
+                                            data_dir=storage_dir)
+    return session
+
+
+def _build_voice(runtime_config: Dict[str, Any]) -> Any:
+    """Build the voice renderer named in config (default: text pass-through)."""
+    from astra.response_plan import NullVoiceRenderer, VoiceRenderer
+
+    try:
+        cfg = runtime_config.get("voice") if isinstance(runtime_config, dict) else None
+        cfg = cfg if isinstance(cfg, dict) else {}
+        if not cfg.get("enabled"):
+            return NullVoiceRenderer()
+        # Only the built-in pass-through exists today; a real backend subclasses
+        # VoiceRenderer and is registered here without touching cognition.
+        return VoiceRenderer()
+    except Exception:
+        return NullVoiceRenderer()
 
 
 def main() -> None:

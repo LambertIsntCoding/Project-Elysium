@@ -9,6 +9,7 @@ import yaml
 from . import elysium as _elysium
 from . import affect
 from . import inquiry
+from . import prepared_context
 from . import reading
 from . import relational
 from . import selfhood
@@ -30,6 +31,7 @@ from .memory import (
     is_governing,
     is_sourced,
     memory_importance,
+    rank_governing,
     select_governing,
     source_tier,
 )
@@ -270,11 +272,22 @@ class CompanionOrchestrator:
         # orchestrator only ever *reads* its position for the prompt, never
         # starts or advances it (prompt building stays read-only).
         self.reader: Any = None
+        # Prepared context (derived references written by the sleep scheduler) is
+        # likewise only *read* here, and only when its file exists. When nothing
+        # is attached, the prompt is byte-for-byte unchanged.
+        self.prepared_context: Any = None
         # Conversational working memory: the middle layer between the current
         # turn and durable memory. It is updated on the live turn path (by the
         # session) and only *read* here. When no session is present, the
         # orchestrator keeps a local instance so prompt building still works.
         self.conversation = working_memory.ConversationState()
+
+        # Per-build read cache: the same model is read from the store several
+        # times while assembling one prompt, and each read deep-copies every
+        # record. Caching it for the duration of a build removes the repeated
+        # copies; it is cleared at the start of each public entry point, so a
+        # write between turns is always seen.
+        self._read_cache: Dict[Any, List[Dict[str, Any]]] = {}
 
         # --- Optional ELYSIUM layer -------------------------------------
         # All of this is off unless requested, so the default constructor
@@ -435,6 +448,27 @@ class CompanionOrchestrator:
                 parts.append(f"Bad Response: {str(ex['bad_response']).strip()}")
             parts.append(f"Good Response: {str(ex['good_response']).strip()}")
 
+    def _append_prepared_context(self, parts: List[str], user_input: str) -> None:
+        """Derived references, only when they are relevant to *this* turn.
+
+        Subordinate context: entries are pointers to existing records, filtered
+        against the turn's own significant tokens (the same stopword gate the
+        inquiry blocks use), so a stale preparation never leaks into an unrelated
+        conversation. Read-only, and a complete no-op when no prepared context is
+        attached or nothing overlaps.
+        """
+        prepared = getattr(self, "prepared_context", None)
+        if prepared is None:
+            return
+        try:
+            entries = prepared.entries()
+        except Exception:
+            return
+        relevant = prepared_context.relevance(entries, user_input)
+        block = prepared_context.render_block(relevant)
+        if block:
+            parts.append("\n" + block)
+
     def _append_working_memory(self, parts: List[str]) -> None:
         """The conversation's working memory, if there is any.
 
@@ -537,6 +571,8 @@ class CompanionOrchestrator:
         the developer-only analyses are skipped. The live turn path uses it so a
         real reply does not pay for ``/debug``-only work.
         """
+        # A fresh build must see writes that happened since the last one.
+        self.invalidate_read_cache()
         identity_data = self._load_yaml("identity.yaml")
         examples_data = self._load_yaml("behavior_examples.yaml")
         boundaries_cfg = self._load_yaml("relationship.yaml")
@@ -584,8 +620,14 @@ class CompanionOrchestrator:
         everything = all_roum + all_self + all_rel
 
         # 2. Governing memories: always applied, regardless of the query words.
-        total_governing = sum(1 for m in everything if is_governing(m) and m.get("content"))
-        governing = self._select_governing(everything)
+        #    One walk collects the eligible records; the count and the ranked
+        #    selection are then derived from that same list instead of scanning
+        #    every memory twice more (this ran three O(store) passes per turn).
+        governing_eligible = [
+            m for m in everything if m.get("content") and is_governing(m)
+        ]
+        total_governing = len(governing_eligible)
+        governing = rank_governing(governing_eligible)
 
         # 3. Current-state slots (e.g. how to address Roum): only the newest
         #    active value per slot, so stale names are never injected.
@@ -716,6 +758,11 @@ class CompanionOrchestrator:
 
         self._append_examples(parts, examples_data)
         self._append_command_history(parts)
+        # Prepared context (derived, subordinate, off by default) comes after
+        # retrieval and before the live working memory, so it can never outrank
+        # a retrieved fact. It is filtered against the actual turn so a stale
+        # preparation cannot leak into an unrelated conversation.
+        self._append_prepared_context(parts, user_input)
         self._append_working_memory(parts)
         self._append_history(parts, conversation_history)
 
@@ -726,17 +773,103 @@ class CompanionOrchestrator:
             user_input, everything, governing, current_state, boundaries,
             retrieved_roum, retrieved_self, retrieved_rel, pinned, recent_experiences,
             relevant_questions, work_knowledge, prompt="\n".join(parts),
-            detailed=detailed,
+            detailed=detailed, total_governing=total_governing,
         )
         return "\n".join(parts), diagnostics
 
+    def set_prepared_context(self, prepared: Any) -> None:
+        """Attach the sleep-time prepared context (read-only at prompt time)."""
+        self.prepared_context = prepared
+
     # ---- memory section builders ---------------------------------------
     def _load_memories(self, target_model: str) -> List[Dict[str, Any]]:
-        """Retrievable memories for one model, tolerant of minimal store stubs."""
-        getter = getattr(self.store, "get_retrievable_memories", None)
+        """Retrievable memories for one model, tolerant of minimal store stubs.
+
+        Reads the model's full set once (which also populates the retrievable
+        view), so the affect/affinity helpers that need every record reuse the
+        same read instead of deep-copying the model again.
+        """
+        if callable(getattr(self.store, "get_memories", None)):
+            full = self._read(target_model, "all")
+            return [m for m in full if m.get("status") in ("active", "weakened")]
+        return self._read(target_model, "retrievable")
+
+    def _store_read(self, target_model: str, mode: str) -> List[Dict[str, Any]]:
+        """A single raw read from the store (no caching)."""
+        if mode == "retrievable":
+            getter = getattr(self.store, "get_retrievable_memories", None)
+            if callable(getter):
+                return list(getter(target_model) or [])
+            getter = getattr(self.store, "get_active_memories", None)
+            return list(getter(target_model) or []) if callable(getter) else []
+        getter = getattr(self.store, "get_memories", None)
         if callable(getter):
-            return getter(target_model) or []
-        return self.store.get_active_memories(target_model) or []
+            return list(getter(target_model, status=None) or [])
+        return []
+
+    def _read(self, target_model: str, mode: str) -> List[Dict[str, Any]]:
+        """Read once per prompt build, then reuse.
+
+        Prompt building pulls the same model from the store several times
+        (affect state, affinity state, the main retrieval pass). Each store read
+        deep-copies every record, so on a large store this dominates the turn.
+        The cache is invalidated at the start of every public entry point, so a
+        write between turns is always visible. The returned lists are private
+        copies owned by the orchestrator, not by the store.
+
+        ``retrievable`` is a filter over ``all`` (active + weakened), so when the
+        full set is already loaded it is derived rather than re-read. That keeps
+        it to at most one store read per model per build.
+        """
+        key = (target_model, mode)
+        cached = self._read_cache.get(key)
+        if cached is not None:
+            return cached
+
+        if mode == "retrievable":
+            full = self._read_cache.get((target_model, "all"))
+            if full is not None:
+                data = [m for m in full
+                        if m.get("status") in ("active", "weakened")]
+                self._read_cache[key] = data
+                return data
+        data = self._store_read(target_model, mode)
+        self._read_cache[key] = data
+        if mode == "all":
+            # Serve the retrievable view from the same read; no second copy.
+            self._read_cache[(target_model, "retrievable")] = [
+                m for m in data if m.get("status") in ("active", "weakened")]
+        return data
+
+    def _read_experiences(self, *, status: Optional[str] = "active") -> List[Dict[str, Any]]:
+        """Experience records, read once per build from the self model.
+
+        The self-portrait, the recent-history block and the conversation
+        candidates all want experiences; without this they each deep-copy the
+        whole self model. The two status views are kept apart because they are
+        genuinely different sets, but each is read at most once.
+        """
+        key = ("experiences", status)
+        cached = self._read_cache.get(key)
+        if cached is not None:
+            return cached
+        getter = getattr(self.store, "get_memories", None)
+        if callable(getter):
+            # The full self set is already loaded for this build; derive the
+            # experience view instead of re-reading and re-copying it.
+            full = self._read("self", "all")
+            data = [m for m in full if m.get("type") == "experience"]
+            if status is not None:
+                data = [m for m in data if (m.get("status") or "active") == status]
+        else:
+            exp_getter = getattr(self.store, "get_experiences", None)
+            data = exp_getter(status=status) if callable(exp_getter) else []
+        self._read_cache[key] = data
+        return data
+
+    def invalidate_read_cache(self) -> None:
+        """Drop the per-build read cache (called on every store mutation)."""
+        self._read_cache.clear()
 
     @staticmethod
     def _select_governing(memories: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -759,12 +892,12 @@ class CompanionOrchestrator:
 
     def _affinity_state(self) -> Dict[str, Any]:
         """Astra's accumulated relational state, read from the relationship model."""
-        getter = getattr(self.store, "get_memories", None)
-        memories = getter("relationship", status=None) if callable(getter) else []
+        memories = self._read("relationship", "all")
         return relational.load_state_from_memories(memories)
 
     def affinity_diagnostics(self) -> Dict[str, Any]:
         """The relational preference as diagnostics (never an instruction)."""
+        self.invalidate_read_cache()
         return relational.affinity_diagnostics(self._affinity_state())
 
     def _append_affinity(self, parts: List[str]) -> None:
@@ -775,8 +908,7 @@ class CompanionOrchestrator:
 
     def _affect_state(self) -> Dict[str, Any]:
         """Astra's current experiential affect, read from the self model."""
-        getter = getattr(self.store, "get_memories", None)
-        memories = getter("self", status=None) if callable(getter) else []
+        memories = self._read("self", "all")
         return affect.load_state_from_memories(memories)
 
     def affect_diagnostics(self) -> Dict[str, Any]:
@@ -785,8 +917,7 @@ class CompanionOrchestrator:
 
     def questions_diagnostics(self) -> Dict[str, Any]:
         """Open lines of inquiry, with the evidence each has accumulated."""
-        getter = getattr(self.store, "get_memories", None)
-        memories = getter("self", status=None) if callable(getter) else []
+        memories = self._read("self", "all")
         questions = [m for m in memories if inquiry.is_question(m)]
         return {
             "open": [inquiry.render_question(q) for q in inquiry.open_questions(questions)],
@@ -797,11 +928,9 @@ class CompanionOrchestrator:
 
     def conversation_candidates(self, limit: int = 5) -> List[Dict[str, Any]]:
         """Reasons Astra might later want to speak - preserved, never triggered."""
-        getter = getattr(self.store, "get_memories", None)
-        memories = getter("self", status=None) if callable(getter) else []
-        exp_getter = getattr(self.store, "get_experiences", None)
-        experiences = exp_getter() if callable(exp_getter) else []
-        return inquiry.conversation_candidates(memories, experiences, limit=limit)
+        memories = self._read("self", "all")
+        return inquiry.conversation_candidates(
+            memories, self._read_experiences(status="active"), limit=limit)
 
     def _append_affect(self, parts: List[str], state: Dict[str, Any]) -> None:
         """Inject the current condition, and only when it is not neutral."""
@@ -938,7 +1067,7 @@ class CompanionOrchestrator:
         silent until her history actually supports a pattern.
         """
         getter = getattr(self.store, "get_experiences", None)
-        experiences = getter(status=None) if callable(getter) else []
+        experiences = self._read_experiences(status=None) if callable(getter) else []
         block = selfhood.disposition_block(experiences)
         if block:
             parts.append(block)
@@ -1196,7 +1325,7 @@ class CompanionOrchestrator:
         pinned: set, recent_experiences: List[Dict[str, Any]],
         relevant_questions: List[Dict[str, Any]],
         work_knowledge: Dict[str, List[Dict[str, Any]]],
-        prompt: str = "", detailed: bool = True,
+        prompt: str = "", detailed: bool = True, total_governing: int = 0,
     ) -> Dict[str, Any]:
         """Assemble the turn's diagnostics.
 
@@ -1225,7 +1354,7 @@ class CompanionOrchestrator:
             "query": user_input,
             "candidates": [],
             "governing_ids": [m.get("id") for m in governing],
-            "total_governing": sum(1 for m in everything if is_governing(m) and m.get("content")),
+            "total_governing": total_governing,
             "current_state_slots": {m.get("slot"): _clean_text(m.get("content")) for m in current_state},
             "boundaries": boundaries,
             "relational_affinity": {},

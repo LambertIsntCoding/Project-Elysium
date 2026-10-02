@@ -602,16 +602,16 @@ def governing_priority(mem: Dict[str, Any]) -> int:
     return GOVERNING_PRIORITY.get(str(mem.get("type") or ""), 0)
 
 
-def select_governing(memories: List[Dict[str, Any]],
-                     limit: int = MAX_GOVERNING_MEMORIES) -> List[Dict[str, Any]]:
-    """Choose the governing memories to always inject, most critical first.
+def rank_governing(eligible: List[Dict[str, Any]],
+                   limit: int = MAX_GOVERNING_MEMORIES) -> List[Dict[str, Any]]:
+    """Order already-filtered governing candidates, most critical first.
 
-    Sorted by type priority, then source tier, then effective strength, then
-    recency, and capped so the always-on block stays bounded. If the limit is
-    hit, an extra line can point the reader at the full list.
+    Split out from :func:`select_governing` so a caller that has *already*
+    walked the store to count governing memories can rank the same list instead
+    of making :func:`is_governing` scan every record a second time.
     """
-    eligible = [m for m in memories if is_governing(m) and m.get("content")]
-    eligible.sort(
+    eligible = sorted(
+        eligible,
         key=lambda m: (
             governing_priority(m),
             source_tier(m.get("source")),
@@ -621,6 +621,18 @@ def select_governing(memories: List[Dict[str, Any]],
         reverse=True,
     )
     return eligible[:limit] if limit else eligible
+
+
+def select_governing(memories: List[Dict[str, Any]],
+                     limit: int = MAX_GOVERNING_MEMORIES) -> List[Dict[str, Any]]:
+    """Choose the governing memories to always inject, most critical first.
+
+    Sorted by type priority, then source tier, then effective strength, then
+    recency, and capped so the always-on block stays bounded. If the limit is
+    hit, an extra line can point the reader at the full list.
+    """
+    eligible = [m for m in memories if is_governing(m) and m.get("content")]
+    return rank_governing(eligible, limit)
 
 
 # ---------------------------------------------------------------------
@@ -1268,9 +1280,12 @@ def atomic_save(filepath: str, data: Any, backup: bool = True,
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             if compact:
-                json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
+                # Serialise first, then write once: ``json.dump`` streams to the
+                # file in many small chunks, which is measurably slower than one
+                # ``write`` of the whole document.
+                f.write(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
             else:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+                f.write(json.dumps(data, indent=2, ensure_ascii=False))
             f.flush()
             os.fsync(f.fileno())
         if backup and os.path.exists(filepath):
@@ -1417,6 +1432,10 @@ def _deep_copy(value: Any) -> Any:
     dominates the read path once thousands of records are materialised per turn;
     a plain recursive rebuild of the two container types avoids all of it while
     keeping lists and dicts unshared, so callers can never mutate the store.
+
+    Immutable scalars (str/int/float/bool/None) are returned directly: they
+    cannot alias-mutate, so there is no reason to copy them at all. The dict and
+    list rebuilds are what make the copy independent.
     """
     if type(value) is dict:
         return {key: _deep_copy(item) for key, item in value.items()}
@@ -1425,9 +1444,33 @@ def _deep_copy(value: Any) -> Any:
     return value
 
 
+def _copy_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Copy one memory record, inlining the copy for its scalar fields.
+
+    A stored record is a flat dict of scalars plus a handful of short list
+    fields (``tags``, ``keywords``, ``contradicts``, ...). Recursing through
+    :func:`_deep_copy` for every scalar means a Python call per field, and the
+    read path materialises the whole store several times a turn, so this is the
+    single hottest function. Rebuilding the dict directly - returning scalars
+    as-is and recursing only for the list values - removes those calls without
+    changing the independence guarantee: the new dict and every list in it are
+    fresh, and scalars are immutable.
+    """
+    out: Dict[str, Any] = {}
+    for key, item in record.items():
+        item_type = type(item)
+        if item_type is list:
+            out[key] = [_deep_copy(x) for x in item]
+        elif item_type is dict:
+            out[key] = _deep_copy(item)
+        else:
+            out[key] = item
+    return out
+
+
 def _present(mem: Dict[str, Any]) -> Dict[str, Any]:
     """A deep copy of ``mem`` with compact-layout defaults restored for reading."""
-    out = _deep_copy(mem)
+    out = _copy_record(mem)
     for field, default in _READ_DEFAULTS.items():
         out.setdefault(field, default)
     for field in _NULL_READ_FIELDS:
@@ -1710,6 +1753,14 @@ class TripleMemoryStore:
         # persist as they happen, so this is normally empty; it lets an explicit
         # flush() (a checkpoint or a shutdown) guarantee the store is on disk.
         self._dirty: set = set()
+        # A live turn makes several small writes in a row (retrieval use,
+        # affect, decay). Each one is an atomic file replace plus an fsync, so
+        # writing them separately dominates the turn. Inside a batch the change
+        # stays in memory and a single write at the end persists it, which is
+        # the same durability the per-write flush gave at the turn boundary.
+        # The state is thread-local so a background consolidation thread is
+        # never captured by the live turn's batch.
+        self._batch = threading.local()
 
         self.memories = {name: self._load_file(path) for name, path in self.files.items()}
         self.journal = self._load_file(self.journal_file)
@@ -1760,12 +1811,56 @@ class TripleMemoryStore:
     def _path(self, key: str) -> str:
         return self.journal_file if key == "journal" else self.files[key]
 
+    def _batch_depth(self) -> int:
+        return getattr(self._batch, "depth", 0)
+
+    def _batch_keys(self) -> set:
+        keys = getattr(self._batch, "keys", None)
+        if keys is None:
+            keys = set()
+            self._batch.keys = keys
+        return keys
+
     def _persist(self, key: str) -> None:
+        if self._batch_depth() > 0:
+            # Defer the write to the end of the batch (see turn_batch).
+            self._batch_keys().add(key)
+            self._dirty.add(key)
+            return
         data = self._get_list(key)
         if key != "journal":
             data = [compact_record(m) for m in data]
         atomic_save(self._path(key), data)
         self._dirty.discard(key)
+
+    @contextmanager
+    def turn_batch(self) -> Iterator[None]:
+        """Coalesce the small writes of one turn into a single save per model.
+
+        A live turn writes retrieval-use, live affect and decay separately; each
+        is normally its own atomic replace + fsync. Batching keeps them in memory
+        and persists once on exit, so the turn still ends fully durable while
+        paying for one write per touched model instead of one per change. Nested
+        use is safe; only the outermost batch flushes. A failure still restores
+        the per-model state via each ``_transaction``.
+        """
+        self._batch.depth = self._batch_depth() + 1
+        try:
+            yield
+        finally:
+            self._batch.depth -= 1
+            if self._batch.depth == 0:
+                keys = self._batch_keys()
+                for key in sorted(keys):
+                    if key == "presence":
+                        stamp = getattr(self._batch, "presence", None)
+                        if stamp:
+                            with self._lock:
+                                atomic_save(self.presence_file, {"last_present": stamp})
+                        continue
+                    self._persist(key)
+                keys.clear()
+                self._batch.presence = None
 
     def _save_model(self, target_model: str) -> None:
         """Immediately persists a specific model upon change."""
@@ -3118,6 +3213,10 @@ class TripleMemoryStore:
     # ---- presence (Astra's sense of elapsed time) --------------------
     def last_present(self) -> Optional[str]:
         """When Astra last actually took a turn, or ``None`` if never recorded."""
+        pending = getattr(self._batch, "presence", None)
+        if pending:
+            # A batched turn has not flushed yet; report the value it will write.
+            return str(pending)
         data = load_json(self.presence_file, dict, dict)
         value = data.get("last_present") if isinstance(data, dict) else None
         return str(value) if value else None
@@ -3130,6 +3229,11 @@ class TripleMemoryStore:
         sense that time had passed.
         """
         stamp = timestamp or datetime.now(timezone.utc).isoformat()
+        if self._batch_depth() > 0:
+            # Fold the presence write into the turn's batch (see turn_batch).
+            self._batch.presence = stamp
+            self._batch_keys().add("presence")
+            return stamp
         with self._lock:
             atomic_save(self.presence_file, {"last_present": stamp})
         return stamp

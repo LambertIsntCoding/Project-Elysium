@@ -1,0 +1,64 @@
+# Runtime configuration for the Active/Sleep lifecycle, the background
+# scheduler, proactive communication, filesystem organization, Discord and
+# voice.
+#
+# HARD SAFETY BOUNDARIES ARE ENFORCED IN CODE, NOT HERE. This file tunes
+# behaviour; it cannot widen the safety guarantees. In particular:
+#   * a file outside `allowed_roots` is refused, and an empty `allowed_roots`
+#     means nothing is autonomously writable;
+#   * Astra's own runtime/storage/config paths are protected in code and can
+#     never be added back as writable;
+#   * deletion never permanently unlinks - it goes to the OS/XDB trash - and
+#     `allow_delete` defaults to false, so autonomous deletion is off.
+# This file is optional: with no file, or an unparseable one, the safe defaults
+# below are used.
+
+runtime:
+  scheduler:
+    enabled: true
+    # Bounded work per cycle. A cycle may legitimately do nothing.
+    max_tasks_per_cycle: 3
+    cycle_budget_seconds: 5.0
+    task_budget_seconds: 3.0
+  # How often the background worker wakes while asleep. Must stay >= 1s.
+  poll_seconds: 5.0
+
+filesystem:
+  # Only paths under these roots may be organized. Leave empty to keep
+  # autonomous file organization off until you opt in.
+  allowed_roots: []
+  # Paths that are never modified, on top of the runtime paths below.
+  protected_paths: []
+  # Extra Astra-owned paths (derived automatically from config/storage too).
+  runtime_paths: []
+  # Deletion routes to trash regardless; this gates the *autonomous* use of it.
+  allow_delete: false
+  # Overwriting/replacing an existing file requires this to be true.
+  allow_overwrite: false
+  # Plan without executing when true (dry-run default).
+  dry_run: false
+  # Files examined per organizer cycle.
+  max_files_per_cycle: 40
+
+proactive:
+  # Global mute for unsolicited messages (also toggleable with /proactive).
+  muted: false
+  # Minimum seconds between unprompted interruptions.
+  interrupt_cooldown_seconds: 1200
+  # Whether a high-priority system event may bypass ordinary suppression. Only
+  # ever bypasses cooldown/busy, never "user is active" or an explicit mute.
+  allow_high_priority_bypass: false
+
+voice:
+  # "text" renders as text only; the interface is replaceable independently.
+  renderer: text
+  enabled: false
+
+discord:
+  enabled: false
+  # The token is read from this environment variable, never from this file.
+  bot_token_env: DISCORD_BOT_TOKEN
+  # Leave empty until configuring a server.
+  channel_id: ""
+  bot_user_id: ""
+  poll_seconds: 2.0
