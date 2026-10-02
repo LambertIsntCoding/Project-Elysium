@@ -1,0 +1,185 @@
+# Affect configuration for Astra's experiential emotion system.
+#
+# This file controls:
+#   1. experience_deltas  - how each experience kind moves the affect state
+#   2. emotion_influence  - how emotions change each other (the influence matrix)
+#   3. live_settings      - thresholds for the live conversational affect layer
+#   4. decay_settings     - how quickly the affect state relaxes toward neutral
+#
+# All values are floats. Positive weights increase a component, negative
+# weights decrease it. The influence matrix is applied *after* the base
+# experience delta, so a "happy" experience first bumps happy directly, then
+# the influence matrix lets that happiness ripple into calm, tender, etc.
+
+# ---------------------------------------------------------------------------
+# Experience deltas: how each experience kind moves the affect state.
+# Keys are experience kind names; values are {component: delta} dicts.
+# These are the *base* deltas before intensity/significance scaling.
+# ---------------------------------------------------------------------------
+experience_deltas:
+  read:
+    engagement: 0.08
+    concentration: 0.06
+    curiosity: 0.04
+  completed:
+    engagement: 0.10
+    anticipation: -0.08
+    frustration: -0.15
+    emotional_investment: 0.06
+    happy: 0.08
+    weary: -0.05
+  discovered:
+    curiosity: 0.12
+    engagement: 0.06
+    happy: 0.05
+  realization:
+    curiosity: 0.08
+    engagement: 0.05
+    concentration: 0.03
+  frustration:
+    frustration: 0.14
+    engagement: -0.05
+    angry: 0.08
+    calm: -0.04
+  interaction:
+    engagement: 0.06
+    emotional_investment: 0.05
+  unexpected:
+    curiosity: 0.10
+    concentration: -0.05
+  attachment:
+    emotional_investment: 0.12
+    engagement: 0.04
+    tender: 0.10
+    happy: 0.05
+  happy:
+    happy: 0.16
+    sad: -0.08
+    angry: -0.06
+    calm: 0.04
+    engagement: 0.05
+  sad:
+    sad: 0.16
+    happy: -0.08
+    tender: 0.05
+    emotional_investment: 0.06
+  angry:
+    angry: 0.16
+    calm: -0.10
+    happy: -0.06
+    frustration: 0.06
+  tender:
+    tender: 0.16
+    calm: 0.05
+    happy: 0.05
+  weary:
+    weary: 0.16
+    concentration: -0.12
+    engagement: -0.06
+    calm: -0.03
+  calm:
+    calm: 0.16
+    angry: -0.08
+    frustration: -0.06
+  live_repetition:
+    engagement: -0.06
+    curiosity: -0.04
+    concentration: -0.05
+    weary: 0.05
+
+# ---------------------------------------------------------------------------
+# Emotion influence matrix: how emotions change each other.
+#
+# Each key is a *source* emotion (one of the six valence components).
+# Each value maps *target* components to an influence weight.
+#
+# When the source emotion's value changes (from an experience or live event),
+# it ripples into the targets: each target receives
+#   source_delta * influence_weight * influence_scale
+# where influence_scale is the source's current absolute value (so a strong
+# emotion has more influence than a faint one).
+#
+# Positive weights = source emotion increases the target.
+# Negative weights = source emotion decreases the target.
+#
+# The matrix is deliberately sparse: only meaningful relationships are listed.
+# Unlisted pairs have zero influence.
+# ---------------------------------------------------------------------------
+emotion_influence:
+  happy:
+    calm: 0.12
+    tender: 0.08
+    sad: -0.15
+    angry: -0.10
+    weary: -0.06
+    engagement: 0.04
+  sad:
+    happy: -0.12
+    tender: 0.10
+    weary: 0.08
+    engagement: -0.06
+    calm: -0.04
+  angry:
+    calm: -0.15
+    happy: -0.10
+    tender: -0.06
+    frustration: 0.10
+    engagement: -0.04
+  calm:
+    angry: -0.12
+    frustration: -0.08
+    happy: 0.06
+    concentration: 0.05
+    weary: -0.04
+  tender:
+    calm: 0.08
+    happy: 0.10
+    angry: -0.06
+    emotional_investment: 0.08
+    sad: -0.04
+  weary:
+    engagement: -0.10
+    concentration: -0.08
+    happy: -0.06
+    frustration: 0.06
+    calm: -0.04
+    anticipation: -0.05
+
+# ---------------------------------------------------------------------------
+# Live conversational settings.
+# ---------------------------------------------------------------------------
+live_settings:
+  # Minimum score for a live event to register at all.
+  event_min_score: 0.6
+  # Maximum intensity a live event can reach after modulation.
+  intensity_cap: 0.7
+  # Default significance for positive live events.
+  significance: 0.45
+  # Default significance for negative live events.
+  negative_significance: 0.5
+  # Repetition detection: how many echoing turns before it registers.
+  repetition_min: 3
+  # Token overlap threshold for repetition detection.
+  repetition_similarity: 0.7
+  # Intensity of the repetition event.
+  repetition_intensity: 0.6
+  # Significance of the repetition event.
+  repetition_significance: 0.4
+  # Reactivity bounds: how much current state can amplify/dampen an event.
+  reactivity_floor: 0.75
+  reactivity_ceil: 1.3
+  # A real event always lands with at least this much intensity.
+  reactivity_min_intensity: 0.35
+
+# ---------------------------------------------------------------------------
+# Decay settings.
+# ---------------------------------------------------------------------------
+decay_settings:
+  # Neutral baseline all components decay toward.
+  baseline: 0.0
+  # How much each component decays per day (0.15 = full decay in ~6.7 days).
+  per_day: 0.15
+  # Minimum time between decay applications (days).
+  min_interval_days: 0.5
+  # Below this value, a component is treated as "no particular condition".
+  neutral_epsilon: 0.02
