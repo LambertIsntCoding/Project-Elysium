@@ -433,8 +433,33 @@ The turn path is kept fast without changing what is stored or rendered:
   rebuilds the dict/list JSON shapes memory records actually hold; `_present`
   and the `_transaction` snapshot use it. It is equivalent for those shapes but
   far cheaper (deepcopy's memo/dispatch dominates once thousands of records are
-  materialised per turn). Keep record values JSON-shaped; a new field holding an
-  arbitrary object would break this.
+  materialised per turn). `_present` goes through `_copy_record`, which inlines
+  the copy for a record's scalar fields and recurses only for the list/dict
+  values, removing a Python call per field. Keep record values JSON-shaped; a
+  new field holding an arbitrary object would break this.
+- **A turn's writes are batched; the turn is still durable at its end.**
+  `TripleMemoryStore.turn_batch()` coalesces the several small writes a live
+  turn makes (retrieval `record_use`, live affect, decay) into one `atomic_save`
+  per touched model instead of one per change. `_persist` defers to the batch
+  and `mark_present` folds the presence write in; the batch flushes on exit
+  (nested use flushes only the outermost). The batch state is **thread-local**,
+  so a background consolidation thread is never captured by the live turn's
+  batch. `_transaction` rollback is unchanged - a failed save still restores the
+  in-memory model. Do not persist inside the batch's scope from another thread.
+- **The orchestrator reads each model once per prompt build.** `_read`/
+  `_read_experiences` cache a model's records in `_read_cache` for the duration
+  of one build, because affect, affinity and retrieval each wanted the same
+  records and each store read deep-copies the whole model. `_load_memories`
+  reads the full set once and derives the retrievable (active+weakened) view
+  from it. The cache is invalidated at the start of every public entry point
+  (`build_prompt_with_diagnostics`, `affinity_diagnostics`), so a write between
+  turns is always visible; any new public reader must invalidate it too. The
+  cached lists are the orchestrator's private copies, not the store's.
+- **Governing memories are collected in one walk.** `build_prompt_with_diagnostics`
+  filters `is_governing` once and derives both `total_governing` and the ranked
+  selection (`memory.rank_governing`) from that same list; `select_governing` is
+  now just the filter plus `rank_governing`. Do not reintroduce a separate
+  `is_governing` scan per consumer.
 - **`_transaction` skips a no-op write.** It snapshots, mutates, and persists
   only if the list actually changed, so an idle maintenance sweep does not
   re-serialise a multi-MB model. The snapshot (rollback) is unchanged.
@@ -457,6 +482,13 @@ The turn path is kept fast without changing what is stored or rendered:
 - **`/memories`, `/search` and `/debug` cap long listings** at `MEMORY_VIEW_LIMIT`
   with an explicit "... and N more" footer. This is a display cap only - nothing
   is hidden from the store or from the retrieval path.
+- **CLI output is wrapped, not dumped.** `main._section` renders a header with a
+  width-matched rule and `main._wrap` wraps free text (memory content, journals,
+  reflections) to `WRAP_WIDTH` with a hanging indent, collapsing embedded
+  newlines so indentation survives. New display commands should route content
+  through these helpers rather than emitting a raw long string. `main._reply_text`
+  strips the runtime label (`Astra > ` / `Elysium > `) once, because the router
+  returns an already-labelled line and the loop owns the label.
 - **Every turn is saved; a checkpoint every N turns is only a safety net.**
   Mutations persist through `_transaction` as they happen, so a normal session
   already loses nothing. `ChatSession.checkpoint` (every `checkpoint_every`
