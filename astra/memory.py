@@ -1706,6 +1706,10 @@ class TripleMemoryStore:
         self.maintenance_every = max(1, int(maintenance_every))
         self.decay_every = max(1, int(decay_every))
         self._maintenance_counter = 0
+        # Models whose in-memory list changed since the last save. Mutations
+        # persist as they happen, so this is normally empty; it lets an explicit
+        # flush() (a checkpoint or a shutdown) guarantee the store is on disk.
+        self._dirty: set = set()
 
         self.memories = {name: self._load_file(path) for name, path in self.files.items()}
         self.journal = self._load_file(self.journal_file)
@@ -1761,10 +1765,24 @@ class TripleMemoryStore:
         if key != "journal":
             data = [compact_record(m) for m in data]
         atomic_save(self._path(key), data)
+        self._dirty.discard(key)
 
     def _save_model(self, target_model: str) -> None:
         """Immediately persists a specific model upon change."""
         self._persist(target_model)
+
+    def flush(self) -> None:
+        """Re-save every model marked dirty, then clear the set.
+
+        Mutations persist as they happen, so this is normally a no-op; it exists
+        so an explicit checkpoint or a shutdown can guarantee that whatever the
+        in-memory store holds is on disk. It takes the same lock as a mutation,
+        so it can never interleave with one.
+        """
+        with self._lock:
+            for key in sorted(self._dirty):
+                self._persist(key)
+            self._dirty.clear()
 
     @contextmanager
     def _transaction(self, key: str) -> Iterator[None]:
@@ -1773,15 +1791,19 @@ class TripleMemoryStore:
         The write is skipped when the mutation left the list identical (e.g. a
         maintenance sweep that found nothing to change), so an idle store is not
         re-serialised on every maintenance tick. The comparison is a cheap
-        equality walk, far cheaper than the JSON dump it avoids.
+        equality walk, far cheaper than the JSON dump it avoids. A change marks
+        the model dirty so a later :meth:`flush` re-saves it even if this write
+        were somehow skipped.
         """
         snapshot = _deep_copy(self._get_list(key))
         try:
             yield
             if self._get_list(key) != snapshot:
+                self._dirty.add(key)
                 self._persist(key)
         except BaseException:
             self._set_list(key, snapshot)
+            self._dirty.add(key)
             raise
 
     def _locate(self, target_model: str, mem_id: str):
@@ -2145,14 +2167,15 @@ class TripleMemoryStore:
         ids = {i for i in (mem_ids or []) if i}
         if not ids:
             return
-        for target_model in sorted(VALID_TARGET_MODELS):
-            touched = [m for m in self.memories[target_model] if m.get("id") in ids]
-            if not touched:
-                continue
-            with self._transaction(target_model):
-                for mem in touched:
-                    mem["last_used"] = _now()
-                    mem["use_count"] = int(mem.get("use_count", 0)) + 1
+        with self._lock:
+            for target_model in sorted(VALID_TARGET_MODELS):
+                touched = [m for m in self.memories[target_model] if m.get("id") in ids]
+                if not touched:
+                    continue
+                with self._transaction(target_model):
+                    for mem in touched:
+                        mem["last_used"] = _now()
+                        mem["use_count"] = int(mem.get("use_count", 0)) + 1
 
     # ---- relational preference (Astra -> Roum) -------------------------
     def accumulate_relational_event(self, event: str, *, subject: str = relational.ROUM,
@@ -2696,33 +2719,34 @@ class TripleMemoryStore:
         """
         now = now or datetime.now(timezone.utc)
         archived = 0
-        for target_model in sorted(VALID_TARGET_MODELS):
-            with self._transaction(target_model):
-                for mem in self.memories[target_model]:
-                    status = mem.get("status")
-                    if status not in ("active", "weakened"):
-                        continue
-                    strength = effective_strength(mem, now)
+        with self._lock:
+            for target_model in sorted(VALID_TARGET_MODELS):
+                with self._transaction(target_model):
+                    for mem in self.memories[target_model]:
+                        status = mem.get("status")
+                        if status not in ("active", "weakened"):
+                            continue
+                        strength = effective_strength(mem, now)
 
-                    if is_governing_eligible(mem):
-                        continue  # core boundaries never decay into worthlessness
+                        if is_governing_eligible(mem):
+                            continue  # core boundaries never decay into worthlessness
 
-                    age = _days_since(mem.get("created_at") or mem.get("timestamp"), now)
-                    unused = _days_since(mem.get("last_used") or mem.get("timestamp"), now)
-                    if age is None or unused is None:
-                        continue
-                    # Archiving needs ALL of: weak, low confidence, old, unused.
-                    # Age alone is never enough, and nothing is deleted outright.
-                    if (strength < ARCHIVE_STRENGTH_THRESHOLD
-                            and _clamp_confidence(mem.get("confidence"), 0.0) < ARCHIVE_CONFIDENCE_THRESHOLD
-                            and age >= ARCHIVE_MIN_AGE_DAYS
-                            and unused >= ARCHIVE_UNUSED_DAYS):
-                        mem["status"] = "archived"
-                        mem["archived_at"] = _now()
-                        mem["archive_reason"] = (
-                            f"decayed (strength={strength:.3f}, unused={unused:.0f}d)"
-                        )
-                        archived += 1
+                        age = _days_since(mem.get("created_at") or mem.get("timestamp"), now)
+                        unused = _days_since(mem.get("last_used") or mem.get("timestamp"), now)
+                        if age is None or unused is None:
+                            continue
+                        # Archiving needs ALL of: weak, low confidence, old, unused.
+                        # Age alone is never enough, and nothing is deleted outright.
+                        if (strength < ARCHIVE_STRENGTH_THRESHOLD
+                                and _clamp_confidence(mem.get("confidence"), 0.0) < ARCHIVE_CONFIDENCE_THRESHOLD
+                                and age >= ARCHIVE_MIN_AGE_DAYS
+                                and unused >= ARCHIVE_UNUSED_DAYS):
+                            mem["status"] = "archived"
+                            mem["archived_at"] = _now()
+                            mem["archive_reason"] = (
+                                f"decayed (strength={strength:.3f}, unused={unused:.0f}d)"
+                            )
+                            archived += 1
         return {"archived": archived}
 
     def maybe_maintain(self, *, force: bool = False) -> bool:
@@ -2749,15 +2773,16 @@ class TripleMemoryStore:
         low-confidence. Nothing is deleted.
         """
         dormant = 0
-        for target_model in sorted(VALID_TARGET_MODELS):
-            with self._transaction(target_model):
-                for mem in self.memories[target_model]:
-                    if is_dormant(mem) or mem.get("status") not in ("active", "weakened"):
-                        continue
-                    if memory_utility(mem) != UTILITY_DORMANT:
-                        continue
-                    mark_dormant(mem, "stale and low-value (unused, weak, low confidence)")
-                    dormant += 1
+        with self._lock:
+            for target_model in sorted(VALID_TARGET_MODELS):
+                with self._transaction(target_model):
+                    for mem in self.memories[target_model]:
+                        if is_dormant(mem) or mem.get("status") not in ("active", "weakened"):
+                            continue
+                        if memory_utility(mem) != UTILITY_DORMANT:
+                            continue
+                        mark_dormant(mem, "stale and low-value (unused, weak, low confidence)")
+                        dormant += 1
         return {"dormant": dormant}
 
     def expire_governing_slots(self) -> int:
@@ -2768,29 +2793,30 @@ class TripleMemoryStore:
         are marked superseded so the model never has to pick between them.
         """
         expired = 0
-        for target_model in sorted(VALID_TARGET_MODELS):
-            slots: Dict[str, Dict[str, Any]] = {}
-            for mem in self.memories[target_model]:
-                slot = mem.get("slot")
-                if not slot or mem.get("status") != "active":
-                    continue
-                current = slots.get(slot)
-                if current is None or str(mem.get("timestamp", "")) > str(current.get("timestamp", "")):
-                    slots[slot] = mem
-            if not slots:
-                continue
-            with self._transaction(target_model):
+        with self._lock:
+            for target_model in sorted(VALID_TARGET_MODELS):
+                slots: Dict[str, Dict[str, Any]] = {}
                 for mem in self.memories[target_model]:
                     slot = mem.get("slot")
                     if not slot or mem.get("status") != "active":
                         continue
-                    winner = slots.get(slot)
-                    if winner is not None and mem.get("id") != winner.get("id"):
-                        mem["status"] = "superseded"
-                        mem["superseded_by"] = winner.get("id")
-                        mem["superseded_at"] = _now()
-                        mem["supersession_reason"] = f"stale slot '{slot}' value"
-                        expired += 1
+                    current = slots.get(slot)
+                    if current is None or str(mem.get("timestamp", "")) > str(current.get("timestamp", "")):
+                        slots[slot] = mem
+                if not slots:
+                    continue
+                with self._transaction(target_model):
+                    for mem in self.memories[target_model]:
+                        slot = mem.get("slot")
+                        if not slot or mem.get("status") != "active":
+                            continue
+                        winner = slots.get(slot)
+                        if winner is not None and mem.get("id") != winner.get("id"):
+                            mem["status"] = "superseded"
+                            mem["superseded_by"] = winner.get("id")
+                            mem["superseded_at"] = _now()
+                            mem["supersession_reason"] = f"stale slot '{slot}' value"
+                            expired += 1
         return expired
 
     def reconcile_contradictions(self) -> int:
