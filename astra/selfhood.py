@@ -241,6 +241,7 @@ DISPOSITION_DIFFICULTY = "difficulty"      # what has been hard (not "can't")
 DISPOSITION_FRICTION = "friction"          # what tends to frustrate her
 DISPOSITION_CURIOSITY = "curiosity"        # what she keeps noticing/following
 DISPOSITION_VALUE = "value"                # what she has repeatedly cared about
+DISPOSITION_PATIENCE = "patience"          # endurance earned from hard work she finished
 
 
 def evidence_profile(experiences: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
@@ -355,6 +356,26 @@ def derive_dispositions(experiences: Iterable[Dict[str, Any]]) -> List[Dict[str,
             "basis": completed,
             "evidence": ids_for(lambda m: str(m.get("experience_kind") or "") == "completed"),
             "text": "finishing something she was working on has mattered to her more than once",
+        })
+
+    # Patience: repeatedly working through difficulty without giving up. The
+    # evidence is friction that a *later* completion followed, in the same work -
+    # so this is earned from real endurance, never asserted. It is the inverse of
+    # impatience (a momentary pull); a single hard day can never produce it.
+    patient_evidence = [
+        m for m in profile["records"]
+        if str(m.get("experience_kind") or "") in ("blocked", "frustration")
+        and str(m.get("work_id") or "")
+        and work_kinds.get(str(m.get("work_id") or ""), Counter()).get("completed", 0)
+    ]
+    if len(patient_evidence) >= _REPEAT_MIN:
+        out.append({
+            "key": "patience:endurance",
+            "kind": DISPOSITION_PATIENCE,
+            "basis": len(patient_evidence),
+            "evidence": [m.get("id") for m in patient_evidence],
+            "text": ("she tends to keep working through things that are hard "
+                     "rather than dropping them"),
         })
 
     return out
@@ -613,6 +634,7 @@ __all__ = [
     "DISPOSITION_FRICTION",
     "DISPOSITION_CURIOSITY",
     "DISPOSITION_VALUE",
+    "DISPOSITION_PATIENCE",
     "KIND_ORDINARY",
     "KIND_FRUSTRATION",
     "KIND_MEMORABLE",

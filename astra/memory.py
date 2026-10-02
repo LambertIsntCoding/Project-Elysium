@@ -2232,6 +2232,10 @@ class TripleMemoryStore:
                 tags.append(inquiry.qstatus_tag(status))
                 question["tags"] = _clean_str_list(tags)
                 question["question_status_at"] = _now()
+                # A status change is a real step on the question, so it resets
+                # the stall the impatience signal measures - being reopened or
+                # re-examined is movement even though the question is still open.
+                question["last_progress_at"] = _now()
                 if evidence_id:
                     question["resolved_by"] = evidence_id
                 if evidence_text:

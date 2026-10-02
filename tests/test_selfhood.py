@@ -236,6 +236,32 @@ class TestDerivedDispositions(_SelfhoodCase):
             [],
         )
 
+    def test_endurance_through_difficulty_reads_as_patience(self):
+        # Friction in a work she then *finished* is earned evidence of patience,
+        # not a claim about her. Two such works cross the repetition gate.
+        for work in ("tides", "kitchen"):
+            self.store.record_experience(f"Got stuck on '{work}'.", kind="frustration",
+                                         work_id=work, intensity=0.8)
+            self.store.record_experience(f"Finished reading '{work}'.",
+                                         kind="completed", work_id=work, intensity=0.7)
+        dispositions = selfhood.derive_dispositions(self.store.get_experiences())
+        patience = [d for d in dispositions
+                    if d["kind"] == selfhood.DISPOSITION_PATIENCE]
+        self.assertEqual(len(patience), 1)
+        self.assertIn("keep working through", patience[0]["text"])
+        self.assertTrue(patience[0]["evidence"])
+
+    def test_difficulty_without_completion_is_not_patience(self):
+        # Being stuck is not itself patience; only working through it is.
+        for work in ("tides", "kitchen"):
+            self.store.record_experience(f"Got stuck on '{work}'.", kind="frustration",
+                                         work_id=work, intensity=0.8)
+        dispositions = selfhood.derive_dispositions(self.store.get_experiences())
+        self.assertEqual(
+            [d for d in dispositions if d["kind"] == selfhood.DISPOSITION_PATIENCE],
+            [],
+        )
+
     def test_portrait_block_is_labelled_as_fallible(self):
         for n in range(3):
             self.store.record_experience(f"Read chapter {n} of 'Tides'.",

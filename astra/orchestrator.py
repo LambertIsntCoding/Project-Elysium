@@ -627,6 +627,7 @@ class CompanionOrchestrator:
         self._append_questions(parts, relevant_questions)
         self._append_work_knowledge(parts, work_knowledge)
         self._append_temporal(parts, all_questions)
+        self._append_impatience(parts, all_questions)
         self._append_current_state(parts, current_state)
         self._append_governing(parts, governing, total_governing)
         self._append_adaptations(parts, active_adaptations)
@@ -782,6 +783,16 @@ class CompanionOrchestrator:
         if block:
             parts.append("\n" + block)
 
+    def _works(self) -> List[Dict[str, Any]]:
+        """The works Astra has in her library, or ``[]`` when there is none."""
+        library = getattr(getattr(self, "reader", None), "library", None)
+        if library is not None and callable(getattr(library, "list_works", None)):
+            try:
+                return library.list_works()
+            except Exception:
+                return []
+        return []
+
     def _append_temporal(self, parts: List[str], all_questions: List[Dict[str, Any]]) -> None:
         """How much time has passed around her, and what that time contains.
 
@@ -793,12 +804,22 @@ class CompanionOrchestrator:
         store = self.store
         if callable(getattr(store, "last_present", None)):
             last_seen = store.last_present()
-        works: List[Dict[str, Any]] = []
-        library = getattr(getattr(self, "reader", None), "library", None)
-        if library is not None and callable(getattr(library, "list_works", None)):
-            works = library.list_works()
         block = temporal.temporal_prompt_block(
-            last_seen=last_seen, open_questions=all_questions, works=works,
+            last_seen=last_seen, open_questions=all_questions, works=self._works(),
+        )
+        if block:
+            parts.append("\n" + block)
+
+    def _append_impatience(self, parts: List[str], all_questions: List[Dict[str, Any]]) -> None:
+        """The forward pull of things that have stalled, when anything has.
+
+        Grounded in a specific unresolved thing that stopped moving - never in
+        how long it has been since Roum last spoke. Read-only, like the temporal
+        block, and silent unless something is genuinely stuck.
+        """
+        live = [q for q in all_questions if inquiry.is_open_question(q)]
+        block = temporal.impatience_prompt_block(
+            open_questions=live, works=self._works(),
         )
         if block:
             parts.append("\n" + block)
