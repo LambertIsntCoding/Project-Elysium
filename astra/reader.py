@@ -105,6 +105,7 @@ class BackgroundReader:
         poll_seconds: float = DEFAULT_POLL_SECONDS,
         cpu_load_fn: Optional[Callable[[], Optional[float]]] = None,
         process_names_fn: Optional[Callable[[], Optional[List[str]]]] = None,
+        process_policy: Optional[reading.ProcessPolicy] = None,
         clock: Callable[[], float] = time.monotonic,
         sleep_fn: Callable[[float], None] = time.sleep,
     ):
@@ -119,6 +120,9 @@ class BackgroundReader:
         self.poll_seconds = float(poll_seconds)
         self.cpu_load_fn = cpu_load_fn or default_cpu_load
         self.process_names_fn = process_names_fn or default_process_names
+        # One shared policy says what counts as busy and what to ignore, so every
+        # background task consults the same answer instead of re-implementing it.
+        self.process_policy = process_policy or reading.ProcessPolicy()
         self._clock = clock
         self._sleep = sleep_fn
 
@@ -126,6 +130,10 @@ class BackgroundReader:
         self._last_activity = 0.0          # monotonic timestamp of last interaction
         self._game_override: Optional[str] = None
         self._gpu_busy = False
+        self._busy_process: Optional[str] = None
+        self._busy_flag = False            # a non-game busy task was signalled
+        self._last_game: Optional[str] = None   # last process seen (for diagnostics)
+        self._last_busy: Optional[str] = None
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self.last_cycle: Dict[str, Any] = {}
@@ -184,6 +192,22 @@ class BackgroundReader:
         with self._lock:
             self._game_override = str(process) if (active and process) else None
 
+    def note_busy_pause(self, process: Optional[str], active: bool = True) -> None:
+        """Signal a non-game *busy* task (a render, build, call) is running.
+
+        Treated like load rather than a game: it stands the reader down but does
+        not claim the GPU. An ignored process is refused here, so a task on the
+        ignore list can never be used to stop reading.
+        """
+        with self._lock:
+            text = str(process or "").strip()
+            if active and text and not self.process_policy.is_ignored(text):
+                self._busy_process = text
+                self._busy_flag = True
+            else:
+                self._busy_process = None
+                self._busy_flag = False
+
     def note_gpu_busy(self, busy: bool) -> None:
         with self._lock:
             self._gpu_busy = bool(busy)
@@ -199,11 +223,24 @@ class BackgroundReader:
         with self._lock:
             game = self._game_override
             gpu_busy = self._gpu_busy
-        if game is None and self.process_names_fn is not None:
+            busy_signalled = self._busy_flag
+        # A game is inferred from the process list (its patterns are built in); a
+        # configured "busy" process stands down on load but does not claim the
+        # GPU. Ignored names are filtered inside the policy, so a trusted task
+        # never blocks reading.
+        busy_scanned = False
+        busy_name = self._busy_process
+        if self.process_names_fn is not None:
             try:
-                game = reading.looks_like_game(self.process_names_fn() or [])
+                found_game, found_busy = self.process_policy.classify(
+                    self.process_names_fn() or [])
+                game = game or found_game
+                busy_scanned = bool(found_busy)
+                busy_name = busy_name or found_busy
             except Exception:
-                game = None
+                pass
+        self._last_game = game
+        self._last_busy = busy_name
         cpu_load = None
         if self.cpu_load_fn is not None:
             try:
@@ -215,16 +252,17 @@ class BackgroundReader:
             "seconds_since_input": self._seconds_since_input(),
             "game": game,
             "gpu_busy": gpu_busy,
+            "machine_busy_flag": busy_signalled or busy_scanned,
             "cpu_load": cpu_load,
         }
 
-    def may_read(self) -> tuple:
+    def may_read(self, *, force: bool = False) -> tuple:
         """Whether the reader may run now, and why (for diagnostics)."""
         conditions = self._conditions()
         has_work = bool(self.library.next_work_id())
         allowed, reason = reading.should_read(
             has_work=has_work, idle_threshold=self.idle_seconds,
-            load_ceiling=self.load_ceiling, **conditions,
+            load_ceiling=self.load_ceiling, force=force, **conditions,
         )
         # Cache the reason so the prompt path can describe the reader without
         # re-running the gate (which may scan processes).
@@ -232,13 +270,18 @@ class BackgroundReader:
         return allowed, reason
 
     # -- one bounded cycle -------------------------------------------------
-    def run_once(self, *, allow_model: bool = True) -> Dict[str, Any]:
+    def run_once(self, *, allow_model: bool = True, force: bool = False) -> Dict[str, Any]:
         """One wake: gate, then read at most ``chunks_per_cycle`` chunks.
 
         Returns a small report (what it read, or why it did not) and leaves the
         position saved. Pure enough to call directly in tests.
+
+        ``force`` runs the cycle against the courtesy conditions (idle, load, a
+        busy task) - Roum's explicit request. The between-chunk pause check is
+        *not* forced, so the cycle still yields to an interaction or a game after
+        this chunk; force starts a cycle, it does not silence the reader.
         """
-        allowed, reason = self.may_read()
+        allowed, reason = self.may_read(force=force)
         if not allowed:
             return self._report(False, reason, [])
 
@@ -263,9 +306,11 @@ class BackgroundReader:
                 self._finish(work_id, state)
                 break
             # Re-check between chunks so a game or an interaction stops us now.
+            # A forced cycle keeps the same courtesy bypass here, so forcing
+            # against a busy task actually reads; a game still stops it.
             pause = reading.pause_reason(
                 idle_threshold=self.idle_seconds, load_ceiling=self.load_ceiling,
-                **self._conditions(),
+                force=force, **self._conditions(),
             )
             if pause is not None:
                 break
@@ -305,7 +350,7 @@ class BackgroundReader:
             else:
                 reason = reading.IDLE_WORK_FINISHED
             return self._report(False, reason, [])
-        return self._report(True, reading.IDLE_OK, read_chunks)
+        return self._report(True, reason, read_chunks)
 
     def _extract(self, work_id: str, state: Dict[str, Any], passage: str) -> Optional[Dict[str, Any]]:
         """One model call for one bounded passage, parsed into the digest shape.
@@ -376,12 +421,11 @@ class BackgroundReader:
     def diagnostics(self) -> Dict[str, Any]:
         state = self.library.current_state()
         _, reason = self.may_read()
-        with self._lock:
-            game = self._game_override
         queue = [w.get("work_id") for w in self.library.list_works()
                  if reading.is_live(w)]
         return reading.diagnostics(
-            state, enabled=self.enabled, reason=reason, game=game,
+            state, enabled=self.enabled, reason=reason, game=self._last_game,
+            busy=self._last_busy, policy=self.process_policy.as_dict(),
             work_queue=queue, last_cycle=self.last_cycle,
         )
 
@@ -389,7 +433,8 @@ class BackgroundReader:
         d = self.diagnostics()
         return reading.format_diagnostics(
             self.library.current_state(), enabled=d["enabled"], reason=d["reason"],
-            game=d["game"], work_queue=d["queue"], last_cycle=d["last_cycle"],
+            game=d["game"], busy=d["busy"], work_queue=d["queue"],
+            last_cycle=d["last_cycle"],
         )
 
 

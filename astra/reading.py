@@ -60,6 +60,7 @@ IDLE_DISABLED = "disabled"               # reading is switched off
 IDLE_WORK_FINISHED = "work_finished"     # the current work is done; pick another
 IDLE_MODEL_FAILED = "model_unavailable"  # the local model could not be reached
 IDLE_HELD = "held"                       # no model call was permitted this cycle
+IDLE_FORCED = "forced"                   # Roum forced a cycle: the gate was bypassed
 
 # The reasons that are genuine *interruptions* (as opposed to "fine to read" or
 # "nothing to read"). Only these are worth telling Astra about in her prompt.
@@ -183,6 +184,107 @@ def looks_like_game(process_names: Iterable[str]) -> Optional[str]:
     return None
 
 
+# ---------------------------------------------------------------------
+# Process policy: what makes the machine "busy" (configurable, shared)
+# ---------------------------------------------------------------------
+# Games are detected by built-in patterns. But a machine can be busy for a task
+# that is not a game - a render, a build, a compile, a video call - and some
+# things that *look* like a game (or a heavy app) should be ignored. Rather than
+# let every background task re-implement this, the reader owns one policy object
+# that says: what to treat as busy, what to ignore, what to always ignore.
+#
+# Order matters and is intentional: "ignore" is checked before "busy" patterns
+# and the built-in game list, so an ignored name is never busy; "always ignore"
+# is an absolute block (the machine's own housekeeping), checked before anything.
+# A "busy" match additionally stands down on *load*; a game stands down on the
+# GPU too, so the two are not the same severity.
+DEFAULT_ALWAYS_IGNORED = ("openhands", "astra", "python", "pythonw")
+
+
+class ProcessPolicy:
+    """Which running processes mean "busy", which to ignore, and which never count.
+
+    Pure data plus deterministic matching: given the same process list it always
+    decides the same way, so the reader's wakefulness stays explainable. Nothing
+    here is stored; it is rebuilt from config each session.
+    """
+
+    def __init__(self, *, busy: Iterable[str] = (), ignore: Iterable[str] = (),
+                 always_ignore: Iterable[str] = DEFAULT_ALWAYS_IGNORED) -> None:
+        self.busy = _compile_patterns(busy)
+        self.ignore = _compile_patterns(ignore)
+        self.always_ignore = _compile_patterns(always_ignore)
+
+    @classmethod
+    def from_config(cls, config: Any) -> "ProcessPolicy":
+        """Build from a ``background_processes`` config mapping (tolerant of junk)."""
+        cfg = config if isinstance(config, dict) else {}
+        return cls(
+            busy=cfg.get("busy") or (),
+            ignore=cfg.get("ignore") or (),
+            always_ignore=cfg.get("always_ignore", DEFAULT_ALWAYS_IGNORED),
+        )
+
+    def _ignored(self, text: str) -> bool:
+        return any(p.search(text) for p in (*self.always_ignore, *self.ignore))
+
+    def classify(self, process_names: Iterable[str]) -> Tuple[Optional[str], Optional[str]]:
+        """Split the running processes into ``(game, busy)``, ignoring the trusted.
+
+        A game is a built-in pattern; a busy task is a configured pattern. An
+        ignored name is skipped first, so a task you trust never blocks reading.
+        A name matching both counts as a game (the higher-severity, GPU-claiming
+        case). Returns ``None`` for either when nothing matched.
+        """
+        game: Optional[str] = None
+        busy: Optional[str] = None
+        for name in process_names or ():
+            text = str(name or "").strip()
+            if not text or self._ignored(text):
+                continue
+            if any(p.search(text) for p in _GAME_PATTERNS):
+                game = game or text
+            elif any(p.search(text) for p in self.busy):
+                busy = busy or text
+        return game, busy
+
+    def busy_process(self, process_names: Iterable[str]) -> Optional[str]:
+        """The first process that should make reading stand down, or ``None``.
+
+        Convenience over :meth:`classify`: either a game or a configured busy
+        task counts. Prefer ``classify`` where the two severities matter.
+        """
+        game, busy = self.classify(process_names)
+        return game or busy
+
+    def is_ignored(self, text: str) -> bool:
+        """Whether a single process name is on either ignore list."""
+        return self._ignored(str(text or "").strip())
+
+    def as_dict(self) -> Dict[str, Any]:
+        """The raw patterns, for diagnostics (never the compiled regexes)."""
+        return {
+            "busy": [p.pattern for p in self.busy],
+            "ignore": [p.pattern for p in self.ignore],
+            "always_ignore": [p.pattern for p in self.always_ignore],
+        }
+
+
+def _compile_patterns(patterns: Iterable[str]) -> Tuple:
+    out = []
+    for pattern in patterns or ():
+        text = str(pattern or "").strip()
+        if not text:
+            continue
+        try:
+            out.append(re.compile(text, re.I))
+        except re.error:
+            # A malformed pattern is dropped rather than crashing the reader; a
+            # bad config entry must never take down the conversation.
+            continue
+    return tuple(out)
+
+
 def is_user_active(*, seconds_since_input: Optional[float],
                    idle_threshold: float = DEFAULT_IDLE_SECONDS) -> bool:
     """True when Roum is currently interacting, so the reader must yield."""
@@ -207,24 +309,34 @@ def machine_busy(*, cpu_load: Optional[float],
 
 def should_read(*, enabled: bool = True, seconds_since_input: Optional[float] = None,
                 game: Optional[str] = None, gpu_busy: bool = False,
-                cpu_load: Optional[float] = None,
+                machine_busy_flag: bool = False, cpu_load: Optional[float] = None,
                 idle_threshold: float = DEFAULT_IDLE_SECONDS,
                 load_ceiling: float = DEFAULT_LOAD_CEILING,
-                has_work: bool = True) -> Tuple[bool, str]:
+                has_work: bool = True, force: bool = False) -> Tuple[bool, str]:
     """Whether the reader may run now, and the single reason for the decision.
 
     Pure and deterministic: given the same observable conditions it always
     returns the same answer, so the reader's wakefulness is explainable rather
     than arbitrary. A game (or an explicitly busy GPU) always wins over reading.
+
+    ``force`` is the explicit override: Roum asked for a cycle now, so the
+    courtesy conditions (idle, load, a busy task) are bypassed. The hard stops
+    are kept even under force - reading switched off, a running game, and
+    nothing to read - because those are about not fighting the machine, not
+    about politeness.
     """
     if not enabled:
         return False, IDLE_DISABLED
-    if is_user_active(seconds_since_input=seconds_since_input, idle_threshold=idle_threshold):
-        return False, IDLE_USER_ACTIVE
     if game:
         return False, IDLE_GAME_RUNNING
     if gpu_busy:
         return False, IDLE_GAME_RUNNING
+    if force:
+        return (True, IDLE_FORCED) if has_work else (False, IDLE_NO_WORK)
+    if is_user_active(seconds_since_input=seconds_since_input, idle_threshold=idle_threshold):
+        return False, IDLE_USER_ACTIVE
+    if machine_busy_flag:
+        return False, IDLE_MACHINE_BUSY
     if machine_busy(cpu_load=cpu_load, ceiling=load_ceiling):
         return False, IDLE_MACHINE_BUSY
     if not has_work:
@@ -234,19 +346,27 @@ def should_read(*, enabled: bool = True, seconds_since_input: Optional[float] = 
 
 def pause_reason(*, enabled: bool = True, seconds_since_input: Optional[float] = None,
                  game: Optional[str] = None, gpu_busy: bool = False,
-                 cpu_load: Optional[float] = None,
+                 machine_busy_flag: bool = False, cpu_load: Optional[float] = None,
                  idle_threshold: float = DEFAULT_IDLE_SECONDS,
-                 load_ceiling: float = DEFAULT_LOAD_CEILING) -> Optional[str]:
+                 load_ceiling: float = DEFAULT_LOAD_CEILING,
+                 force: bool = False) -> Optional[str]:
     """Why reading should *stop* mid-cycle, or ``None`` if it may continue.
 
     The same conditions as :func:`should_read`, without the "is there work"
     question: a running cycle checks this between chunks so an interaction or a
     game takes effect immediately rather than after the whole cycle.
+
+    Under ``force`` the courtesy conditions (idle, load, a busy task) are ignored
+    between chunks too - otherwise forcing against a busy task would start a
+    cycle and immediately read nothing. A game is still a hard stop: a forced
+    cycle never fights the GPU, it just declines to wait for idle.
     """
+    if force:
+        return IDLE_GAME_RUNNING if (game or gpu_busy) else None
     _, reason = should_read(
         enabled=enabled, seconds_since_input=seconds_since_input, game=game,
-        gpu_busy=gpu_busy, cpu_load=cpu_load, idle_threshold=idle_threshold,
-        load_ceiling=load_ceiling, has_work=True,
+        gpu_busy=gpu_busy, machine_busy_flag=machine_busy_flag, cpu_load=cpu_load,
+        idle_threshold=idle_threshold, load_ceiling=load_ceiling, has_work=True,
     )
     return None if reason == IDLE_OK else reason
 
@@ -254,7 +374,7 @@ def pause_reason(*, enabled: bool = True, seconds_since_input: Optional[float] =
 def interruption_priority(reason: Optional[str]) -> int:
     """Order pause reasons so the most important one is reported."""
     order = {IDLE_DISABLED: 0, IDLE_GAME_RUNNING: 1, IDLE_USER_ACTIVE: 2,
-             IDLE_MACHINE_BUSY: 3, IDLE_NO_WORK: 4}
+             IDLE_MACHINE_BUSY: 3, IDLE_NO_WORK: 4, IDLE_FORCED: 5}
     return order.get(reason or "", 9)
 
 
@@ -516,7 +636,9 @@ def reader_prompt_block(state: Any, *, current_condition: Optional[str] = None) 
 
 
 def diagnostics(state: Any, *, enabled: bool = True, reason: str = IDLE_NO_WORK,
-                game: Optional[str] = None, work_queue: Optional[List[str]] = None,
+                game: Optional[str] = None, busy: Optional[str] = None,
+                policy: Optional[Dict[str, Any]] = None,
+                work_queue: Optional[List[str]] = None,
                 last_cycle: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The reader's whole situation: what, how far, and why it is (not) running."""
     state = coerce_state(state)
@@ -524,6 +646,8 @@ def diagnostics(state: Any, *, enabled: bool = True, reason: str = IDLE_NO_WORK,
         "enabled": bool(enabled),
         "reason": reason,
         "game": game or None,
+        "busy": busy or None,
+        "policy": dict(policy or {}),
         "work_id": state.get("work_id") or None,
         "title": state.get("title") or None,
         "status": state.get("status"),
@@ -539,15 +663,18 @@ def diagnostics(state: Any, *, enabled: bool = True, reason: str = IDLE_NO_WORK,
 
 
 def format_diagnostics(state: Any, *, enabled: bool = True, reason: str = IDLE_NO_WORK,
-                       game: Optional[str] = None, work_queue: Optional[List[str]] = None,
+                       game: Optional[str] = None, busy: Optional[str] = None,
+                       work_queue: Optional[List[str]] = None,
                        last_cycle: Optional[Dict[str, Any]] = None) -> str:
-    d = diagnostics(state, enabled=enabled, reason=reason, game=game,
+    d = diagnostics(state, enabled=enabled, reason=reason, game=game, busy=busy,
                     work_queue=work_queue, last_cycle=last_cycle)
     lines = ["=== BACKGROUND READING ==="]
     lines.append(f"Enabled: {d['enabled']}")
     lines.append(f"State: {d['reason']}")
     if d["game"]:
         lines.append(f"Paused for game: {d['game']}")
+    if d["busy"]:
+        lines.append(f"Paused for busy task: {d['busy']}")
     if d["work_id"]:
         lines.append(f"Current: {d['title'] or d['work_id']} [{d['status']}]")
         lines.append(f"Progress: {int(round((d['progress'] or 0) * 100))}% "
@@ -585,9 +712,11 @@ __all__ = [
     "WORK_STATUSES", "LIVE_WORK_STATUSES",
     "SOURCE_FORMAT_TEXT", "SOURCE_FORMAT_EPUB",
     "IDLE_OK", "IDLE_USER_ACTIVE", "IDLE_GAME_RUNNING", "IDLE_MACHINE_BUSY",
-    "IDLE_NO_WORK", "IDLE_DISABLED", "IDLE_WORK_FINISHED", "IDLE_MODEL_FAILED", "IDLE_HELD",
+    "IDLE_NO_WORK", "IDLE_DISABLED", "IDLE_WORK_FINISHED", "IDLE_MODEL_FAILED",
+    "IDLE_HELD", "IDLE_FORCED",
     "DEFAULT_IDLE_SECONDS", "DEFAULT_LOAD_CEILING", "DEFAULT_CHUNK_CHARS",
     "DEFAULT_CHUNKS_PER_CYCLE", "DEFAULT_MIN_CHUNK_CHARS",
+    "DEFAULT_ALWAYS_IGNORED", "ProcessPolicy",
     "blank_state", "coerce_state", "progress", "is_live", "advance",
     "looks_like_game", "is_user_active", "machine_busy", "should_read",
     "pause_reason", "interruption_priority",

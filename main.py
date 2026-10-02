@@ -73,10 +73,12 @@ HELP_TEXT = """
  /library-scan [folder] : List the books in the books folder, numbered, without
                       ingesting; then ingest one by number. Default folder is
                       storage/library/books, or pass one: /library-scan "C:\\Books"
- /read [pause|resume|add ...] : One bounded reading cycle, or control it.
+ /read [pause|resume|force|add ...] : One bounded reading cycle, or control it.
+                      force : run a cycle now even if the idle/busy gate says no
+                      (a running game still stops it; see config/relationship.yaml)
                       add <number> : ingest book #<number> from the last scan
                       add "<path>" [title] : ingest a file; quote paths with spaces
-                      e.g. /read add 3   or   /read add "C:\\Books\\My Book.md"
+                      e.g. /read force   or   /read add 3
  /dormant           : Show stale memories that have gone dormant
  /stats             : Memory health summary (counts, types, utility)
  /timeline [gran] [target] : Memory counts by date; gran = month (default), day, year
@@ -198,11 +200,17 @@ class ChatSession:
             reader.note_activity()
 
     def _note_game_pause(self) -> None:
-        """Detect a running game and tell the reader to stand down (GPU shared)."""
+        """Detect a running game or busy task and tell the reader to stand down.
+
+        Uses the reader's shared process policy, so the ignore lists apply here
+        exactly as they do in the background gate - a trusted task never stops
+        reading, and a configured busy task stands it down.
+        """
         reader = self.reader
         if reader is None:
             return
         detect = getattr(reader, "process_names_fn", None)
+        policy = getattr(reader, "process_policy", None) or reading.ProcessPolicy()
         if not callable(detect):
             return
         try:
@@ -211,9 +219,11 @@ class ChatSession:
             names = None
         if names is None:
             return  # no process provider: never invent a reason to stop
-        game = reading.looks_like_game(names)
+        game, busy = policy.classify(names)
         if callable(getattr(reader, "note_game_pause", None)):
             reader.note_game_pause(game, active=bool(game))
+        if callable(getattr(reader, "note_busy_pause", None)):
+            reader.note_busy_pause(busy, active=bool(busy))
 
     # -- routing -----------------------------------------------------------
     def handle(self, user_input: str) -> str:
@@ -812,11 +822,19 @@ class ChatSession:
         if args and args[0].isdigit():
             self._library_add(args)
             return
+        # ``force`` (or ``-f``) bypasses the idle/load/busy gate for this cycle -
+        # the escape hatch for "I want her to read now, I'll accept the cost".
+        # A running game still stops it, because that is about not fighting the
+        # machine, not a courtesy.
+        force = bool(args) and args[0].lower() in ("force", "-f", "--force")
         # An explicit request is itself interaction; do not let it block itself.
         reader.clear_activity()
-        report = reader.run_once()
+        report = reader.run_once(force=force)
         if report.get("read"):
             self._emit(f"  Read {report['chunks']} chunk(s) from {report.get('work_id')}.")
+        elif report.get("reason") == reading.IDLE_GAME_RUNNING:
+            self._emit("  Not reading: game_running (a game is running; forced "
+                       "cycles still yield to a game).")
         else:
             self._emit(f"  Did not read: {report.get('reason')}")
 
@@ -1153,8 +1171,17 @@ def build_session(
         from astra.library import Library
         from astra.reader import BackgroundReader
 
+        # One shared process policy: which tasks mean "busy", which to ignore,
+        # which to always ignore. Built from config so future background tasks
+        # consult the same answer instead of each inventing their own.
+        policy = reading.ProcessPolicy.from_config(
+            orchestrator._load_yaml("relationship.yaml").get("background_processes")
+            if hasattr(orchestrator, "_load_yaml") else None
+        )
         library = Library(data_dir=storage_dir)
-        reader = BackgroundReader(library, store, orchestrator.query_gemma)
+        reader = BackgroundReader(
+            library, store, orchestrator.query_gemma, process_policy=policy,
+        )
         reader.start()
 
     return ChatSession(

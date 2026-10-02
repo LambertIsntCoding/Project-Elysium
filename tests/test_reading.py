@@ -124,6 +124,54 @@ class TestReaderGate(unittest.TestCase):
         self.assertIsNone(reading.looks_like_game(["chrome.exe", "explorer.exe"]))
         self.assertIsNone(reading.looks_like_game([]))
 
+    def test_force_bypasses_the_courtesy_conditions(self):
+        # Forcing runs against idle, load, and a busy task - but not against a
+        # game, which is a hard stop rather than a courtesy.
+        allowed, reason = reading.should_read(seconds_since_input=1, cpu_load=0.99,
+                                              machine_busy_flag=True, force=True)
+        self.assertTrue(allowed)
+        self.assertEqual(reason, reading.IDLE_FORCED)
+
+    def test_force_still_honours_disabled_and_no_work(self):
+        self.assertEqual(reading.should_read(enabled=False, force=True),
+                         (False, reading.IDLE_DISABLED))
+        self.assertEqual(reading.should_read(has_work=False, force=True),
+                         (False, reading.IDLE_NO_WORK))
+
+
+class TestProcessPolicy(unittest.TestCase):
+    def test_configured_busy_task_stands_down(self):
+        policy = reading.ProcessPolicy(busy=["render"])
+        game, busy = policy.classify(["chrome.exe", "blender_render.exe"])
+        self.assertIsNone(game)
+        self.assertEqual(busy, "blender_render.exe")
+
+    def test_ignored_process_is_never_busy(self):
+        # A launcher left open must not stop reading, even though it matches the
+        # built-in game patterns.
+        policy = reading.ProcessPolicy(ignore=["steam"])
+        self.assertEqual(policy.classify(["steam.exe"]), (None, None))
+
+    def test_always_ignored_is_absolute(self):
+        policy = reading.ProcessPolicy(busy=["python"], always_ignore=["python"])
+        self.assertEqual(policy.classify(["python.exe"]), (None, None))
+
+    def test_game_beats_a_busy_match(self):
+        policy = reading.ProcessPolicy(busy=["steam"])
+        game, busy = policy.classify(["steam.exe"])
+        self.assertEqual(game, "steam.exe")
+        self.assertIsNone(busy)
+
+    def test_from_config_is_tolerant_of_junk(self):
+        policy = reading.ProcessPolicy.from_config({
+            "busy": ["render"], "ignore": None, "always_ignore": ["x"],
+        })
+        self.assertEqual(policy.as_dict()["busy"], ["render"])
+        # A malformed regex is dropped, not raised.
+        bad = reading.ProcessPolicy(busy=["["])
+        self.assertEqual(bad.classify(["anything"]), (None, None))
+        self.assertEqual(reading.ProcessPolicy.from_config(None).busy, ())
+
 
 # ---------------------------------------------------------------------
 # Ingestion and resumable position
@@ -443,6 +491,41 @@ class TestReaderCycle(_Base):
         self.assertFalse(report["read"])
         self.assertEqual(report["reason"], reading.IDLE_NO_WORK)
 
+    def test_force_reads_against_a_busy_task(self):
+        # A configured busy task normally stands the reader down, but a forced
+        # cycle reads anyway - the "just start it now" escape hatch.
+        self.library.add_text("Alice found a key. " * 500, title="Garden", work_id="garden")
+        model, calls = self._digest_model()
+        policy = reading.ProcessPolicy(busy=["render"])
+        reader = self.reader(model, process_names_fn=lambda: ["blender_render.exe"],
+                             process_policy=policy)
+        blocked = reader.run_once()
+        self.assertFalse(blocked["read"])
+        self.assertEqual(blocked["reason"], reading.IDLE_MACHINE_BUSY)
+        forced = reader.run_once(force=True)
+        self.assertTrue(forced["read"])
+        self.assertEqual(forced["reason"], reading.IDLE_FORCED)
+        self.assertEqual(len(calls), 1)
+
+    def test_force_still_yields_to_a_running_game(self):
+        self.library.add_text("Alice found a key. " * 500, title="Garden", work_id="garden")
+        model, calls = self._digest_model()
+        reader = self.reader(model)
+        reader.note_game_pause("dota2.exe")
+        report = reader.run_once(force=True)
+        self.assertFalse(report["read"])
+        self.assertEqual(report["reason"], reading.IDLE_GAME_RUNNING)
+        self.assertEqual(len(calls), 0)
+
+    def test_an_ignored_process_never_stands_the_reader_down(self):
+        self.library.add_text("Alice found a key. " * 500, title="Garden", work_id="garden")
+        model, _ = self._digest_model()
+        policy = reading.ProcessPolicy(ignore=["steam"])
+        reader = self.reader(model, process_names_fn=lambda: ["steam.exe"],
+                             process_policy=policy)
+        report = reader.run_once()
+        self.assertTrue(report["read"])
+
     def test_daemon_start_stop_is_clean(self):
         self.library.add_text("Alice found a key. " * 50, title="Garden", work_id="garden")
         reader = self.reader(poll_seconds=0.01, chunks_per_cycle=1)
@@ -612,6 +695,17 @@ class TestCliReadingCommands(_Base):
         self.assertFalse(reader.enabled)
         session._handle_slash("/read resume")
         self.assertTrue(reader.enabled)
+
+    def test_read_force_starts_a_cycle_against_a_busy_task(self):
+        from astra import reading as reading_mod
+
+        session, reader = self._session(lambda p: "{}")
+        reader.process_policy = reading_mod.ProcessPolicy(busy=["render"])
+        reader.process_names_fn = lambda: ["blender_render.exe"]
+        session._handle_slash("/read")
+        self.assertFalse(any("Read " in line for line in self.out))
+        session._handle_slash("/read force")
+        self.assertTrue(any("Read 1 chunk(s)" in line for line in self.out))
 
     def test_read_now_still_refuses_while_a_game_runs(self):
         session, reader = self._session(lambda p: "{}")
