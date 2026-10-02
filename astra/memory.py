@@ -2282,36 +2282,82 @@ class TripleMemoryStore:
         own prompt block, rather than leaking in as a "fact".
         """
         with self._lock:
-            existing = None
-            # Matched regardless of status: the accumulator is a single record,
-            # so a dormant one is reused (and updated) rather than duplicated.
-            for mem in self.memories["self"]:
-                if affect.affect_memory_filter(mem):
-                    existing = mem
-                    break
+            existing = self._affect_record()
             state = affect.record_event(
                 existing.get("affect_state") if existing else None,
                 kind, intensity=intensity, significance=significance, text=text,
             )
-            if existing is None:
-                mem_id = self.add_memory(
-                    target_model="self",
-                    content=affect.memory_content(),
-                    mem_type="self_observation",
-                    source="ai_extraction",
-                    tags=affect.memory_tags(),
-                    keywords=affect.memory_keywords(),
-                    confidence=0.5,
-                    affect_state=state,
-                )
-                return self.get_memory("self", mem_id)
-            self.update_memory(
-                "self", existing["id"],
+            return self._write_affect_state(state)
+
+    def apply_live_affect_event(self, event: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Apply a *live conversational* affect event to the accumulator.
+
+        The live semantic layer (``affect.evaluate_turn``) proposes an event; the
+        application applies it here. This updates only the temporary affect
+        accumulator - it never writes an ``experience`` memory, never touches the
+        relational model, and never becomes durable on its own. An unknown or
+        malformed kind is a validated no-op, so the model cannot mutate the state
+        with arbitrary input. Returns the stored state, or ``None`` when nothing
+        was applied.
+        """
+        if not isinstance(event, dict):
+            return None
+        kind = str(event.get("kind") or "").strip()
+        if not kind:
+            return None
+        intensity = event.get("intensity", 0.5)
+        significance = event.get("significance", 0.5)
+        text = str(event.get("text") or event.get("reason") or "")
+        with self._lock:
+            existing = self._affect_record()
+            state = affect.record_event(
+                existing.get("affect_state") if existing else None,
+                kind, intensity=intensity, significance=significance, text=text,
+            )
+            if existing is None and not state.get("observations"):
+                # An unknown kind is a validated no-op; do not create an
+                # accumulator record for a malformed event.
+                return None
+            self._write_affect_state(state)
+            return state
+
+    def _affect_record(self) -> Optional[Dict[str, Any]]:
+        """The single affect-accumulator record, if one exists.
+
+        Matched regardless of status so a dormant accumulator is reused rather
+        than duplicated. Must be called with the lock held.
+        """
+        for mem in self.memories["self"]:
+            if affect.affect_memory_filter(mem):
+                return mem
+        return None
+
+    def _write_affect_state(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Persist ``state`` into the accumulator, creating it on first use.
+
+        Must be called with the lock held. The accumulator is a self-model
+        record tagged ``experiential_affect``; nothing else about it is durable.
+        """
+        existing = self._affect_record()
+        if existing is None:
+            mem_id = self.add_memory(
+                target_model="self",
+                content=affect.memory_content(),
+                mem_type="self_observation",
+                source="ai_extraction",
                 tags=affect.memory_tags(),
                 keywords=affect.memory_keywords(),
+                confidence=0.5,
                 affect_state=state,
             )
-            return self.get_memory("self", existing["id"])
+            return self.get_memory("self", mem_id)
+        self.update_memory(
+            "self", existing["id"],
+            tags=affect.memory_tags(),
+            keywords=affect.memory_keywords(),
+            affect_state=state,
+        )
+        return self.get_memory("self", existing["id"])
 
     def get_experiences(self, *, work_id: Optional[str] = None,
                         kind: Optional[str] = None,

@@ -21,7 +21,7 @@ HTTP stub, and consolidation tests call the decision layer directly.
 |---|---|
 | `astra/memory.py` | store + governance policy (classification, authority, decay, utility) |
 | `astra/relational.py` | Astra's Roum-specific command-fulfillment preference (accumulated state) |
-| `astra/affect.py` | Astra's current *experiential* affect (temporary, derived from experiences) |
+| `astra/affect.py` | Astra's current *experiential* affect (temporary; from experiences and live turns) |
 | `astra/selfhood.py` | self-knowledge: the non-human boundary, the epistemic stance, absent-experience guard, derived self-portrait, formative/traumatic experience classification (pure, no I/O) |
 | `astra/temporal.py` | Astra's sense of elapsed time: session gaps, long-open questions, long projects, and the impatience pull of stalled things (pure render, never stored) |
 | `astra/orchestrator.py` | prompt assembly and retrieval |
@@ -233,6 +233,38 @@ Top-level `memory_store.py`, `orchestrator.py`, `elysium.py`, `consolidator.py`,
   history/state, never mislabelled as facts about Roum or tentative inferences.
   Adding an affect dimension without a concrete behavioural consumer is
   discouraged; uncertainty belongs to the question system, not a scalar here.
+- **Affect responds to live conversation without becoming experience.** The
+  accumulator used to move only when an `experience` was recorded, so an
+  ordinary turn could not change how Astra currently felt. The live path now
+  adds a second edge: `handle()` calls `ChatSession._record_affect_event` after
+  the relational event and before consolidation. `affect.evaluate_turn` is a
+  *pure* semantic layer that reads the turn's text and returns at most one
+  event (kind, intensity, significance, reason), or `None` for a generic turn;
+  `TripleMemoryStore.apply_live_affect_event` is the application's authority
+  that validates the kind and folds it into the one accumulator. This path
+  writes **no** `experience`, touches **no** relational state, and never lets
+  the model's prose claim how she feels (a clear acknowledgement in the reply is
+  only corroborating evidence, never authoritative). The live kinds are aliases
+  onto the existing `EXPERIENCE_*` kinds (`LIVE_HUMOUR = EXPERIENCE_HAPPY`,
+  `LIVE_CRITICISM = EXPERIENCE_FRUSTRATION`, ...) so there is one arithmetic,
+  not a second delta table. Detectors stay narrow - a structural feature of the
+  turn (an actual question plus an interest marker, an explicit evaluation, a
+  marked emotional disclosure) - not a phrase-keyword soup, and an unknown kind
+  is a validated no-op. Do not call `record_experience` per turn, do not add
+  `experience` as a consolidator classification, and do not route affect
+  through the consolidator: the consolidator still decides only durable memory.
+  Decay is documented as a known limitation below.
+- **Affect decay is lazy, and that is a known limitation for a live state.**
+  `_decay` only runs when the *next* event fires, so a state written on the last
+  turn and then read by `build_prompt` is shown at its last-written magnitude
+  however much time has passed; only a following event ages it. That is correct
+  for the sparse experience path (the state is frozen on disk and aged when next
+  used) but means a live state can look stale across a long gap. The rate is
+  also fast (`AFFECT_DECAY_PER_DAY = 0.15`, ~full decay in under a week). Do not
+  "fix" this by decaying inside `build_prompt` - prompt building must stay
+  read-only and byte-stable. A minimal, non-breaking option if it ever matters:
+  add an opt-in read-time aged view (a derived copy, not a write) and/or a
+  separate slower rate for the live accumulator; neither is done here.
 - **Questions and uncertainty are memories, not a parallel store.** Slice 2 adds
   `astra/inquiry.py`, which is a *vocabulary* module only - the records are
   ordinary memories written through `add_memory`, so they inherit evidence,
@@ -346,7 +378,8 @@ negative) covers identity stability, correction adherence, work attribution,
 grounded literary discussion, uncertainty, self-reinforcement, ordinary
 conversation, provenance/authority/read-only, reading-not-autobiography, the
 journal, working memory, and reading concentration/pace. Tests assert behaviour
-and authority boundaries, not prompt strings. Full suite: 443 tests.
+and authority boundaries, not prompt strings. Full suite: 467 tests (the live
+affect path adds `tests/test_live_affect.py`, 22 cases).
 
 ### Reading progress is measured in words
 
