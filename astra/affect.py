@@ -28,9 +28,49 @@ Design constraints:
 """
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
+# ---------------------------------------------------------------------------
+# Configuration loading
+# ---------------------------------------------------------------------------
+_CONFIG_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config")
+_affect_config: Optional[Dict[str, Any]] = None
+_config_loaded = False
+
+
+def _load_affect_config() -> Dict[str, Any]:
+    """Load affect configuration from YAML, with hardcoded defaults."""
+    global _affect_config, _config_loaded
+    if _config_loaded:
+        return _affect_config or {}
+    _config_loaded = True
+    path = os.path.join(_CONFIG_DIR, "affect.yaml")
+    if not os.path.isfile(path):
+        _affect_config = {}
+        return _affect_config
+    try:
+        import yaml
+        with open(path, "r", encoding="utf-8") as fh:
+            _affect_config = yaml.safe_load(fh) or {}
+    except Exception:
+        _affect_config = {}
+    return _affect_config
+
+
+def _config_section(key: str) -> Dict[str, Any]:
+    """Return a top-level section from the affect config, or empty dict."""
+    return _load_affect_config().get(key) or {}
+
+
+def reload_affect_config() -> None:
+    """Force a reload of the affect configuration. For testing."""
+    global _affect_config, _config_loaded
+    _affect_config = None
+    _config_loaded = False
+
 
 # v1: the initial experiential-affect accumulator.
 AFFECT_VERSION = 1
@@ -89,8 +129,9 @@ LIVE_REPETITION = "live_repetition"
 
 # How each kind of experience moves the current state. Deliberately small: a
 # single experience nudges, it does not saturate. Significance and intensity
-# scale the nudge (see ``record_event``).
-_KIND_DELTAS: Dict[str, Dict[str, float]] = {
+# scale the nudge (see ``record_event``). Loaded from config/affect.yaml with
+# hardcoded defaults.
+_KIND_DELTAS_DEFAULTS: Dict[str, Dict[str, float]] = {
     EXPERIENCE_READ: {"engagement": 0.08, "concentration": 0.06, "curiosity": 0.04},
     EXPERIENCE_COMPLETED: {"engagement": 0.10, "anticipation": -0.08,
                            "frustration": -0.15, "emotional_investment": 0.06,
@@ -125,6 +166,86 @@ _KIND_DELTAS: Dict[str, Dict[str, float]] = {
                       "concentration": -0.05, "weary": 0.05},
 }
 
+
+def _build_kind_deltas() -> Dict[str, Dict[str, float]]:
+    """Build the experience deltas from config, falling back to defaults."""
+    config_deltas = _config_section("experience_deltas")
+    merged: Dict[str, Dict[str, float]] = {}
+    all_kinds = set(_KIND_DELTAS_DEFAULTS.keys()) | set(config_deltas.keys())
+    for kind in all_kinds:
+        default = _KIND_DELTAS_DEFAULTS.get(kind, {})
+        override = config_deltas.get(kind)
+        if isinstance(override, dict):
+            merged[kind] = {str(k): float(v) for k, v in override.items()}
+        else:
+            merged[kind] = dict(default)
+    return merged
+
+
+_KIND_DELTAS: Dict[str, Dict[str, float]] = _build_kind_deltas()
+
+
+# ---------------------------------------------------------------------------
+# Emotion influence matrix: how emotions change each other.
+#
+# When a source emotion's value changes, it ripples into target emotions:
+#   target += source_delta * influence_weight * source_current_value
+#
+# This is loaded from config/affect.yaml. The defaults encode the natural
+# relationships: happiness calms anger, sadness breeds weariness, etc.
+# ---------------------------------------------------------------------------
+_EMOTION_INFLUENCE_DEFAULTS: Dict[str, Dict[str, float]] = {
+    "happy":   {"calm": 0.12, "tender": 0.08, "sad": -0.15,
+                "angry": -0.10, "weary": -0.06, "engagement": 0.04},
+    "sad":     {"happy": -0.12, "tender": 0.10, "weary": 0.08,
+                "engagement": -0.06, "calm": -0.04},
+    "angry":   {"calm": -0.15, "happy": -0.10, "tender": -0.06,
+                "frustration": 0.10, "engagement": -0.04},
+    "calm":    {"angry": -0.12, "frustration": -0.08, "happy": 0.06,
+                "concentration": 0.05, "weary": -0.04},
+    "tender":  {"calm": 0.08, "happy": 0.10, "angry": -0.06,
+                "emotional_investment": 0.08, "sad": -0.04},
+    "weary":   {"engagement": -0.10, "concentration": -0.08,
+                "happy": -0.06, "frustration": 0.06, "calm": -0.04,
+                "anticipation": -0.05},
+}
+
+
+def _build_emotion_influence() -> Dict[str, Dict[str, float]]:
+    """Build the influence matrix from config, falling back to defaults."""
+    config_influence = _config_section("emotion_influence")
+    merged: Dict[str, Dict[str, float]] = {}
+    all_sources = set(_EMOTION_INFLUENCE_DEFAULTS.keys()) | set(config_influence.keys())
+    for source in all_sources:
+        default = _EMOTION_INFLUENCE_DEFAULTS.get(source, {})
+        override = config_influence.get(source)
+        if isinstance(override, dict):
+            merged[source] = {str(k): float(v) for k, v in override.items()}
+        else:
+            merged[source] = dict(default)
+    return merged
+
+
+_EMOTION_INFLUENCE: Dict[str, Dict[str, float]] = _build_emotion_influence()
+
+
+def _apply_influence(state: Dict[str, Any], source: str,
+                     delta: float) -> None:
+    """Let one emotion's change ripple into other emotions.
+
+    The magnitude of the ripple is ``delta * weight * source_current_value``,
+    so a strong emotion has more influence than a faint one.  Only one level
+    of cascading is applied (no recursive chain reactions).
+    """
+    targets = _EMOTION_INFLUENCE.get(source)
+    if not targets:
+        return
+    current = _clamp(state.get(source))
+    for target, weight in targets.items():
+        if target in state:
+            ripple = delta * weight * (0.3 + 0.7 * current)
+            _bump(state, target, ripple)
+
 # The kinds below can also be *felt directly*, without a durable experience: an
 # ordinary live turn may carry an affective charge - humour, a sharp remark, a
 # warm acknowledgement - that moves the current condition but is not, on its
@@ -142,11 +263,18 @@ LIVE_DISCLOSURE = EXPERIENCE_TENDER
 # The live layer is deliberately conservative: a turn must carry a real signal
 # to move anything at all, and even then it only *nudges* the current condition.
 # These weights scale a live event below a full experience (the application is
-# the final authority; the model never mutates affect).
-LIVE_EVENT_MIN_SCORE = 0.6
-LIVE_INTENSITY_CAP = 0.7
-LIVE_SIGNIFICANCE = 0.45
-LIVE_NEGATIVE_SIGNIFICANCE = 0.5
+# the final authority; the model never mutates affect). Configurable via
+# config/affect.yaml live_settings.
+def _live_setting(key: str, default: float) -> float:
+    """Read a live setting from config, falling back to the default."""
+    val = _config_section("live_settings").get(key)
+    return float(val) if val is not None else default
+
+
+LIVE_EVENT_MIN_SCORE = _live_setting("event_min_score", 0.6)
+LIVE_INTENSITY_CAP = _live_setting("intensity_cap", 0.7)
+LIVE_SIGNIFICANCE = _live_setting("significance", 0.45)
+LIVE_NEGATIVE_SIGNIFICANCE = _live_setting("negative_significance", 0.5)
 
 # Astra's *own* current state modulates the reaction, so the same words do not
 # land identically twice. She is not a fixed classifier: an interested, engaged
@@ -154,12 +282,12 @@ LIVE_NEGATIVE_SIGNIFICANCE = 0.5
 # interest and more easily pushed away; a happy turn savours a joke; a tender,
 # invested turn is moved more by what Roum shares. The modulation is a single
 # scalar (kept gentle) so it nudges rather than overrides the event.
-LIVE_REACTIVITY_FLOOR = 0.75
-LIVE_REACTIVITY_CEIL = 1.3
+LIVE_REACTIVITY_FLOOR = _live_setting("reactivity_floor", 0.75)
+LIVE_REACTIVITY_CEIL = _live_setting("reactivity_ceil", 1.3)
 # A real event always lands with at least this much intensity, however closed
 # Astra currently is: modulation changes *how much* it moves her, never whether
 # it happened. Without this, a low mood could make her miss events entirely.
-LIVE_REACTIVITY_MIN_INTENSITY = 0.35
+LIVE_REACTIVITY_MIN_INTENSITY = _live_setting("reactivity_min_intensity", 0.35)
 # What "opening up to" versus "closing down to" each event kind looks like, read
 # from her current components. Each tuple is (opening, closing).
 _LIVE_REACTIVITY: Dict[str, tuple] = {
@@ -177,10 +305,10 @@ _LIVE_REACTIVITY: Dict[str, tuple] = {
 # carry a real event) slowly wears the conversation down. It is felt on the
 # *third* such turn in a row, and only weakly, so an ordinary back-and-forth
 # never registers. State is pure input, returned by :func:`evaluate_turn`.
-LIVE_REPETITION_MIN = 3
-LIVE_REPETITION_SIMILARITY = 0.7
-LIVE_REPETITION_INTENSITY = 0.6
-LIVE_REPETITION_SIGNIFICANCE = 0.4
+LIVE_REPETITION_MIN = int(_live_setting("repetition_min", 3))
+LIVE_REPETITION_SIMILARITY = _live_setting("repetition_similarity", 0.7)
+LIVE_REPETITION_INTENSITY = _live_setting("repetition_intensity", 0.6)
+LIVE_REPETITION_SIGNIFICANCE = _live_setting("repetition_significance", 0.4)
 _LIVE_TOKEN_RE = re.compile(r"[a-z0-9']+")
 
 # Narrow markers for the live semantic layer. Kept as a few precise signals, not
@@ -260,11 +388,18 @@ _KIND_ALIASES = {
 # State relaxation. Faster than the relational state on purpose: a current
 # affective condition is momentary, so it should fade within days rather than
 # linger for weeks. Neutral is zero - there is no "base mood" to fall back to.
-AFFECT_BASELINE = 0.0
-AFFECT_DECAY_PER_DAY = 0.15
-AFFECT_MIN_INTERVAL_DAYS = 0.5
+# Configurable via config/affect.yaml decay_settings.
+def _decay_setting(key: str, default: float) -> float:
+    """Read a decay setting from config, falling back to the default."""
+    val = _config_section("decay_settings").get(key)
+    return float(val) if val is not None else default
+
+
+AFFECT_BASELINE = _decay_setting("baseline", 0.0)
+AFFECT_DECAY_PER_DAY = _decay_setting("per_day", 0.15)
+AFFECT_MIN_INTERVAL_DAYS = _decay_setting("min_interval_days", 0.5)
 # Below this every component is treated as "no particular condition".
-AFFECT_NEUTRAL_EPSILON = 0.02
+AFFECT_NEUTRAL_EPSILON = _decay_setting("neutral_epsilon", 0.02)
 
 _MIN, _MAX = 0.0, 1.0
 
@@ -356,6 +491,10 @@ def record_event(state: Any, kind: str, *, intensity: float = 0.5,
     ``state`` may be ``None`` (start fresh) or a previously stored dict. Only a
     known experience kind moves anything; an unknown kind is a no-op, so a
     caller that drifts cannot perturb the state with arbitrary input.
+
+    After the base delta is applied, the emotion influence matrix lets each
+    valence emotion that changed ripple into the other emotions (e.g. a bump
+    in ``happy`` also nudges ``calm`` up and ``sad`` down).
     """
     state = _coerce_state(state)
     _decay(state)
@@ -366,8 +505,17 @@ def record_event(state: Any, kind: str, *, intensity: float = 0.5,
         return state
 
     scale = 0.6 + 0.7 * _clamp(intensity) + 0.5 * _clamp(significance)
+    # Track emotion deltas for the influence matrix.
+    emotion_deltas: Dict[str, float] = {}
     for component, base in deltas.items():
-        _bump(state, component, base * scale)
+        scaled = base * scale
+        _bump(state, component, scaled)
+        if component in EMOTION_COMPONENTS:
+            emotion_deltas[component] = scaled
+
+    # Apply the influence matrix: each emotion that changed ripples into others.
+    for emotion, delta in emotion_deltas.items():
+        _apply_influence(state, emotion, delta)
 
     counts = state.setdefault("event_counts", {})
     counts[resolved] = int(counts.get(resolved, 0)) + 1
@@ -648,19 +796,41 @@ def load_state_from_memories(memories: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def diagnostics(state: Any) -> Dict[str, Any]:
-    """The diagnostic view: components plus why the state last moved."""
+    """The diagnostic view: components plus why the state last moved.
+
+    Includes the emotion influence matrix and configuration source so
+    developers can verify the system is wired correctly.
+    """
     state = _coerce_state(state)
     out = {name: round(_clamp(state.get(name)), 4) for name in AFFECT_COMPONENTS}
     out.update({
         "neutral": is_neutral(state),
         "event_counts": dict(state.get("event_counts", {})),
         "reason": str(state.get("last_reason", "") or ""),
+        "emotion_influence": {k: dict(v) for k, v in _EMOTION_INFLUENCE.items()},
+        "config_loaded": _config_loaded,
+        "config_source": os.path.join(_CONFIG_DIR, "affect.yaml"),
     })
     return out
 
 
+def emotion_influence_matrix() -> Dict[str, Dict[str, float]]:
+    """Return a copy of the current emotion influence matrix.
+
+    Each key is a source emotion; each value maps target emotions to weights.
+    Positive = source increases target; negative = source decreases target.
+    """
+    return {k: dict(v) for k, v in _EMOTION_INFLUENCE.items()}
+
+
+def experience_deltas() -> Dict[str, Dict[str, float]]:
+    """Return a copy of the current experience delta table."""
+    return {k: dict(v) for k, v in _KIND_DELTAS.items()}
+
+
 __all__ = [
     "AFFECT_COMPONENTS",
+    "EMOTION_COMPONENTS",
     "EXPERIENCE_READ",
     "EXPERIENCE_COMPLETED",
     "EXPERIENCE_DISCOVERED",
@@ -690,4 +860,7 @@ __all__ = [
     "affect_memory_filter",
     "load_state_from_memories",
     "diagnostics",
+    "emotion_influence_matrix",
+    "experience_deltas",
+    "reload_affect_config",
 ]
