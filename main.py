@@ -319,6 +319,10 @@ class ChatSession:
         # The relational preference moves only on real events, and only here on
         # the live path - never inside build_prompt, which stays read-only.
         self._record_relational_event(user_input, response)
+        # The current *condition* also responds to the turn, but separately: a
+        # live affect event updates the temporary accumulator only, never a
+        # durable experience and never the relational state.
+        self._record_affect_event(user_input, response)
         self._record_turn(user_input, response, consolidate=not response.startswith("[Error"))
         self._checkpoint()
         # Working memory is updated on the live path only, and after the turn, so
@@ -388,6 +392,33 @@ class ChatSession:
                            text="Independently recalled a previous Roum interaction.")
         except Exception:
             # The relational layer must never break a conversation turn.
+            pass
+
+    def _record_affect_event(self, user_input: str, response: str) -> None:
+        """Let an ordinary turn move Astra's *current condition*.
+
+        This is the live affect path: the semantic layer decides whether the turn
+        carries an affective event, and the application applies it to the
+        temporary affect accumulator. It deliberately does **not** create an
+        ``experience`` record - an ordinary interaction can change how she
+        currently feels without becoming part of her durable history. It also
+        never touches the relational state, and the model's prose is never
+        treated as authoritative about what she feels.
+
+        The analysis is pure and cheap, but it still runs off the critical path
+        only in the sense that it never calls the model; like the relational
+        event it runs inline and must never break a turn.
+        """
+        store = self.orchestrator.store
+        apply_event = getattr(store, "apply_live_affect_event", None)
+        if not callable(apply_event):
+            return
+        try:
+            event = affect.evaluate_turn(user_input, response)
+            if event is not None:
+                apply_event(event)
+        except Exception:
+            # The affect layer must never break a conversation turn.
             pass
 
     def _run_maintenance(self) -> None:
@@ -868,7 +899,7 @@ class ChatSession:
         counts = diag.get("event_counts") or {}
         if counts:
             summary = ", ".join(f"{k} x{v}" for k, v in sorted(counts.items()))
-            self._emit(f"  From experiences: {summary}")
+            self._emit(f"  From recent events (experiences and live turns): {summary}")
         if diag.get("reason"):
             self._emit(f"  Last change: {diag['reason']}")
 

@@ -28,6 +28,7 @@ Design constraints:
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -111,6 +112,73 @@ _KIND_DELTAS: Dict[str, Dict[str, float]] = {
                        "engagement": -0.06, "calm": -0.03},
     EXPERIENCE_CALM: {"calm": 0.16, "angry": -0.08, "frustration": -0.06},
 }
+
+# The kinds below can also be *felt directly*, without a durable experience: an
+# ordinary live turn may carry an affective charge - humour, a sharp remark, a
+# warm acknowledgement - that moves the current condition but is not, on its
+# own, an event worth remembering. They are aliases onto existing experience
+# kinds so the live semantic layer and the reading/experience layer share one
+# arithmetic (there is no second delta table).
+LIVE_HUMOUR = EXPERIENCE_HAPPY
+LIVE_INTEREST = EXPERIENCE_DISCOVERED
+LIVE_POSITIVE = EXPERIENCE_INTERACTION
+LIVE_CRITICISM = EXPERIENCE_FRUSTRATION
+LIVE_FAILURE = EXPERIENCE_FRUSTRATION
+LIVE_SURPRISE = EXPERIENCE_UNEXPECTED
+LIVE_DISCLOSURE = EXPERIENCE_TENDER
+
+# The live layer is deliberately conservative: a turn must carry a real signal
+# to move anything at all, and even then it only *nudges* the current condition.
+# These weights scale a live event below a full experience (the application is
+# the final authority; the model never mutates affect).
+LIVE_EVENT_MIN_SCORE = 0.6
+LIVE_INTENSITY_CAP = 0.7
+LIVE_SIGNIFICANCE = 0.45
+LIVE_NEGATIVE_SIGNIFICANCE = 0.5
+
+# Narrow markers for the live semantic layer. Kept as a few precise signals, not
+# a "giant keyword list": each detects a structural feature of the turn (an
+# actual question, an explicit evaluation, a marked emotional disclosure), and
+# nothing fires on an ordinary neutral sentence.
+_LIVE_QUESTION_RE = re.compile(
+    r"\?|\b(?:how|why|what|when|where|which|who|whose|whether)\b", re.I)
+_INTERESTING_RE = re.compile(
+    r"\b(?:interesting|fascinating|curious|intriguing|strange|peculiar|subtle|"
+    r"paradox|dilemma|thought experiment|counterintuitive|unusual|novel|"
+    r"what if|suppose|imagine)\b", re.I)
+_MEGA_QUESTION_RE = re.compile(
+    r"\b(?:what if|suppose|imagine|thought experiment|hypothetical|"
+    r"counterintuitive|paradox|the nature of|the meaning of|why do we|"
+    r"what makes|how does .* work)\b", re.I)
+_HUMOUR_RE = re.compile(
+    r"\b(?:haha|hahaha|lol|lmao|joke|joking|kidding|funny|hilarious|amusing|"
+    r"punchline|rofl)\b|(?:😂|🤣|😄|😆|😅)", re.I)
+_SURPRISE_RE = re.compile(
+    r"\b(?:surprising|surprised|unexpected|unbeliev|whoa|wow|no way|really\?|"
+    r"shocking|astonish|i didn'?t expect|unforeseen|plot twist)\b", re.I)
+_ACKNOWLEDGE_RE = re.compile(
+    r"\b(?:thank(?:s| you)|good job|well done|nice work|appreciate (?:it|that)|"
+    r"that(?:'s| is) (?:right|great|perfect|helpful)|exactly|you helped|"
+    r"that worked|helpful)\b", re.I)
+_PERSONAL_RE = re.compile(
+    r"\b(?:i feel|i felt|i'?m feeling|i'?ve been feeling|i'?m scared|i'?m "
+    r"afraid|i'?m grieving|i lost|i'?ve lost|i'?m struggling|i'?ve been "
+    r"struggling|i'?m lonely|i'?m worried|it hurt|i'?m heartbroken|my "
+    r"father|my mother|my partner|my friend|my brother|my sister|passed "
+    r"away|funeral|i'?m ill|died|i'?m depressed|i'?m anxious)\b", re.I)
+_CRITICISM_RE = re.compile(
+    r"\b(?:you(?:'re| are)|that(?:'s| is| was| answer| response| reply| "
+    r"summary| explanation| work| code)|this (?:is| was| answer| response| "
+    r"reply| summary| explanation| work| code)|it (?:is| was)|the (?:answer| "
+    r"response| reply| summary| explanation| work| code)|you (?:were|keep|"
+    r"always|never))\b[^.?!]{0,40}\b(?:wrong|useless|unhelpful|not helpful|"
+    r"disappoint|poor|bad|worse|incoherent|too vague|missed the point|"
+    r"not what i asked|rambling|you failed)\b",
+    re.I)
+_MISSED_RE = re.compile(
+    r"\b(?:no,? that'?s not|that'?s not (?:right|what i)|not what i "
+    r"(?:asked|meant|wanted)|i already (?:said|told)|again\?|"
+    r"i said|wrong again|still wrong)\b", re.I)
 
 _KIND_ALIASES = {
     "reading": EXPERIENCE_READ,
@@ -263,6 +331,82 @@ def record_event(state: Any, kind: str, *, intensity: float = 0.5,
 
 
 # ---------------------------------------------------------------------
+# Live conversational affect
+# ---------------------------------------------------------------------
+def evaluate_turn(user_input: Any, response: Any = "") -> Optional[Dict[str, Any]]:
+    """Decide whether a live conversation turn carries an affective event.
+
+    This is the semantic layer the live path was missing. It is *pure*: it reads
+    the turn's text and returns an event description, or ``None`` for an ordinary
+    turn. It never touches the store, the model, or any state, and it is not
+    authoritative - the application decides whether to apply the event (see
+    ``TripleMemoryStore.apply_live_affect_event``). The generated prose is never
+    treated as a claim about how Astra feels; at most a clear acknowledgement in
+    it corroborates a positive turn.
+
+    At most one event is returned per turn, chosen by priority, and only when it
+    clears ``LIVE_EVENT_MIN_SCORE``. A neutral or generic turn (a bare "hello",
+    a plain factual statement) returns ``None`` so it cannot swing the state.
+
+    The returned dict is ``{"kind", "intensity", "significance", "text",
+    "reason"}`` where ``kind`` is one of the existing experience kinds, so the
+    same arithmetic in :func:`record_event` applies.
+    """
+    text = str(user_input or "").strip()
+    resp = str(response or "").strip()
+    if not text:
+        return None
+
+    def _event(kind: str, intensity: float, reason: str,
+               significance: float = LIVE_SIGNIFICANCE) -> Optional[Dict[str, Any]]:
+        intensity = min(LIVE_INTENSITY_CAP, max(0.0, float(intensity)))
+        if intensity < LIVE_EVENT_MIN_SCORE:
+            return None
+        return {
+            "kind": kind,
+            "intensity": round(intensity, 4),
+            "significance": round(float(significance), 4),
+            "text": reason,
+            "reason": reason,
+        }
+
+    # Priority order: a sharp or significant turn decides the condition first;
+    # a pleasant or interesting one only registers if nothing sharper did. This
+    # is what keeps a criticism from being read as a warm interaction.
+    if _CRITICISM_RE.search(text) or _MISSED_RE.search(text):
+        return _event(LIVE_CRITICISM, 0.6,
+                      "Roum criticised the response.",
+                      LIVE_NEGATIVE_SIGNIFICANCE)
+
+    if _PERSONAL_RE.search(text):
+        # Something Roum shared that plainly matters to him. Astra is moved for
+        # him - this is her own current state, not knowledge about Roum and not
+        # a durable experience.
+        return _event(LIVE_DISCLOSURE, 0.7,
+                      "Roum shared something emotionally significant.",
+                      LIVE_NEGATIVE_SIGNIFICANCE)
+
+    if _SURPRISE_RE.search(text):
+        return _event(LIVE_SURPRISE, 0.6, "Roum said something surprising.")
+
+    if _HUMOUR_RE.search(text):
+        return _event(LIVE_HUMOUR, 0.65, "Roum said something funny.")
+
+    if _MEGA_QUESTION_RE.search(text):
+        return _event(LIVE_INTEREST, 0.65,
+                      "Roum raised something genuinely interesting.")
+    if _LIVE_QUESTION_RE.search(text) and _INTERESTING_RE.search(text):
+        return _event(LIVE_INTEREST, 0.6,
+                      "Roum raised an interesting question.")
+
+    if _ACKNOWLEDGE_RE.search(text) or _ACKNOWLEDGE_RE.search(resp):
+        return _event(LIVE_POSITIVE, 0.6,
+                      "Roum acknowledged something that worked.")
+
+    return None
+
+
+# ---------------------------------------------------------------------
 # Behavioural consumers
 # ---------------------------------------------------------------------
 def retrieval_breadth(state: Any, base: int) -> int:
@@ -402,8 +546,17 @@ __all__ = [
     "EXPERIENCE_INTERACTION",
     "EXPERIENCE_UNEXPECTED",
     "EXPERIENCE_ATTACHMENT",
+    "LIVE_HUMOUR",
+    "LIVE_INTEREST",
+    "LIVE_POSITIVE",
+    "LIVE_CRITICISM",
+    "LIVE_FAILURE",
+    "LIVE_SURPRISE",
+    "LIVE_DISCLOSURE",
+    "LIVE_EVENT_MIN_SCORE",
     "is_neutral",
     "record_event",
+    "evaluate_turn",
     "retrieval_breadth",
     "render_summary",
     "prompt_block",
