@@ -64,6 +64,11 @@ _ASTRA_LABEL = "Astra > "
 # still pending is flushed on the next checkpoint or on exit.
 CHECKPOINT_DRAIN_TIMEOUT = 20.0
 
+# The live affect layer reads Astra's condition as a *preview* of the state this
+# turn will leave behind, using a neutral kind so the preview only carries the
+# decay of the stored state. That is the condition the modulation is read from.
+LIVE_AFFECT_PREVIEW_KIND = "preview"
+
 HELP_TEXT = """
 ==========================================================
   CLI COMMANDS
@@ -210,6 +215,10 @@ class ChatSession:
         self.output_fn = output_fn
         self.history: List[Dict[str, str]] = []
         self.turn_counter = 0
+        # Recent *user* turns, kept so the live affect layer can notice a
+        # conversation that has gone in circles. This is display/scratch state,
+        # not memory, and never reaches the store.
+        self._recent_user_turns: deque = deque(maxlen=6)
 
         # Consolidation is a second model call per turn. Off by default (a plain
         # ChatSession stays synchronous and deterministic, which the tests rely
@@ -414,7 +423,20 @@ class ChatSession:
         if not callable(apply_event):
             return
         try:
-            event = affect.evaluate_turn(user_input, response)
+            # Her *own* current condition modulates the reaction, so the same
+            # words do not land identically twice: an interested turn leans
+            # further into interest, a weary one is harder to engage. The
+            # reactive scalar is read from the condition this turn will leave
+            # behind (a pure preview), so the modulation reflects where she is
+            # now rather than a stale pre-turn value.
+            preview = getattr(store, "current_affect_after", None)
+            state = (preview(LIVE_AFFECT_PREVIEW_KIND) if callable(preview)
+                     else store.current_affect())
+            event = affect.evaluate_turn(
+                user_input, response, state=state,
+                history=list(self._recent_user_turns),
+            )
+            self._recent_user_turns.append(user_input)
             if event is not None:
                 apply_event(event)
         except Exception:

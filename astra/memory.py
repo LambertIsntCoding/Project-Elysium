@@ -2321,6 +2321,21 @@ class TripleMemoryStore:
             self._write_affect_state(state)
             return state
 
+    def current_affect_after(self, kind: str, *, intensity: float = 0.5,
+                             significance: float = 0.5, text: str = "") -> Dict[str, Any]:
+        """The condition an event *would* produce, without writing anything.
+
+        Used by the live path to let Astra's state modulate the *next* reaction:
+        the reactive scalar is computed from what her state will be after this
+        turn, not the stale pre-turn value. Pure - it neither mutates the store
+        nor the stored state.
+        """
+        existing = self._affect_record()
+        return affect.record_event(
+            existing.get("affect_state") if existing else None,
+            kind, intensity=intensity, significance=significance, text=text,
+        )
+
     def _affect_record(self) -> Optional[Dict[str, Any]]:
         """The single affect-accumulator record, if one exists.
 
