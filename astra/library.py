@@ -36,6 +36,14 @@ from .memory import atomic_save, load_json
 
 STATE_VERSION = 1
 
+# Files the library knows how to ingest. ``""`` is included because a
+# book-shaped file with no extension is common and is read as plain text.
+SUPPORTED_BOOK_EXTENSIONS = (".txt", ".md", ".markdown", ".text", ".epub")
+# Default subfolder of the library dir that holds source books. Book filenames
+# are used as titles: a space in the name is a space in the title, and " + "
+# joins multiple authors (e.g. "Good Omens - Pratchett + Gaiman.md").
+DEFAULT_BOOKS_SUBDIR = "books"
+
 # Tags whose text we never want in the extracted plain text.
 _SKIP_TAGS = {"script", "style", "head", "title", "meta", "link"}
 # Tags that should force a line break so paragraphs survive the strip.
@@ -201,12 +209,32 @@ def slugify(text: Any) -> str:
     return slug[:80] or "work"
 
 
+def book_title_and_authors(filename: str) -> "tuple[str, List[str]]":
+    """Split a book filename into a title and a list of authors.
+
+    The filename is the metadata: the extension is dropped, and a " + " (or a
+    lone "+" between words) separates multiple authors. A title containing a
+    literal plus is uncommon enough that this is worth the simplicity; a filename
+    with no plus is all title and no authors.
+    """
+    stem = os.path.splitext(os.path.basename(str(filename or "")))[0].strip()
+    parts = [p.strip() for p in re.split(r"\s*\+\s*", stem) if p.strip()]
+    if len(parts) > 1:
+        return parts[0], parts[1:]
+    return stem, []
+
+
 class Library:
     """Astra's local works and her position in each, persisted atomically."""
 
-    def __init__(self, data_dir: str = "./storage"):
+    def __init__(self, data_dir: str = "./storage", books_path: Optional[str] = None):
         self.data_dir = data_dir
         self.books_dir = os.path.join(data_dir, "library")
+        # Where the source books live. Overridable so a scan can point at an
+        # arbitrary folder; defaults to ``<data_dir>/library/books``.
+        self.books_path = os.path.abspath(
+            books_path or os.path.join(self.books_dir, DEFAULT_BOOKS_SUBDIR)
+        )
         self.state_file = os.path.join(data_dir, "reading_state.json")
         self._lock = threading.RLock()
         os.makedirs(self.books_dir, exist_ok=True)
@@ -281,16 +309,76 @@ class Library:
         ext = os.path.splitext(path)[1].casefold()
         if ext == ".epub":
             text, fmt = epub_to_text(path), reading.SOURCE_FORMAT_EPUB
-        elif ext in (".txt", ".md", ".markdown", ".text", ""):
+        elif ext in SUPPORTED_BOOK_EXTENSIONS:
             with open(path, "r", encoding="utf-8", errors="replace") as handle:
                 text, fmt = handle.read(), reading.SOURCE_FORMAT_TEXT
         else:
             raise ValueError(f"unsupported file type {ext!r}; use .txt, .md, or .epub")
-        inferred_title = title or os.path.splitext(os.path.basename(path))[0]
+        inferred_title = title or book_title_and_authors(os.path.basename(path))[0]
         return self.add_text(
             text, work_id=work_id or slugify(inferred_title), title=inferred_title,
             source_format=fmt, source_path=path,
         )
+
+    # -- scanning the books folder ----------------------------------------
+    def scan_books(self, folder: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List the ingestible books in a folder without ingesting anything.
+
+        Returns one entry per file, in a stable alphabetical order, each with
+        ``index``, ``path``, ``filename``, ``title``, ``authors``, ``format``,
+        ``size`` and ``ingested`` (already in the library). Read-only: this is
+        what makes the numbered picker possible, so it never touches state.
+        """
+        folder = os.path.abspath(folder or self.books_path)
+        if not os.path.isdir(folder):
+            return []
+        ingested = {str(s.get("source_path") or "") for s in self.state["works"].values()}
+        entries: List[Dict[str, Any]] = []
+        for name in sorted(os.listdir(folder)):
+            path = os.path.join(folder, name)
+            if not os.path.isfile(path):
+                continue
+            ext = os.path.splitext(name)[1].casefold()
+            if ext not in SUPPORTED_BOOK_EXTENSIONS:
+                continue
+            title, authors = book_title_and_authors(name)
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                size = 0
+            entries.append({
+                "index": len(entries) + 1,
+                "path": path,
+                "filename": name,
+                "title": title,
+                "authors": authors,
+                "format": ext.lstrip(".") or "text",
+                "size": size,
+                "ingested": path in ingested,
+            })
+        return entries
+
+    def add_book(self, reference: Any, folder: Optional[str] = None) -> Dict[str, Any]:
+        """Ingest a book by its scan index, its filename, or a full path.
+
+        A bare integer (or a numeric string) selects by the ``index`` from
+        :meth:`scan_books`, so a filename containing spaces never has to be
+        typed or quoted.
+        """
+        folder = os.path.abspath(folder or self.books_path)
+        text = str(reference or "").strip()
+        if not text:
+            raise ValueError("no book selected")
+        if text.isdigit():
+            entries = self.scan_books(folder)
+            index = int(text)
+            if index < 1 or index > len(entries):
+                raise ValueError(f"no book #{index}; {len(entries)} book(s) in {folder}")
+            return self.add_file(entries[index - 1]["path"])
+        # A filename, or a path. A name with no directory is resolved inside the
+        # books folder so the folder never has to be repeated.
+        candidate = text if os.path.isabs(text) or os.path.dirname(text) else os.path.join(folder, text)
+        return self.add_file(candidate)
 
     # -- reading -----------------------------------------------------------
     def text_for(self, work_id: str) -> str:
@@ -441,4 +529,5 @@ def _now() -> str:
 
 __all__ = [
     "Library", "STATE_VERSION", "slugify", "html_to_text", "epub_to_text",
+    "book_title_and_authors", "SUPPORTED_BOOK_EXTENSIONS", "DEFAULT_BOOKS_SUBDIR",
 ]

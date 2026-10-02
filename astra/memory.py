@@ -1526,6 +1526,11 @@ class TripleMemoryStore:
             "relationship": os.path.join(data_dir, "relationship_model.json"),
         }
         self.journal_file = os.path.join(data_dir, "ai_journal.json")
+        # When Astra was last actually present (a real turn, not a prompt build).
+        # This is the only thing that lets her sense a gap between sessions; it
+        # is a fact about time, not a memory, so it lives beside the stores
+        # rather than inside one.
+        self.presence_file = os.path.join(data_dir, "presence.json")
         self._lock = threading.RLock()
         # Maintenance throttles: usage recording / decay run on the prompt path
         # (a read that must sometimes write) but not on every single turn.
@@ -2776,6 +2781,25 @@ class TripleMemoryStore:
         bucket = [m for m in memories if _period_key(m.get("timestamp"), granularity) == text]
         bucket.sort(key=lambda m: str(m.get("timestamp", "")), reverse=True)
         return bucket
+
+    # ---- presence (Astra's sense of elapsed time) --------------------
+    def last_present(self) -> Optional[str]:
+        """When Astra last actually took a turn, or ``None`` if never recorded."""
+        data = load_json(self.presence_file, dict, dict)
+        value = data.get("last_present") if isinstance(data, dict) else None
+        return str(value) if value else None
+
+    def mark_present(self, timestamp: Optional[str] = None) -> str:
+        """Record that Astra is present now; returns the new timestamp.
+
+        Called on a real turn only. A prompt build must never call this, or the
+        gap would reset every time the prompt is assembled and she could never
+        sense that time had passed.
+        """
+        stamp = timestamp or datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            atomic_save(self.presence_file, {"last_present": stamp})
+        return stamp
 
     def stats(self) -> Dict[str, Any]:
         with self._lock:

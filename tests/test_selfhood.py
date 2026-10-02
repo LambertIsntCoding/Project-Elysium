@@ -154,6 +154,27 @@ class TestAbsentExperienceGuard(_SelfhoodCase):
         self.assertFalse(mem.get("absent_experience"))
         self.assertEqual(mem["type"], "experience")
 
+    def test_boundary_says_roums_life_is_not_hers(self):
+        # The principle must be settled self-knowledge, present every turn.
+        text = "\n".join(selfhood.NONHUMAN_BOUNDARY).casefold()
+        self.assertIn("his, not hers", text)
+        self.assertIn("borrowing his", text)
+        prompt = self.orch.build_prompt("hello", [])
+        self.assertIn("borrowing his", prompt)
+
+    def test_mirrored_lived_memory_never_reaches_the_prompt(self):
+        self.store.add_memory(
+            "roum",
+            "Roum grew up in a small coastal town and remembers the smell of salt.",
+            "explicit_fact", "explicit_user_statement",
+        )
+        self.add_self(
+            "I grew up in a small coastal town and remember the smell of salt.",
+            "self_fact", confidence=0.9,
+        )
+        prompt = self.orch.build_prompt("tell me about the coast", [])
+        self.assertNotIn("I grew up in a small coastal town", prompt)
+
 
 # ---------------------------------------------------------------------
 # Self-claim durability

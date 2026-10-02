@@ -26,7 +26,15 @@ import zipfile
 from astra import affect
 from astra import inquiry
 from astra import reading
-from astra.library import Library, epub_to_text, html_to_text, slugify
+from astra.library import (
+    DEFAULT_BOOKS_SUBDIR,
+    Library,
+    SUPPORTED_BOOK_EXTENSIONS,
+    book_title_and_authors,
+    epub_to_text,
+    html_to_text,
+    slugify,
+)
 from astra.memory import TripleMemoryStore
 from astra.orchestrator import CompanionOrchestrator
 from astra.reader import BackgroundReader
@@ -188,6 +196,72 @@ class TestLibrary(_Base):
     def test_slugify_is_stable_and_safe(self):
         self.assertEqual(slugify("The Sea, and the Garden!"), "the-sea-and-the-garden")
         self.assertEqual(slugify(""), "work")
+
+
+class TestBooksScan(_Base):
+    """The books-folder scan and the numbered pick it enables."""
+
+    def _write(self, name, body="body text. " * 40):
+        folder = os.path.join(self.tmp, "library", DEFAULT_BOOKS_SUBDIR)
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(body)
+        return path
+
+    def test_title_and_authors_from_filename(self):
+        self.assertEqual(book_title_and_authors("Dune.md"), ("Dune", []))
+        # A space in the filename is a space in the title; " + " joins authors.
+        title, authors = book_title_and_authors("The Housekeeper and the Professor.md")
+        self.assertEqual(title, "The Housekeeper and the Professor")
+        self.assertEqual(authors, [])
+        title, authors = book_title_and_authors("Good Omens - Pratchett + Gaiman.epub")
+        self.assertEqual(title, "Good Omens - Pratchett")
+        self.assertEqual(authors, ["Gaiman"])
+
+    def test_scan_numbers_files_and_skips_non_books(self):
+        self._write("B Book.md")
+        self._write("A Book.txt")
+        with open(os.path.join(self.library.books_path, "cover.jpg"), "w") as handle:
+            handle.write("not a book")
+        entries = self.library.scan_books()
+        self.assertEqual([e["filename"] for e in entries], ["A Book.txt", "B Book.md"])
+        self.assertEqual([e["index"] for e in entries], [1, 2])
+        self.assertTrue(all(e["format"] in ("txt", "md") for e in entries))
+
+    def test_scan_marks_already_ingested(self):
+        path = self._write("Sea.md")
+        self.assertEqual(self.library.scan_books()[0]["ingested"], False)
+        self.library.add_file(path)
+        self.assertEqual(self.library.scan_books()[0]["ingested"], True)
+
+    def test_add_book_by_index(self):
+        self._write("A First.txt")
+        self._write("B Second.md")
+        state = self.library.add_book("2")
+        self.assertEqual(state["work_id"], "b-second")
+        self.assertIn("body text", self.library.text_for("b-second"))
+
+    def test_add_book_by_bare_filename_resolves_in_books_folder(self):
+        self._write("The Housekeeper and the Professor.md")
+        state = self.library.add_book("The Housekeeper and the Professor.md")
+        self.assertEqual(state["title"], "The Housekeeper and the Professor")
+
+    def test_add_book_out_of_range_is_an_error(self):
+        self._write("Only.txt")
+        with self.assertRaises(ValueError):
+            self.library.add_book("5")
+
+    def test_scan_missing_folder_is_empty_not_an_error(self):
+        self.assertEqual(self.library.scan_books(os.path.join(self.tmp, "nope")), [])
+
+    def test_scan_accepts_an_override_folder(self):
+        other = os.path.join(self.tmp, "elsewhere")
+        os.makedirs(other, exist_ok=True)
+        with open(os.path.join(other, "Elsewhere.md"), "w") as handle:
+            handle.write("words " * 30)
+        entries = self.library.scan_books(other)
+        self.assertEqual([e["filename"] for e in entries], ["Elsewhere.md"])
 
 
 # ---------------------------------------------------------------------
@@ -559,6 +633,107 @@ class TestCliReadingCommands(_Base):
         joined = "\n".join(self.out)
         self.assertIn("BACKGROUND READING", joined)
         self.assertIn("Sea Novel", joined)
+
+
+class TestCliBooksCommands(_Base):
+    """Scan the books folder, then ingest by number or quoted path."""
+
+    def _session(self, model=None):
+        from main import ChatSession
+
+        orchestrator = CompanionOrchestrator(self.store, config_dir=self.tmp)
+        reader = self.reader(model or (lambda p: "{}"))
+        orchestrator.reader = reader
+        self.out: list = []
+        session = ChatSession(
+            orchestrator, None, reader=reader,
+            output_fn=self.out.append, input_fn=lambda _: "",
+        )
+        return session
+
+    def _book(self, name, body="A quiet sentence. " * 40):
+        folder = os.path.join(self.tmp, "library", DEFAULT_BOOKS_SUBDIR)
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(body)
+        return path
+
+    def test_library_scan_numbers_books(self):
+        self._book("The Housekeeper and the Professor.md")
+        self._book("Dune.txt")
+        session = self._session()
+        session._handle_slash("/library-scan")
+        joined = "\n".join(self.out)
+        self.assertIn("The Housekeeper and the Professor", joined)
+        self.assertIn("Dune", joined)
+        self.assertIn("[ 1]", joined)
+        self.assertIn("[ 2]", joined)
+
+    def test_read_add_by_number_ingests_the_scanned_book(self):
+        self._book("A First.txt")
+        self._book("B Second.md")
+        session = self._session()
+        session._handle_slash("/library-scan")
+        session._handle_slash("/read add 2")
+        joined = "\n".join(self.out)
+        self.assertIn("Added 'b-second'", joined)
+        self.assertIn("B Second", self.library.get_state("b-second")["title"])
+
+    def test_read_add_number_without_scan_still_works(self):
+        self._book("Only Book.md")
+        session = self._session()
+        session._handle_slash("/read add 1")
+        self.assertIn("Added 'only-book'", "\n".join(self.out))
+
+    def test_read_add_quoted_path_with_spaces(self):
+        path = self._book("The Housekeeper and the Professor.md")
+        session = self._session()
+        # Exactly what the parser must survive: a path with spaces, quoted.
+        session._handle_slash(f'/read add "{path}"')
+        self.assertIn("Added 'the-housekeeper-and-the-professor'", "\n".join(self.out))
+
+    def test_read_add_quoted_path_with_title_override(self):
+        path = self._book("original.md")
+        session = self._session()
+        session._handle_slash(f'/read add "{path}" A Better Title')
+        state = self.library.get_state("original")
+        self.assertEqual(state["title"], "A Better Title")
+
+    def test_read_add_without_args_shows_usage(self):
+        session = self._session()
+        session._handle_slash("/read add")
+        self.assertIn("Usage: /read add", "\n".join(self.out))
+
+    def test_scan_folder_override_is_used_by_the_next_add(self):
+        other = os.path.join(self.tmp, "elsewhere")
+        os.makedirs(other, exist_ok=True)
+        with open(os.path.join(other, "Elsewhere.md"), "w") as handle:
+            handle.write("words " * 40)
+        session = self._session()
+        session._handle_slash(f'/library-scan "{other}"')
+        session._handle_slash("/read add 1")
+        self.assertIn("Added 'elsewhere'", "\n".join(self.out))
+
+
+class TestArgParsing(unittest.TestCase):
+    def test_quotes_keep_a_windows_path_whole(self):
+        from main import split_args
+
+        args = split_args(r'/read add "C:\Books\The Housekeeper and the Professor.md"')
+        self.assertEqual(
+            args, ["/read", "add", r"C:\Books\The Housekeeper and the Professor.md"]
+        )
+
+    def test_single_quotes_also_work(self):
+        from main import split_args
+
+        self.assertEqual(split_args("/read add 'a b.md'"), ["/read", "add", "a b.md"])
+
+    def test_unquoted_words_still_split(self):
+        from main import split_args
+
+        self.assertEqual(split_args("/timeline month roum"), ["/timeline", "month", "roum"])
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ HTTP stub, and consolidation tests call the decision layer directly.
 | `astra/relational.py` | Astra's Roum-specific command-fulfillment preference (accumulated state) |
 | `astra/affect.py` | Astra's current *experiential* affect (temporary, derived from experiences) |
 | `astra/selfhood.py` | self-knowledge: the non-human boundary, the epistemic stance, absent-experience guard, derived self-portrait, formative/traumatic experience classification (pure, no I/O) |
+| `astra/temporal.py` | Astra's sense of elapsed time: session gaps, long-open questions, long projects (pure render, never stored) |
 | `astra/orchestrator.py` | prompt assembly and retrieval |
 | `astra/consolidator.py` | turn -> governed memory decisions |
 | `astra/inquiry.py` | questions, uncertainty, and revisable work knowledge (Slice 2) |
@@ -112,6 +113,27 @@ Top-level `memory_store.py`, `orchestrator.py`, `elysium.py`, `consolidator.py`,
   the full record. Do not remove `_present`: without it, `use_count` and friends
   vanish from reads. Never write model files by hand - always via `_persist`, so
   the compaction is applied.
+- **A claim to an experience she never had is history, not knowledge.** A
+  self-record that reifies an absent experience (Roum's life, a body, a
+  childhood) is demoted at write time (`absent_experience`), and the orchestrator
+  drops `absent_experience`/`boundary_violation` records before the experience
+  split so they reach *no* prompt block. Kept on disk for audit; never surfaced
+  as one of her recollections. This is what stops her making a personal
+  experience out of something she did not live.
+- **Time is felt, not prescribed.** `astra/temporal.py` renders the gap since
+  `store.mark_present()` was last called, long-open questions, and long works.
+  It is descriptive only - a gap is reported as elapsed time, never as a feeling
+  the model must have. `mark_present()` is called on a real turn / explicit
+  command only; `build_prompt` must never call it, or assembling the prompt would
+  erase the very gap it is reporting (asserted in `tests/test_temporal.py`).
+  `presence.json` is a fact about time, not a memory: keep it out of the stores.
+- **`/library-scan` is read-only; the number it prints is the pick.** It lists
+  the books folder (default `storage/library/books`, overridable) and never
+  ingests. `/read add <n>` selects by that index, so a filename with spaces is
+  never typed. A full path must be quoted; `split_args()` in `main.py` keeps
+  quotes whole (`user_input.split()` did not, which is what broke spaced paths).
+  A title override after the path renames the work in place via `save_state`,
+  so it never spawns a duplicate.
 - **Time is an index, not a partition.** Memories stay in the model files; the
   date grouping is computed on read by `timeline()` / `get_timeline()` /
   `get_period()` and surfaced via `/timeline`. Do not split the stores into
