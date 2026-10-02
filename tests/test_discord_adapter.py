@@ -20,16 +20,22 @@ class FakeTransport:
         self.fail = fail
         self.sent = []
         self.fetches = 0
+        self.typing_calls = []
 
     def fetch_messages(self, channel_id, *, after=None, limit=20):
         self.fetches += 1
         return {"ok": True, "data": list(self.messages)}
 
-    def send_message(self, channel_id, content):
+    def send_message(self, channel_id, content, *, reference=None):
         if self.fail:
             return {"ok": False, "error": "http 500"}
-        self.sent.append(content)
+        self.sent.append({"channel": channel_id, "content": content,
+                          "reference": reference})
         return {"ok": True, "data": {"id": "1"}}
+
+    def send_typing(self, channel_id):
+        self.typing_calls.append(channel_id)
+        return {"ok": True, "data": {}}
 
 
 class FakeRouter:
@@ -44,11 +50,14 @@ class FakeRouter:
         return {"text": self.reply, "handled": True, "source": source}
 
 
-def _msg(mid, content, *, bot=False):
+def _msg(mid, content, *, bot=False, channel_id=None):
     author = {"id": "u1"}
     if bot:
         author["bot"] = True
-    return {"id": mid, "content": content, "author": author}
+    msg = {"id": mid, "content": content, "author": author}
+    if channel_id:
+        msg["channel_id"] = channel_id
+    return msg
 
 
 class TestFormatting(unittest.TestCase):
@@ -62,6 +71,42 @@ class TestFormatting(unittest.TestCase):
 
     def test_short_text_is_unchanged(self):
         self.assertEqual(da.format_for_discord("hello"), "hello")
+
+
+class TestMessageSplitting(unittest.TestCase):
+    def test_short_text_not_split(self):
+        parts = da._split_message("hello world", limit=100)
+        self.assertEqual(parts, ["hello world"])
+
+    def test_empty_text_returns_placeholder(self):
+        parts = da._split_message("", limit=100)
+        self.assertEqual(parts, ["(no output)"])
+
+    def test_splits_on_paragraph_boundary(self):
+        text = "a" * 800 + "\n\n" + "b" * 800
+        parts = da._split_message(text, limit=1000)
+        self.assertEqual(len(parts), 2)
+        self.assertTrue(parts[0].startswith("a"))
+        self.assertTrue(parts[1].startswith("b"))
+
+    def test_splits_on_sentence_boundary(self):
+        text = "First sentence. " * 60 + "Second sentence. " * 60
+        parts = da._split_message(text, limit=1000)
+        self.assertGreater(len(parts), 1)
+        for part in parts:
+            self.assertLessEqual(len(part), 1000)
+
+    def test_hard_split_when_no_good_boundary(self):
+        text = "x" * 2500
+        parts = da._split_message(text, limit=1000)
+        self.assertGreater(len(parts), 1)
+        self.assertEqual("".join(parts), text)
+
+    def test_respects_limit(self):
+        text = "word " * 500
+        parts = da._split_message(text, limit=500)
+        for part in parts:
+            self.assertLessEqual(len(part), 500)
 
 
 class TestAdapter(unittest.TestCase):
@@ -93,7 +138,8 @@ class TestAdapter(unittest.TestCase):
         report = adapter.poll_once()
         self.assertEqual(report["handled"], 1)
         self.assertEqual(router.calls, [("hi there", "discord")])
-        self.assertEqual(transport.sent, ["hello back"])
+        self.assertEqual(len(transport.sent), 1)
+        self.assertEqual(transport.sent[0]["content"], "hello back")
         self.assertEqual(adapter.delivered, 1)
 
     def test_bot_messages_are_ignored(self):
@@ -130,6 +176,64 @@ class TestAdapter(unittest.TestCase):
         fresh.poll_once()  # not first_run now
         # No messages answered because cursor is ahead, but no error either.
         self.assertIsNone(fresh.last_error)
+
+    def test_typing_indicator_sent_before_reply(self):
+        transport = FakeTransport([_msg("1", "seed")])
+        router = FakeRouter(reply="hello")
+        adapter = self._adapter(transport, router)
+        adapter.poll_once()  # baseline
+        transport.messages = [_msg("2", "hi")]
+        adapter.poll_once()
+        # Typing was called for the channel.
+        self.assertIn("c1", transport.typing_calls)
+
+    def test_reply_references_original_message(self):
+        transport = FakeTransport([_msg("1", "seed")])
+        router = FakeRouter(reply="hello back")
+        adapter = self._adapter(transport, router)
+        adapter.poll_once()  # baseline
+        transport.messages = [_msg("42", "hi")]
+        adapter.poll_once()
+        # The reply should reference message "42".
+        self.assertEqual(len(transport.sent), 1)
+        self.assertEqual(transport.sent[0]["reference"], "42")
+
+    def test_long_message_is_split(self):
+        transport = FakeTransport([_msg("1", "seed")])
+        router = FakeRouter(reply="x" * 3000)
+        adapter = self._adapter(transport, router)
+        adapter.poll_once()  # baseline
+        transport.messages = [_msg("2", "hi")]
+        adapter.poll_once()
+        # Should be split into multiple messages.
+        self.assertGreater(len(transport.sent), 1)
+        # First part references the original message.
+        self.assertEqual(transport.sent[0]["reference"], "2")
+        # Subsequent parts do not reference.
+        for part in transport.sent[1:]:
+            self.assertIsNone(part["reference"])
+        self.assertEqual(adapter.delivered, 1)
+
+    def test_thread_message_replied_in_thread(self):
+        transport = FakeTransport([_msg("1", "seed")])
+        router = FakeRouter(reply="hello")
+        adapter = self._adapter(transport, router)
+        adapter.poll_once()  # baseline
+        # Message arrives in a thread (different channel_id).
+        transport.messages = [_msg("2", "hi", channel_id="thread_123")]
+        adapter.poll_once()
+        # Reply should go to the thread channel, not the configured channel.
+        self.assertEqual(transport.sent[0]["channel"], "thread_123")
+        # Typing should also be sent in the thread.
+        self.assertIn("thread_123", transport.typing_calls)
+
+    def test_counters_are_thread_safe(self):
+        transport = FakeTransport([_msg("1", "seed")])
+        adapter = self._adapter(transport, FakeRouter())
+        adapter.poll_once()
+        # Properties should work.
+        self.assertEqual(adapter.delivered, 0)
+        self.assertEqual(adapter.failed, 0)
 
 
 class TestBuilder(unittest.TestCase):
