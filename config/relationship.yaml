@@ -57,3 +57,5 @@ background_processes:
     - "astra"
     - "python"
     - "pythonw"
+    - "steam"
+    - "smartscreen"
