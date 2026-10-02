@@ -144,6 +144,40 @@ class TestAbsentExperienceGuard(_SelfhoodCase):
             mem = self.add_self(text, typ, confidence=0.9)
             self.assertFalse(mem.get("absent_experience"), text)
 
+    def test_an_owned_trait_is_recognised(self):
+        for text in ("I have always loved horror movies.",
+                     "I've always been a night owl.",
+                     "I'm naturally curious about systems.",
+                     "That's just who I am.",
+                     "I'm the kind of person who reads manuals."):
+            self.assertTrue(selfhood.claims_owned_trait(text), text)
+
+    def test_a_plain_discovery_is_not_an_owned_trait(self):
+        for text in ("I love horror movies.",
+                     "I read a passage about deep-sea currents.",
+                     "I tend to enjoy quiet work.",
+                     "I noticed the gate matters."):
+            self.assertFalse(selfhood.claims_owned_trait(text), text)
+
+    def test_repetition_does_not_promote_an_owned_trait_to_a_fact(self):
+        # The failure the brief names: taking Roum's stated trait and making it
+        # settled self-knowledge. However often "I have always been X" is
+        # repeated, it never becomes a durable self_fact/self_preference - it
+        # stays an observation to weigh, no matter how much it is reinforced.
+        for _ in range(6):
+            mem = self.add_self("I have always loved horror movies.",
+                                "self_preference", confidence=0.9)
+        self.assertEqual(mem["type"], "self_observation")
+        self.assertTrue(mem.get("owned_trait_claim"))
+
+    def test_a_repeated_discovery_still_promotes_normally(self):
+        # The guard is about claimed history, not about preference as such: a
+        # trait Astra actually keeps expressing can still become durable.
+        for _ in range(3):
+            mem = self.add_self("I love horror movies.", "self_preference",
+                                confidence=0.9)
+        self.assertEqual(mem["type"], "self_preference")
+
     def test_a_quoted_passage_is_not_her_experience(self):
         # Reading records keep an excerpt; a body inside the book's narration is
         # the book's, not Astra's.

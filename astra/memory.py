@@ -1787,6 +1787,12 @@ class TripleMemoryStore:
                     return self._store_human_claim(
                         content, source, keywords, tags, confidence, extra)
                 prior = self._find_duplicate("self", "self_observation", content)
+                # A claim of an *owned trait* ("I have always been X") asserts a
+                # history, so repetition alone must not promote it into settled
+                # self-knowledge. It is evidence to notice, not a fact to hold.
+                owned = selfhood.claims_owned_trait(content)
+                if owned:
+                    extra.setdefault("owned_trait_claim", True)
                 if prior is None:
                     with self._transaction(target_model):
                         observed = self._build_memory(
@@ -1799,8 +1805,10 @@ class TripleMemoryStore:
                     return observed["id"]
                 with self._transaction(target_model):
                     self._reinforce(prior, _clean_str_list(keywords), _clean_str_list(tags))
-                    if is_durable_self_memory(mem_type, source,
-                                              int(prior.get("reinforcement_count", 1))):
+                    if (not owned and not prior.get("owned_trait_claim")
+                            and is_durable_self_memory(
+                                mem_type, source,
+                                int(prior.get("reinforcement_count", 1)))):
                         prior["type"] = mem_type
                         prior["promoted_at"] = _now()
                         prior["confidence"] = _clamp_confidence(confidence)
