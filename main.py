@@ -753,6 +753,12 @@ class ChatSession:
             self._emit(block)
         else:
             self._emit("  (No gap worth naming; nothing long-running right now.)")
+        pull = temporal.impatience_prompt_block(
+            open_questions=[q for q in questions if inquiry.is_open_question(q)],
+            works=works,
+        )
+        if pull:
+            self._emit(pull)
 
     def _display_library(self) -> None:
         """The local works Astra has ingested, and her position in each."""

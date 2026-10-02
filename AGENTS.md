@@ -23,7 +23,7 @@ HTTP stub, and consolidation tests call the decision layer directly.
 | `astra/relational.py` | Astra's Roum-specific command-fulfillment preference (accumulated state) |
 | `astra/affect.py` | Astra's current *experiential* affect (temporary, derived from experiences) |
 | `astra/selfhood.py` | self-knowledge: the non-human boundary, the epistemic stance, absent-experience guard, derived self-portrait, formative/traumatic experience classification (pure, no I/O) |
-| `astra/temporal.py` | Astra's sense of elapsed time: session gaps, long-open questions, long projects (pure render, never stored) |
+| `astra/temporal.py` | Astra's sense of elapsed time: session gaps, long-open questions, long projects, and the impatience pull of stalled things (pure render, never stored) |
 | `astra/orchestrator.py` | prompt assembly and retrieval |
 | `astra/consolidator.py` | turn -> governed memory decisions |
 | `astra/inquiry.py` | questions, uncertainty, and revisable work knowledge (Slice 2) |
@@ -127,6 +127,17 @@ Top-level `memory_store.py`, `orchestrator.py`, `elysium.py`, `consolidator.py`,
   command only; `build_prompt` must never call it, or assembling the prompt would
   erase the very gap it is reporting (asserted in `tests/test_temporal.py`).
   `presence.json` is a fact about time, not a memory: keep it out of the stores.
+- **Impatience is a stall, not a clock.** `temporal.impatience_*` derives a pull
+  from a *specific* unresolved thing that stopped moving (an open question past
+  `IMPATIENCE_MIN_STALL_DAYS`, a partway-read work), never from time since Roum
+  spoke. Derived on read, so progress cancels it structurally. `_set_question_status`
+  stamps `last_progress_at` on any movement (reopen/re-examine counts), which is
+  what resets the stall. Patience is the inverse and lives in `selfhood` as a
+  derived disposition - friction in a work she then *finished*, repeated - never
+  asserted. Boredom is deliberately absent: no consumer exists, and a
+  `boredom = time_since_last_interaction` would be the arbitrary timer the brief
+  forbids. `temporal.BOREDOM_IMPLEMENTED` records that as a decision; only add it
+  with a real consumer that gates a concrete choice.
 - **`/library-scan` is read-only; the number it prints is the pick.** It lists
   the books folder (default `storage/library/books`, overridable) and never
   ingests. `/read add <n>` selects by that index, so a filename with spaces is
