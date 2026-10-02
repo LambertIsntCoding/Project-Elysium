@@ -260,6 +260,93 @@ class TestLiveAffectPersists(_LiveAffectCase):
 
 
 # ---------------------------------------------------------------------
+# 11. Modulation: Astra's own state shapes how the same words land
+# ---------------------------------------------------------------------
+class TestStateModulation(_LiveAffectCase):
+    def test_happy_state_savours_a_joke_more_than_a_low_one(self):
+        neutral = affect.evaluate_turn("That joke was hilarious, haha", "")
+        happy = affect.evaluate_turn(
+            "That joke was hilarious, haha", "",
+            state=affect.record_event(None, affect.EXPERIENCE_HAPPY,
+                                      intensity=1.0, significance=1.0))
+        low = affect.evaluate_turn(
+            "That joke was hilarious, haha", "",
+            state=affect.record_event(None, affect.EXPERIENCE_SAD,
+                                      intensity=1.0, significance=1.0))
+        self.assertGreater(happy["intensity"], neutral["intensity"])
+        self.assertGreater(neutral["intensity"], low["intensity"])
+        # A real event still lands, however closed she is.
+        self.assertGreaterEqual(low["intensity"], affect.LIVE_REACTIVITY_MIN_INTENSITY)
+
+    def test_weary_state_is_harder_to_interest(self):
+        neutral = affect.evaluate_turn("What if time is a side effect?", "")
+        weary = affect.evaluate_turn(
+            "What if time is a side effect?", "",
+            state=affect.record_event(None, affect.EXPERIENCE_WEARY,
+                                      intensity=1.0, significance=1.0))
+        self.assertGreater(neutral["intensity"], weary["intensity"])
+
+    def test_criticism_lands_harder_when_already_frustrated(self):
+        neutral = affect.evaluate_turn("That's wrong, that's not what I asked.", "")
+        hot = affect.evaluate_turn(
+            "That's wrong, that's not what I asked.", "",
+            state=affect.record_event(None, affect.EXPERIENCE_FRUSTRATION,
+                                      intensity=1.0, significance=1.0))
+        self.assertGreater(hot["intensity"], neutral["intensity"])
+
+    def test_same_joke_moves_a_happy_astra_further_live(self):
+        """The modulation shows up end-to-end, not just in the pure layer."""
+        low = self.session
+        low.handle("That joke was hilarious, haha")
+        low_delta = low.orchestrator.store.current_affect()["happy"]  # starts from 0
+
+        other = ChatSession(
+            CompanionOrchestrator(TripleMemoryStore(data_dir=tempfile.mkdtemp()),
+                                  config_dir=CONFIG_DIR),
+            CommandStore(data_dir=self.tmp), consolidator=None,
+            output_fn=lambda *_: None)
+        other.orchestrator.query_gemma = lambda *a, **k: "Sure."
+        other.orchestrator.store.record_experience(
+            "Something lovely happened.", kind="happy",
+            intensity=1.0, significance=1.0)
+        before = other.orchestrator.store.current_affect()["happy"]
+        other.handle("That joke was hilarious, haha")
+        other_delta = other.orchestrator.store.current_affect()["happy"] - before
+        # Astra already in a good mood is moved further by the same joke.
+        self.assertGreater(other_delta, low_delta)
+
+
+# ---------------------------------------------------------------------
+# 12. Repetition: a conversation that goes in circles wears down
+# ---------------------------------------------------------------------
+class TestRepetition(_LiveAffectCase):
+    def test_echoing_turns_eventually_register_a_dip(self):
+        for _ in range(affect.LIVE_REPETITION_MIN - 1):
+            self.session.handle("Tell me about tides again.")
+            self.assertTrue(affect.is_neutral(self.state()))
+        self.session.handle("Tell me about tides again.")
+        state = self.state()
+        self.assertFalse(affect.is_neutral(state))
+        self.assertGreater(state["event_counts"].get(affect.LIVE_REPETITION, 0), 0)
+        # Repetition is felt, not remembered.
+        self.assertEqual(self.experiences(), [])
+
+    def test_distinct_turns_never_register_as_repetitive(self):
+        for text in ("How are you?", "What is two plus two?",
+                     "Explain gravity.", "Who wrote Hamlet?"):
+            self.session.handle(text)
+        self.assertTrue(affect.is_neutral(self.state()))
+
+    def test_a_real_event_does_not_count_as_repetition(self):
+        """A repeated joke is still a joke, not a rut."""
+        for _ in range(4):
+            self.session.handle("That joke was hilarious, haha")
+        counts = self.state()["event_counts"]
+        self.assertEqual(counts.get(affect.LIVE_REPETITION, 0), 0)
+        self.assertGreater(counts.get(affect.LIVE_HUMOUR, 0), 0)
+
+
+# ---------------------------------------------------------------------
 # 10. Application authority / validated no-op
 # ---------------------------------------------------------------------
 class TestApplicationAuthority(unittest.TestCase):
@@ -280,6 +367,16 @@ class TestApplicationAuthority(unittest.TestCase):
         self.assertIsNone(self.store.apply_live_affect_event(None))
         self.assertIsNone(self.store.apply_live_affect_event("nonsense"))
         self.assertIsNone(self.store.apply_live_affect_event({}))
+
+    def test_live_repetition_is_a_valid_live_kind(self):
+        # The one live-only kind (not an experience alias) must be accepted.
+        state = self.store.apply_live_affect_event(
+            {"kind": affect.LIVE_REPETITION, "intensity": 0.6,
+             "significance": 0.4, "text": "circles"})
+        self.assertIsNotNone(state)
+        self.assertGreater(state["event_counts"].get(affect.LIVE_REPETITION, 0), 0)
+        self.assertTrue(any(affect.affect_memory_filter(m) for m in
+                            self.store.get_memories("self", status=None)))
 
 
 if __name__ == "__main__":

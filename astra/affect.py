@@ -82,6 +82,11 @@ EXPERIENCE_TENDER = "tender"
 EXPERIENCE_WEARY = "weary"
 EXPERIENCE_CALM = "calm"
 
+# Live-only event kinds are named before the delta table so it can reference
+# them. ``LIVE_REPETITION`` is not an experience - nobody remembers "the chat
+# was a bit dull" - but it is felt as a drop in pull and depth.
+LIVE_REPETITION = "live_repetition"
+
 # How each kind of experience moves the current state. Deliberately small: a
 # single experience nudges, it does not saturate. Significance and intensity
 # scale the nudge (see ``record_event``).
@@ -111,6 +116,13 @@ _KIND_DELTAS: Dict[str, Dict[str, float]] = {
     EXPERIENCE_WEARY: {"weary": 0.16, "concentration": -0.12,
                        "engagement": -0.06, "calm": -0.03},
     EXPERIENCE_CALM: {"calm": 0.16, "angry": -0.08, "frustration": -0.06},
+    # Not an experience: the dip from a conversation that has become repetitive.
+    # It lowers pull and depth where she had any, and adds a little weariness so
+    # it is still felt from neutral (the accumulator is floored at zero, so a
+    # decrease-only event would otherwise be invisible). Only ever produced by
+    # the live layer (see ``LIVE_REPETITION``).
+    LIVE_REPETITION: {"engagement": -0.06, "curiosity": -0.04,
+                      "concentration": -0.05, "weary": 0.05},
 }
 
 # The kinds below can also be *felt directly*, without a durable experience: an
@@ -135,6 +147,41 @@ LIVE_EVENT_MIN_SCORE = 0.6
 LIVE_INTENSITY_CAP = 0.7
 LIVE_SIGNIFICANCE = 0.45
 LIVE_NEGATIVE_SIGNIFICANCE = 0.5
+
+# Astra's *own* current state modulates the reaction, so the same words do not
+# land identically twice. She is not a fixed classifier: an interested, engaged
+# turn leans further into interest; a weary or frustrated turn is harder to
+# interest and more easily pushed away; a happy turn savours a joke; a tender,
+# invested turn is moved more by what Roum shares. The modulation is a single
+# scalar (kept gentle) so it nudges rather than overrides the event.
+LIVE_REACTIVITY_FLOOR = 0.75
+LIVE_REACTIVITY_CEIL = 1.3
+# A real event always lands with at least this much intensity, however closed
+# Astra currently is: modulation changes *how much* it moves her, never whether
+# it happened. Without this, a low mood could make her miss events entirely.
+LIVE_REACTIVITY_MIN_INTENSITY = 0.35
+# What "opening up to" versus "closing down to" each event kind looks like, read
+# from her current components. Each tuple is (opening, closing).
+_LIVE_REACTIVITY: Dict[str, tuple] = {
+    LIVE_HUMOUR: (("happy", "calm"), ("sad", "weary", "angry")),
+    LIVE_INTEREST: (("curiosity", "engagement"), ("weary", "frustration", "sad")),
+    LIVE_POSITIVE: (("engagement", "emotional_investment"),
+                    ("weary", "frustration")),
+    LIVE_CRITICISM: (("frustration", "angry"), ("calm",)),
+    LIVE_SURPRISE: (("anticipation", "curiosity"), ("concentration",)),
+    LIVE_DISCLOSURE: (("emotional_investment", "tender"), ("weary",)),
+    LIVE_REPETITION: (("weary", "frustration"), ("curiosity", "engagement")),
+}
+
+# Repetition/habituation: a string of turns that echo each other (and do not
+# carry a real event) slowly wears the conversation down. It is felt on the
+# *third* such turn in a row, and only weakly, so an ordinary back-and-forth
+# never registers. State is pure input, returned by :func:`evaluate_turn`.
+LIVE_REPETITION_MIN = 3
+LIVE_REPETITION_SIMILARITY = 0.7
+LIVE_REPETITION_INTENSITY = 0.6
+LIVE_REPETITION_SIGNIFICANCE = 0.4
+_LIVE_TOKEN_RE = re.compile(r"[a-z0-9']+")
 
 # Narrow markers for the live semantic layer. Kept as a few precise signals, not
 # a "giant keyword list": each detects a structural feature of the turn (an
@@ -333,16 +380,78 @@ def record_event(state: Any, kind: str, *, intensity: float = 0.5,
 # ---------------------------------------------------------------------
 # Live conversational affect
 # ---------------------------------------------------------------------
-def evaluate_turn(user_input: Any, response: Any = "") -> Optional[Dict[str, Any]]:
+_LIVE_STOPWORDS = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "can", "do",
+    "does", "for", "from", "get", "had", "has", "have", "how", "i", "if",
+    "in", "is", "it", "its", "just", "like", "me", "my", "no", "not", "of",
+    "on", "or", "our", "so", "that", "the", "their", "them", "then", "there",
+    "these", "they", "this", "to", "up", "us", "was", "we", "were", "what",
+    "when", "where", "which", "who", "why", "will", "with", "you", "your",
+})
+
+
+def _live_tokens(text: Any) -> frozenset:
+    """Content tokens of a turn, for a cheap repetition check."""
+    return frozenset(
+        tok for tok in _LIVE_TOKEN_RE.findall(str(text or "").casefold())
+        if len(tok) > 1 and tok not in _LIVE_STOPWORDS
+    )
+
+
+def _is_repetitive(tokens: frozenset, history: Any) -> bool:
+    """True when ``tokens`` echoes enough of the recent turns to count as a rut.
+
+    A single echo is not enough: ``LIVE_REPETITION_MIN`` turns of the same thing
+    are needed, so an ordinary back-and-forth never registers.
+    """
+    if not tokens or not history:
+        return False
+    matches = 0
+    for previous in list(history)[-3:]:
+        prior = _live_tokens(previous)
+        if prior and len(tokens & prior) / len(tokens) >= LIVE_REPETITION_SIMILARITY:
+            matches += 1
+    return matches >= LIVE_REPETITION_MIN - 1
+
+
+def _reactivity(state: Any, kind: str) -> float:
+    """How strongly Astra's *current* state lets ``kind`` land.
+
+    A scalar in ``[LIVE_REACTIVITY_FLOOR, LIVE_REACTIVITY_CEIL]``: high when her
+    current condition is already open to this event, low when she is closed to
+    it. Neutral state gives 1.0, so the base intensities are the neutral-case
+    reaction. This is what makes her response to the same words depend on how
+    she already is, without letting her state override the event entirely.
+    """
+    spec = _LIVE_REACTIVITY.get(kind)
+    if not spec:
+        return 1.0
+    opening, closing = spec
+    state = _coerce_state(state)
+    up = max((_clamp(state.get(name)) for name in opening), default=0.0)
+    down = max((_clamp(state.get(name)) for name in closing), default=0.0)
+    return max(LIVE_REACTIVITY_FLOOR,
+               min(LIVE_REACTIVITY_CEIL, 1.0 + up - down))
+
+
+def evaluate_turn(user_input: Any, response: Any = "", *,
+                  state: Any = None, history: Any = None) -> Optional[Dict[str, Any]]:
     """Decide whether a live conversation turn carries an affective event.
 
     This is the semantic layer the live path was missing. It is *pure*: it reads
-    the turn's text and returns an event description, or ``None`` for an ordinary
-    turn. It never touches the store, the model, or any state, and it is not
+    the turn's text (and, optionally, Astra's current state and the recent user
+    turns) and returns an event description, or ``None`` for an ordinary turn.
+    It never touches the store, the model, or any state, and it is not
     authoritative - the application decides whether to apply the event (see
     ``TripleMemoryStore.apply_live_affect_event``). The generated prose is never
     treated as a claim about how Astra feels; at most a clear acknowledgement in
     it corroborates a positive turn.
+
+    Astra's own condition modulates the reaction: ``state`` scales the event's
+    intensity through :func:`_reactivity`, so the same remark lands differently
+    when she is already engaged, weary, or calm. ``history`` (recent user turns)
+    lets a run of echoing, eventless turns register as a mild
+    :data:`LIVE_REPETITION` dip.
 
     At most one event is returned per turn, chosen by priority, and only when it
     clears ``LIVE_EVENT_MIN_SCORE``. A neutral or generic turn (a bare "hello",
@@ -359,12 +468,19 @@ def evaluate_turn(user_input: Any, response: Any = "") -> Optional[Dict[str, Any
 
     def _event(kind: str, intensity: float, reason: str,
                significance: float = LIVE_SIGNIFICANCE) -> Optional[Dict[str, Any]]:
-        intensity = min(LIVE_INTENSITY_CAP, max(0.0, float(intensity)))
-        if intensity < LIVE_EVENT_MIN_SCORE:
+        # The *presence* gate is state-independent: whether an event happened is
+        # a property of the turn, not of how Astra feels. Her current state then
+        # scales the magnitude (floored, so a real event always lands a little),
+        # which is what makes the same words move her differently over time.
+        base = float(intensity)
+        if base < LIVE_EVENT_MIN_SCORE:
             return None
+        modulated = base * _reactivity(state, kind)
+        modulated = min(LIVE_INTENSITY_CAP,
+                        max(LIVE_REACTIVITY_MIN_INTENSITY, modulated))
         return {
             "kind": kind,
-            "intensity": round(intensity, 4),
+            "intensity": round(modulated, 4),
             "significance": round(float(significance), 4),
             "text": reason,
             "reason": reason,
@@ -402,6 +518,13 @@ def evaluate_turn(user_input: Any, response: Any = "") -> Optional[Dict[str, Any
     if _ACKNOWLEDGE_RE.search(text) or _ACKNOWLEDGE_RE.search(resp):
         return _event(LIVE_POSITIVE, 0.6,
                       "Roum acknowledged something that worked.")
+
+    # Nothing real happened, but the conversation may have gone in circles.
+    tokens = _live_tokens(text)
+    if _is_repetitive(tokens, history):
+        return _event(LIVE_REPETITION, LIVE_REPETITION_INTENSITY,
+                      "The conversation has become repetitive.",
+                      LIVE_REPETITION_SIGNIFICANCE)
 
     return None
 
@@ -553,6 +676,7 @@ __all__ = [
     "LIVE_FAILURE",
     "LIVE_SURPRISE",
     "LIVE_DISCLOSURE",
+    "LIVE_REPETITION",
     "LIVE_EVENT_MIN_SCORE",
     "is_neutral",
     "record_event",

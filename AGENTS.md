@@ -254,6 +254,32 @@ Top-level `memory_store.py`, `orchestrator.py`, `elysium.py`, `consolidator.py`,
   `experience` as a consolidator classification, and do not route affect
   through the consolidator: the consolidator still decides only durable memory.
   Decay is documented as a known limitation below.
+- **Her own state modulates the reaction; the reaction is not a fixed
+  classifier.** `evaluate_turn` takes the current state and scales each event's
+  magnitude through `_reactivity`, so the same words do not land identically
+  twice: an interested, engaged turn leans further into interest, a weary one
+  is harder to interest, a happy turn savours a joke, an already-frustrated turn
+  is pushed further by criticism, a tender/invested turn is moved more by what
+  Roum shares. Two rules keep this from becoming self-fulfilling: the *presence*
+  gate is state-independent (whether an event happened is a property of the
+  turn, not of her mood), and the modulated magnitude is floored at
+  `LIVE_REACTIVITY_MIN_INTENSITY` (a real event always lands a little, so a low
+  mood can never make her miss it). The scalar is bounded
+  (`LIVE_REACTIVITY_FLOOR`/`CEIL`) and the modulation map (`_LIVE_REACTIVITY`)
+  reads named components, so it is auditable. The live path reads the state as a
+  *preview* of the condition this turn will leave behind
+  (`TripleMemoryStore.current_affect_after`, pure - it writes nothing), so the
+  modulation reflects where she is now, not a stale pre-turn value.
+- **A conversation that goes in circles is felt.** `evaluate_turn` also takes
+  the recent user turns. When an *eventless* turn strongly echoes
+  (`LIVE_REPETITION_SIMILARITY`) the last turns, and `LIVE_REPETITION_MIN` such
+  turns have accrued, it registers a mild `LIVE_REPETITION` event. This is a
+  live-only kind - not an experience alias - and its delta adds a little
+  `weary` as well as lowering pull and depth, because the accumulator is floored
+  at zero and a decrease-only event would be invisible from neutral. It is
+  checked *last*, so a real event always wins: a repeated joke is still a joke,
+  not a rut. History is session scratch (`ChatSession._recent_user_turns`), not
+  memory, and is passed in as pure input - the evaluator never reads it itself.
 - **Affect decay is lazy, and that is a known limitation for a live state.**
   `_decay` only runs when the *next* event fires, so a state written on the last
   turn and then read by `build_prompt` is shown at its last-written magnitude
@@ -378,8 +404,8 @@ negative) covers identity stability, correction adherence, work attribution,
 grounded literary discussion, uncertainty, self-reinforcement, ordinary
 conversation, provenance/authority/read-only, reading-not-autobiography, the
 journal, working memory, and reading concentration/pace. Tests assert behaviour
-and authority boundaries, not prompt strings. Full suite: 467 tests (the live
-affect path adds `tests/test_live_affect.py`, 22 cases).
+and authority boundaries, not prompt strings. Full suite: 475 tests (the live
+affect path adds `tests/test_live_affect.py`, 30 cases).
 
 ### Reading progress is measured in words
 
