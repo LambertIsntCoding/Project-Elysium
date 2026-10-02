@@ -357,3 +357,49 @@ the reader's live path), and `library.word_measure(state)` derives the counts
 read-only for a legacy record so opening an old library never rewrites its state
 file. The character offset remains the truth for resuming and for the
 byte-for-byte read guarantee; the word count is only how progress is shown.
+
+### Response latency is a design constraint
+
+The turn path is kept fast without changing what is stored or rendered:
+
+- **Prompt building is read-only and lean on the live path.** `build_prompt`
+  (and `ChatSession.handle`) call `build_prompt_with_diagnostics(..., detailed=False)`.
+  The lean diagnostics keep the fields the turn consumes (`injected_ids` for
+  `note_retrieval`) and skip the O(store) developer analyses (`candidates`,
+  affinity/affect breakdowns, `prompt_sections`, `authority_trace`) that only
+  `/debug` reads. The prompt text is byte-for-byte identical either way, and the
+  returned dict always carries every key. Do not remove the `detailed` flag or
+  make the live path compute the full trace.
+- **Fast copies, not `copy.deepcopy`, on the read path.** `memory._deep_copy`
+  rebuilds the dict/list JSON shapes memory records actually hold; `_present`
+  and the `_transaction` snapshot use it. It is equivalent for those shapes but
+  far cheaper (deepcopy's memo/dispatch dominates once thousands of records are
+  materialised per turn). Keep record values JSON-shaped; a new field holding an
+  arbitrary object would break this.
+- **`_transaction` skips a no-op write.** It snapshots, mutates, and persists
+  only if the list actually changed, so an idle maintenance sweep does not
+  re-serialise a multi-MB model. The snapshot (rollback) is unchanged.
+- **Pure text analysis is cached.** `lru_cache` wraps the stemmer, the
+  stemmed/stopword tokenizers, and the selfhood boundary predicates (see the
+  `_*_cached` helpers). They are pure functions of a string, and the same record
+  content is re-analysed every turn and against every candidate. The public
+  functions still accept any input (they `str()` first); only the cached inner
+  functions require a string. Cache sizes are sized above the record count
+  (~8k) so a full pass does not thrash. Do not pass unhashable arguments to the
+  public wrappers.
+- **Consolidation is off the critical path in real runs.** `build_session`
+  passes `background_consolidation=True`, so the per-turn extraction (a second
+  model call) is queued to one worker thread and processed in submission order;
+  the reply is not delayed by it. The thread is drained on exit (`ChatSession.run`
+  finally, `close()`, and an `atexit` hook), so no memory is lost. A plain
+  `ChatSession(...)` stays synchronous and deterministic (the tests rely on
+  that), and `_record_turn` still runs the consolidator inline when the flag is
+  off.
+- **`/memories`, `/search` and `/debug` cap long listings** at `MEMORY_VIEW_LIMIT`
+  with an explicit "... and N more" footer. This is a display cap only - nothing
+  is hidden from the store or from the retrieval path.
+
+Measured on the real store (~8k records): live prompt build ~277ms -> ~57ms,
+`record_use` ~130ms -> ~108ms, `add_memory` ~247ms -> ~160ms, idle maintenance
+~403ms -> ~97ms; a real turn no longer blocks on the extraction model call.
+
