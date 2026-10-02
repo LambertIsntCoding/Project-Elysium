@@ -61,6 +61,9 @@ SOURCE_TIERS: Dict[str, int] = {
     "inferred": 1,
     "speculation": 1,
 }
+# An explicit behavioural constraint on Astra sits at the very top: it is a
+# runtime rule the application enforces, not knowledge she may weigh.
+SOURCE_TIERS["authoritative_constraint"] = 5
 DEFAULT_TIER = 2
 
 # Multiplier applied to confidence when computing effective strength.
@@ -71,6 +74,7 @@ SOURCE_FACTOR: Dict[str, float] = {
     "supersession": 0.95,
     "behavioral_pattern": 0.80,
     "experiential": 0.80,
+    "authoritative_constraint": 0.95,   # explicit behavioural constraint on Astra
     "ai_extraction": 0.65,
     "ai_inference": 0.50,
     "inferred": 0.50,
@@ -83,7 +87,8 @@ DEFAULT_SOURCE_FACTOR = 0.65
 # everything else is Astra's own generation and is handled separately (see
 # ``is_sourced``), so an unsourced sentence can never be presented as fact.
 SOURCED_SOURCES = {"explicit_user_statement", "user_correction",
-                   "user_correction_implicit", "supersession"}
+                   "user_correction_implicit", "supersession",
+                   "authoritative_constraint"}
 
 # Provenance values that are Astra's own generation and must never be promoted
 # to a confirmed user fact just because they were stored (section 14).
@@ -120,6 +125,7 @@ def is_sourced(mem: Dict[str, Any]) -> bool:
 # and explicit preferences/boundaries are important; a one-off observation is
 # not. Multiplied by type so an explicit fact can still be important.
 IMPORTANCE_BY_TYPE: Dict[str, float] = {
+    "authoritative_constraint": 0.99,
     "correction": 0.95,
     "explicit_preference": 0.85,
     "explicit_fact": 0.80,
@@ -412,7 +418,23 @@ _FEEDBACK_TAGS = {"personality_feedback", "style_critique", "style_preference",
 # Types that encode a revisable behavioural stance, and so may be collapsed as
 # restatements. Plain facts are excluded: two similar facts are still two facts.
 _COLLAPSIBLE_TYPES = {"explicit_preference", "correction", "behavioral_pattern",
-                      "self_preference", "self_observation", "relationship_observation"}
+                      "self_preference", "self_observation", "relationship_observation",
+                      # An explicit behavioural constraint is a stance like the
+                      # others: restating the same correction with new wording
+                      # should collapse onto the newer one, not accumulate.
+                      "authoritative_constraint"}
+
+# A behavioural stance is the same kind of thing whether it arrived as a plain
+# observation, a preference, or an authoritative constraint - the newer wording
+# supersedes the older. Comparing by *family* (rather than exact type) is what
+# lets a correction that was promoted from a self-observation still collapse
+# against its earlier form.
+_STANCE_TYPES = _COLLAPSIBLE_TYPES | {"relationship_boundary"}
+
+
+def _stance_family(mem: Dict[str, Any]) -> str:
+    mem_type = str(mem.get("type") or "")
+    return "stance" if mem_type in _STANCE_TYPES else mem_type
 
 
 def _feedback_keywords(mem: Dict[str, Any]) -> set:
@@ -444,7 +466,8 @@ def detect_restatement(a: Dict[str, Any], b: Dict[str, Any]) -> Optional[str]:
     if _matches(_TEMPORARY_PATTERNS, str(a.get("content") or "").casefold()) or \
             _matches(_TEMPORARY_PATTERNS, str(b.get("content") or "").casefold()):
         return None
-    if str(a.get("type") or "") != str(b.get("type") or ""):
+    if str(a.get("type") or "") != str(b.get("type") or "") \
+            and _stance_family(a) != _stance_family(b):
         return None
 
     shared_tags = (set(_clean_str_list(a.get("tags"))) & set(_clean_str_list(b.get("tags"))))
@@ -479,6 +502,7 @@ def detect_restatement(a: Dict[str, Any], b: Dict[str, Any]) -> Optional[str]:
 # 6. Governing vs contextual (section 7)
 # ---------------------------------------------------------------------
 GOVERNING_TYPES = {
+    "authoritative_constraint",
     "correction",
     "explicit_preference",
     "explicit_project_information",
@@ -488,6 +512,7 @@ GOVERNING_TYPES = {
 # When more memories are governing than fit the always-on budget, the most
 # critical kinds survive first (boundaries before general preferences).
 GOVERNING_PRIORITY = {
+    "authoritative_constraint": 6,
     "relationship_boundary": 5,
     "correction": 4,
     "explicit_preference": 3,
@@ -499,11 +524,24 @@ MAX_GOVERNING_MEMORIES = 12
 # Relationship/preferences only govern when they came from Roum, not from
 # Astra's own inference about him.
 _GOVERNING_SOURCES = {"user_correction", "user_correction_implicit",
-                      "explicit_user_statement", "supersession"}
+                      "explicit_user_statement", "supersession",
+                      "authoritative_constraint"}
 
 # Types that encode "current state" (e.g. how to address Roum). Only the newest
 # active memory of a slot is authoritative (section 12).
-SLOT_TYPES = {"relationship_boundary", "explicit_preference", "correction", "decision"}
+SLOT_TYPES = {"relationship_boundary", "explicit_preference", "correction",
+              "decision", "authoritative_constraint"}
+
+
+def is_authoritative_constraint(mem: Dict[str, Any]) -> bool:
+    """True for an explicit behavioural rule the application enforces on Astra.
+
+    These are authoritative runtime constraints, not knowledge: a direct
+    correction about how Astra should behave. They always govern, are never
+    rendered as one of her own observations, and are never weakened by inference.
+    """
+    return (str(mem.get("type") or "") == "authoritative_constraint"
+            or str(mem.get("source") or "").strip().casefold() == "authoritative_constraint")
 
 
 def is_governing(mem: Dict[str, Any]) -> bool:
@@ -517,6 +555,12 @@ def is_governing(mem: Dict[str, Any]) -> bool:
         return True
     if not mem.get("content"):
         return False
+    # An explicit behavioural constraint on Astra always governs, whatever its
+    # source tag - but only when it actually came from the user or a deliberate
+    # declaration. A model-generated "constraint" must never bootstrap itself
+    # into a runtime rule.
+    if is_authoritative_constraint(mem) and source_tier(mem.get("source")) >= 4:
+        return True
     if str(mem.get("source") or "").strip().casefold() in _GOVERNING_SOURCES:
         return str(mem.get("type") or "") in GOVERNING_TYPES
     # A user-anchored behavioral pattern still governs regardless of type.
@@ -668,6 +712,10 @@ CLASSIFICATION_PERSISTENT = {
     "uncertain_inference", "self_fact", "self_preference", "self_observation",
     "self_belief", "relationship_event", "relationship_observation", "decision",
     "experience",
+    # An explicit behavioural constraint on Astra: a direct correction about how
+    # she should behave. Distinct from a self_observation because it is an
+    # authoritative runtime rule, not a piece of knowledge about her.
+    "authoritative_constraint",
     # Persistent questions and revisable work-specific understanding (Slice 2).
     # An open question is a durable line of inquiry; observations,
     # interpretations and hypotheses are how Astra records what she encountered
@@ -688,6 +736,10 @@ CLASSIFICATION_TYPES: Dict[str, Tuple[str, str]] = {
     "self_preference": ("self", "self_preference"),
     "self_observation": ("self", "self_observation"),
     "self_belief": ("self", "self_belief"),
+    # An explicit behavioural constraint on Astra is a self-model record (it is
+    # about her conduct) but of type ``authoritative_constraint``: it always
+    # governs, and it is rendered as a rule rather than as knowledge about her.
+    "authoritative_constraint": ("self", "authoritative_constraint"),
     "relationship_event": ("relationship", "relationship_event"),
     "relationship_observation": ("relationship", "relationship_observation"),
     "decision": ("roum", "decision"),
@@ -794,27 +846,84 @@ def is_astra_directed(content: Any) -> bool:
     return _matches(_ASTRA_DIRECTED_PATTERNS, str(content or "").casefold())
 
 
+# An explicit *behavioural correction*: a directive or prohibition aimed at
+# Astra's conduct ("stop narrating", "don't be so dramatic", "never do X").
+# This is what distinguishes a runtime constraint from a mere observation about
+# her. It deliberately requires directive/prohibition wording, not a descriptive
+# third-person report ("Roum perceives the tone as too formal" stays knowledge).
+_CORRECTION_PATTERNS = tuple(re.compile(p, re.I) for p in (
+    r"\b(?:don'?t|do not|never|stop|quit|cease|avoid|refrain from)\b"
+    r"[^.?!]{0,50}?\b(?:be|being|sound|sounding|talk|talking|act|acting|say|"
+    r"saying|make|making|narrate|narrating|ask|asking|explain|explaining|"
+    r"describe|describing|use|using|write|writing|discuss|discussing)\b",
+    r"\b(?:stop|quit|cease)\b",
+    r"\b(?:should|must|need to|needs to|have to|has to|ought to)\s+"
+    r"(?:not|never)\b",
+    r"\bnot (?:to|allowed to|supposed to)\b[^.?!]{0,40}?\b(?:be|sound|talk|act|"
+    r"say|make|narrate|ask|use|write|discuss)\b",
+    r"\bi (?:don'?t|do not) want you to\b",
+    r"\b(?:from now on|going forward|in future|next time|when i say)\b"
+    r"[^.?!]{0,60}?\b(?:you|astra)\b",
+    r"\bno more\b[^.?!]{0,40}?\b(?:narration|analysis|theatrics|drama|"
+    r"questions|explaining)\b",
+    r"\byou'?re (?:being|sounding)\b[^.?!]{0,40}?\b(?:too|so|very)\b",
+    r"\b(?:too|so) (?:dramatic|theatrical|formal|generic|performative|"
+    r"melodramatic|poetic)\b",
+    r"\bthat'?s not what i (?:meant|said|asked)\b",
+    r"\byou keep\b[^.?!]{0,40}?\b(?:doing|saying|making|asking|narrating)\b",
+))
+
+
+def is_behavioral_correction(content: Any) -> bool:
+    """True when ``content`` is an explicit directive/prohibition about Astra.
+
+    This is the deterministic signal that a statement is a *runtime constraint*
+    on Astra's behaviour rather than a piece of knowledge about her. Kept narrow
+    so a descriptive observation or a general preference is not promoted.
+    """
+    text = str(content or "")
+    if not text:
+        return False
+    return is_astra_directed(text) and _matches(_CORRECTION_PATTERNS, text)
+
+
 # Feedback about Astra's behaviour is a self-model observation, never an
 # automatic edit to her personality or a "fact" about Roum (section 7).
 _FEEDBACK_TAG_NAMES = {"personality_feedback", "style_critique"}
 
 
 def route_candidate_target(classification: str, mem_type: str, target_model: str,
-                    content: str, tags: Any) -> Tuple[str, str]:
+                    content: str, tags: Any, source: str = "") -> Tuple[str, str]:
     """Route a persistent candidate to ``(target_model, memory_type)``.
 
     The classifier already chose a bucket; this corrects the one case it gets
     structurally wrong: material that is *about Astra* being filed under Roum.
+
+    An explicit behavioural correction about Astra is routed to the
+    ``authoritative_constraint`` type rather than a plain ``self_observation``:
+    it is a runtime rule the application enforces, not a piece of knowledge she
+    may weigh against other context. It is still a self-model record (it is
+    about her conduct), so the self/roum routing invariant is preserved. A
+    model-generated claim (source below an explicit statement) is never allowed
+    to mint a constraint, so it cannot bootstrap itself into a runtime rule.
     """
+    user_origin = source_tier(source) >= 4
     if target_model == "self":
+        if classification in ("correction", "authoritative_constraint") and user_origin:
+            return "self", "authoritative_constraint"
         return "self", mem_type
     if classification == "behavioral_pattern":
         # A pattern about Astra's conduct is a self-pattern, not a trait of Roum.
         return ("self", "behavioral_pattern") if is_astra_directed(content) else ("roum", mem_type)
     if classification in ("persistent_user_preference", "persistent_user_fact",
-                          "persistent_project_information", "decision"):
+                          "persistent_project_information", "decision",
+                          "correction"):
         tag_names = {str(t).strip().casefold() for t in _clean_str_list(tags)}
         if tag_names & _FEEDBACK_TAG_NAMES or is_astra_directed(content):
+            # A direct correction becomes an authoritative constraint; other
+            # Astra-directed material stays a self-observation.
+            if classification == "correction" and user_origin:
+                return "self", "authoritative_constraint"
             return "self", "self_observation"
     # Anything else keeps the bucket the classifier already chose.
     return target_model, mem_type
@@ -849,6 +958,14 @@ def classify_candidate(content: str, *, explicit: bool, mem_type: str,
     if explicit:
         if _matches(_DECISION_PATTERNS, lowered):
             return "decision"
+        # An explicit directive/prohibition aimed at Astra's conduct is an
+        # authoritative runtime constraint, not a preference or a fact. This is
+        # checked before the preference/fact branches so a correction is never
+        # filed as ordinary contextual information.
+        if (is_behavioral_correction(text)
+                or (mem_type in ("correction", "authoritative_constraint")
+                    and is_astra_directed(text))):
+            return "authoritative_constraint"
         if mem_type == "explicit_project_information":
             return "persistent_project_information"
         if mem_type in ("explicit_preference", "correction"):
@@ -876,17 +993,29 @@ def classify_candidate(content: str, *, explicit: bool, mem_type: str,
 
 
 def is_durable_self_memory(classification: str, source: str,
-                           reinforcement_count: int) -> bool:
+                           reinforcement_count: int,
+                           user_origin_reinforcements: int = 0) -> bool:
     """Gate for self-model protection (section 4).
 
     A self-preference/fact is durable only when Astra's governing system
     declared it deliberately or it has been reinforced across conversations.
+
+    Identity-level claims (``self_belief``/``self_fact``) additionally require at
+    least one reinforcement that originated with Roum. Repeated *generated*
+    self-description is not evidence about Astra: otherwise the model seeing its
+    own prior sentence in the prompt and restating it would bootstrap the claim
+    into durable identity. An ordinary discovery (``self_preference``) can still
+    earn durability from repeated expression, as before.
     """
     if classification not in SELF_DURABLE_CLASSIFICATIONS:
         return True
     if source in DELIBERATE_SELF_SOURCES:
         return True
-    return int(reinforcement_count or 1) >= SELF_DURABLE_MIN_EVIDENCE
+    if int(reinforcement_count or 1) < SELF_DURABLE_MIN_EVIDENCE:
+        return False
+    if classification in {"self_belief", "self_fact"}:
+        return int(user_origin_reinforcements or 0) >= 1
+    return True
 
 
 def may_supersede(new_source: str, new_classification: str) -> bool:
@@ -1002,6 +1131,9 @@ VALID_MEMORY_TYPES = {
     "self_observation", "self_belief", "self_preference",
     "relationship_event", "relationship_observation", "relationship_boundary",
     "decision", "correction",
+    # An explicit behavioural constraint on Astra: an authoritative runtime
+    # rule, distinct from a self_observation (knowledge about her).
+    "authoritative_constraint",
     # A first-class experience: something Astra did or encountered, carrying
     # its own structured context. The bridge between knowledge and personality
     # (see ``astra.affect`` and the ``experience`` classification below).
@@ -1251,6 +1383,7 @@ _READ_DEFAULTS: Dict[str, Any] = {
     "use_count": 0,
     "contradiction_count": 0,
     "reinforcement_count": 1,
+    "user_origin_reinforcements": 0,
 }
 _NULL_READ_FIELDS = ("supersedes", "superseded_by")
 _LIST_READ_FIELDS = ("tags", "keywords", "contradicts")
@@ -1627,9 +1760,18 @@ class TripleMemoryStore:
         if values:
             mem[field] = _clean_str_list(list(mem.get(field) or []) + values)
 
-    def _reinforce(self, mem: Dict[str, Any], keywords: List[str], tags: List[str]) -> None:
+    def _reinforce(self, mem: Dict[str, Any], keywords: List[str], tags: List[str],
+                   source: str = "") -> None:
         mem["reinforcement_count"] = int(mem.get("reinforcement_count", 1)) + 1
         mem["last_reinforced"] = _now()
+        # Track how many reinforcements originated with the user rather than with
+        # Astra's own generation. A generated self-claim restated by the model is
+        # not independent evidence about her, so it must not bootstrap durable
+        # identity on its own (see ``is_durable_self_memory``).
+        if source_tier(source) >= 4:
+            mem["user_origin_reinforcements"] = (
+                int(mem.get("user_origin_reinforcements", 0)) + 1
+            )
         mem["confidence"] = min(
             1.0, _clamp_confidence(mem.get("confidence", 1.0)) + REINFORCE_STEP
         )
@@ -1757,7 +1899,7 @@ class TripleMemoryStore:
         # self-protection block below then decides whether it stays durable.
         classification = _TYPE_TO_CLASSIFICATION.get(mem_type, "")
         target_model, mem_type = route_candidate_target(
-            classification, mem_type, target_model, content, tags
+            classification, mem_type, target_model, content, tags, source
         )
         # Self-knowledge guards (see ``astra.selfhood``). A claim that Astra had
         # an experience she could not have had is not knowledge about herself,
@@ -1804,11 +1946,13 @@ class TripleMemoryStore:
                         self.memories["self"].append(observed)
                     return observed["id"]
                 with self._transaction(target_model):
-                    self._reinforce(prior, _clean_str_list(keywords), _clean_str_list(tags))
+                    self._reinforce(prior, _clean_str_list(keywords),
+                                    _clean_str_list(tags), source)
                     if (not owned and not prior.get("owned_trait_claim")
                             and is_durable_self_memory(
                                 mem_type, source,
-                                int(prior.get("reinforcement_count", 1)))):
+                                int(prior.get("reinforcement_count", 1)),
+                                int(prior.get("user_origin_reinforcements", 0)))):
                         prior["type"] = mem_type
                         prior["promoted_at"] = _now()
                         prior["confidence"] = _clamp_confidence(confidence)
@@ -2403,6 +2547,53 @@ class TripleMemoryStore:
         for item in (digest.get("questions") or []):
             _emit(inquiry.TYPE_QUESTION, reading.item_text(item), 0.4)
 
+        # Astra's own momentary reaction and what she was thinking about besides
+        # the book. These are *experiential* - her reaction to this passage, and
+        # an associative reflection - never work knowledge and never a trait.
+        # They are recorded as experiences (which carry work_id and emotion), so
+        # they reach the affect state and the reading journal without redefining
+        # her identity.
+        reaction = str(digest.get("reaction") or "").strip()
+        reaction_emotion = str(digest.get("reaction_emotion") or "").strip()
+        reflection = str(digest.get("reflection") or "").strip()
+        try:
+            reaction_intensity = max(0.0, min(1.0, float(
+                digest.get("reaction_intensity", 0.0) or 0.0)))
+        except (TypeError, ValueError):
+            reaction_intensity = 0.0
+        if reaction:
+            self.record_experience(
+                f"Reacting to '{title}': {reaction}",
+                kind=reading.reading_experience_kind(emotion=reaction_emotion),
+                work_id=work_id, source=source,
+                intensity=max(0.4, reaction_intensity),
+                significance=reading.significance_for(
+                    learned=bool(digest.get("interpretations"))),
+            )
+        if reflection:
+            self.record_experience(
+                f"While reading '{title}': {reflection}",
+                kind=reading.reading_experience_kind(
+                    emotion=reaction_emotion, discovered=True),
+                work_id=work_id, source=source,
+                intensity=0.4,
+                significance=reading.significance_for(learned=True),
+            )
+        # The reading journal: Astra's reactions to books, readable on demand.
+        # Written from the reading event only, tagged with its work, and never a
+        # memory - so it cannot redefine her identity.
+        if reaction or reflection:
+            journal_writer = getattr(self, "add_reading_journal_entry", None)
+            if callable(journal_writer):
+                journal_writer(
+                    work_id=work_id, title=title, reaction=reaction,
+                    reflection=reflection, emotion=reaction_emotion,
+                    kind="reaction",
+                    intensity=max(0.4, reaction_intensity),
+                    significance=reading.significance_for(
+                        learned=bool(digest.get("interpretations"))),
+                )
+
         # Link the new notes as evidence to any live question they bear on, so a
         # question accumulates what has been found rather than being silently
         # answered. A question is not evidence for another question, so those are
@@ -2852,6 +3043,68 @@ class TripleMemoryStore:
         with self._lock:
             items = self.journal[-limit:] if limit else self.journal
             return copy.deepcopy(items)
+
+    # ---- reading journal (Astra's reactions to books) -----------------
+    def add_reading_journal_entry(self, *, work_id: str, title: str,
+                                  reaction: str = "", emotion: str = "",
+                                  reflection: str = "", kind: str = "reaction",
+                                  intensity: float = 0.5,
+                                  significance: float = 0.5) -> Optional[str]:
+        """Record one of Astra's reactions to a work she is reading.
+
+        The reading journal is the place to *read her reactions to books*
+        directly, so it lives alongside the existing journal but is tagged
+        ``entry_kind="reading"`` and carries the work it belongs to. It is
+        written from reading events only (never from a conversation), so it can
+        never become a durable memory or a claim about who she is.
+
+        Returns the entry id, or ``None`` when there is nothing to record.
+        """
+        reaction_s = str(reaction or "").strip()
+        reflection_s = str(reflection or "").strip()
+        if not reaction_s and not reflection_s:
+            return None
+        try:
+            intensity_f = max(0.0, min(1.0, float(intensity)))
+        except (TypeError, ValueError):
+            intensity_f = 0.5
+        try:
+            significance_f = max(0.0, min(1.0, float(significance)))
+        except (TypeError, ValueError):
+            significance_f = 0.5
+        entry = {
+            "id": _new_id("rjnl"),
+            "entry_kind": "reading",
+            "kind": str(kind or "reaction"),
+            "work_id": str(work_id or ""),
+            "title": str(title or work_id or "").strip(),
+            "reaction": reaction_s,
+            "reflection": reflection_s,
+            "emotion": str(emotion or "").strip(),
+            "intensity": intensity_f,
+            "significance": significance_f,
+            "timestamp": _now(),
+        }
+        with self._lock:
+            with self._transaction("journal"):
+                self.journal.append(entry)
+        return entry["id"]
+
+    def get_reading_journal(self, work_id: Optional[str] = None,
+                            limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Astra's reading reactions, oldest first.
+
+        With ``work_id`` only that work's reactions; with ``limit`` only the
+        most recent N. Works are never mixed: a reaction keeps its ``work_id``
+        all the way out.
+        """
+        with self._lock:
+            items = [e for e in self.journal
+                     if e.get("entry_kind") == "reading"
+                     and (work_id is None or e.get("work_id") == work_id)]
+        if limit is not None:
+            items = items[-limit:]
+        return copy.deepcopy(items)
 
     # ---- export -------------------------------------------------------
     def export_snapshot(self, path: str) -> None:

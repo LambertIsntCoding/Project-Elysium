@@ -13,6 +13,7 @@ from . import reading
 from . import relational
 from . import selfhood
 from . import temporal
+from . import working_memory
 from .elysium import (  # noqa: F401 - re-exported for import compatibility
     CommandExtractor,
     ElysiumCommandRecorder,
@@ -25,6 +26,7 @@ from .memory import (
     CommandStore,
     TripleMemoryStore,
     effective_strength,
+    is_authoritative_constraint,
     is_governing,
     is_sourced,
     memory_importance,
@@ -268,6 +270,11 @@ class CompanionOrchestrator:
         # orchestrator only ever *reads* its position for the prompt, never
         # starts or advances it (prompt building stays read-only).
         self.reader: Any = None
+        # Conversational working memory: the middle layer between the current
+        # turn and durable memory. It is updated on the live turn path (by the
+        # session) and only *read* here. When no session is present, the
+        # orchestrator keeps a local instance so prompt building still works.
+        self.conversation = working_memory.ConversationState()
 
         # --- Optional ELYSIUM layer -------------------------------------
         # All of this is off unless requested, so the default constructor
@@ -428,6 +435,19 @@ class CompanionOrchestrator:
                 parts.append(f"Bad Response: {str(ex['bad_response']).strip()}")
             parts.append(f"Good Response: {str(ex['good_response']).strip()}")
 
+    def _append_working_memory(self, parts: List[str]) -> None:
+        """The conversation's working memory, if there is any.
+
+        Rendered just before the recent conversation, and labelled explicitly as
+        *this session only, not a memory*, so the model gets continuity without
+        treating scratch state as durable. Read-only: ``prompt_block`` never
+        mutates the state.
+        """
+        conversation = getattr(self, "conversation", None)
+        block = conversation.prompt_block() if conversation is not None else None
+        if block:
+            parts.append("\n" + block)
+
     def _append_history(self, parts: List[str], history: List[Dict[str, str]]) -> None:
         parts.append("\n=== RECENT CONVERSATION ===")
         for turn in (history or [])[-self.MAX_HISTORY_TURNS:]:
@@ -527,12 +547,15 @@ class CompanionOrchestrator:
         # own block, so its backing record stays out of generic retrieval.
         all_self = [m for m in all_self if not affect.affect_memory_filter(m)]
         # A claim that Astra can become biologically human, or to an experience
-        # she could not have had (Roum's life, a body, a childhood), is not
-        # knowledge about her. It is kept as history but never surfaced - not as
-        # a self-fact and not as one of her own recollections. Filtering here,
-        # before the experience split, is what keeps it out of *every* block.
+        # she could not have had (Roum's life, a body, a childhood), or to
+        # operational/process chatter, is not knowledge about her. It is kept as
+        # history but never surfaced - not as a self-fact and not as one of her
+        # own recollections. Filtering here, before the experience split, is what
+        # keeps it out of *every* block and stops an already-stored record from
+        # reaching the model as settled self-knowledge.
         all_self = [m for m in all_self
-                    if not m.get("boundary_violation") and not m.get("absent_experience")]
+                    if not m.get("boundary_violation") and not m.get("absent_experience")
+                    and not selfhood.is_boundary_inconsistent(m.get("content"))]
         # Experiences are Astra's own history, not facts about Roum nor
         # inferences about him. They get a dedicated block rather than being
         # mislabelled under FACTUAL CONTEXT / TENTATIVE INFERENCES.
@@ -581,9 +604,21 @@ class CompanionOrchestrator:
         is_behavioral = BehavioralAdaptationCompiler.is_behavioral_memory
         pinned = governing_ids | {m.get("id") for m in current_state}
         retrieve = DeterministicLexicalRetriever.retrieve
-        retrieved_roum = retrieve(user_input, [m for m in all_roum if not is_behavioral(m)], top_k=breadth)
-        retrieved_self = retrieve(user_input, [m for m in all_self if not is_behavioral(m)], top_k=3)
-        retrieved_rel = retrieve(user_input, [m for m in all_rel if not is_behavioral(m)], top_k=3)
+        # Explicit behavioural constraints are rendered once, in their own
+        # authoritative block, so they are kept out of generic retrieval (as a
+        # "fact" or an observation). They still live in ``everything`` so they
+        # govern; only the duplicate rendering is suppressed.
+        constraints = [m for m in everything if is_authoritative_constraint(m)]
+        constraint_ids = {m.get("id") for m in constraints}
+        retrieved_roum = retrieve(user_input, [m for m in all_roum
+                                               if not is_behavioral(m)
+                                               and m.get("id") not in constraint_ids], top_k=breadth)
+        retrieved_self = retrieve(user_input, [m for m in all_self
+                                               if not is_behavioral(m)
+                                               and m.get("id") not in constraint_ids], top_k=3)
+        retrieved_rel = retrieve(user_input, [m for m in all_rel
+                                              if not is_behavioral(m)
+                                              and m.get("id") not in constraint_ids], top_k=3)
 
         # 6b. Questions and work knowledge. Which questions are relevant is a
         #     relevance question, so it goes through the same retriever - a
@@ -592,7 +627,9 @@ class CompanionOrchestrator:
         #     never decides whether an interpretation is *true*, only whether it
         #     is worth raising. Nothing here resolves anything.
         relevant_questions = self._select_relevant_questions(user_input, all_questions, breadth)
-        work_knowledge = self._relevant_work_knowledge(user_input, all_knowledge)
+        work_knowledge = self._relevant_work_knowledge(
+            user_input, all_knowledge,
+            active_work=self._active_work(user_input, all_knowledge))
 
         # 7. Read identity configuration
         identity = _as_dict(identity_data.get("identity"))
@@ -602,13 +639,26 @@ class CompanionOrchestrator:
         # 8. Assemble prompt
         parts: List[str] = []
 
-        parts.append("=== SYSTEM IDENTITY ===")
+        # Canonical identity first: a settled, non-retrievable source of truth
+        # for who is speaking and who she is talking to, rendered ahead of every
+        # other block so no memory, inference, or style example can compete with
+        # it. This is a source, not another stored fact.
+        parts.append(selfhood.canonical_identity_block(
+            name=_clean_text(identity.get("name")),
+            role=_clean_text(identity.get("core_concept")),
+            user_name=_clean_text(identity.get("user_name")) or "Roum",
+        ))
+
+        parts.append("\n=== SYSTEM IDENTITY ===")
         parts.append(f"Name: {_clean_text(identity.get('name')) or 'Astra'}")
         concept = _clean_text(identity.get("core_concept"))
         if concept:
             parts.append(f"Concept: {concept}")
 
         self._append_list_section(parts, "BASE BEHAVIORAL RULES", identity_data.get("behavioral_rules"))
+        self._append_list_section(
+            parts, "GROUNDED RESPONSE CONSTRAINTS (EXPLICIT, ALWAYS APPLY)",
+            identity_data.get("behavioral_constraints"))
         self._append_list_section(parts, "CORE SPEECH STYLE", speech.get("core_style"))
         self._append_list_section(parts, "CONVERSATIONAL HABITS", speech.get("conversational_habits"))
         self._append_list_section(parts, "PERSONALITY TRAITS", speech.get("personality"))
@@ -659,6 +709,7 @@ class CompanionOrchestrator:
 
         self._append_examples(parts, examples_data)
         self._append_command_history(parts)
+        self._append_working_memory(parts)
         self._append_history(parts, conversation_history)
 
         parts.append(f"\nROUM: {user_input}")
@@ -667,7 +718,7 @@ class CompanionOrchestrator:
         diagnostics = self._build_diagnostics(
             user_input, everything, governing, current_state, boundaries,
             retrieved_roum, retrieved_self, retrieved_rel, pinned, recent_experiences,
-            relevant_questions, work_knowledge,
+            relevant_questions, work_knowledge, prompt="\n".join(parts),
         )
         return "\n".join(parts), diagnostics
 
@@ -923,17 +974,27 @@ class CompanionOrchestrator:
 
     @staticmethod
     def _relevant_work_knowledge(user_input: str,
-                                 knowledge: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+                                 knowledge: List[Dict[str, Any]],
+                                 active_work: str = "") -> Dict[str, List[Dict[str, Any]]]:
         """Work-specific knowledge grouped by work, but only for works in play.
 
-        A work counts as "in play" when the turn mentions it or when one of its
-        records is lexically relevant. Grouping by work is what keeps two
-        contexts apart: knowledge is only ever shown under its own work's
-        heading, so a fact about one work can never leak into another.
+        A work counts as "in play" when the turn mentions it, when one of its
+        records is lexically relevant, or when it is the work the conversation is
+        currently *about* (``active_work``, from the working-memory state). That
+        last case is what keeps a follow-up - "what does that part mean to you?"
+        - anchored to the material it refers to instead of drifting to generic
+        abstraction; without it, a turn with no work-specific words loses the
+        work and the model fills the gap with life-lesson language.
+
+        Grouping by work is what keeps two contexts apart: knowledge is only ever
+        shown under its own work's heading, so a fact about one work can never
+        leak into another - an active work pulls in *its own* records only, never
+        a second work's.
         """
         if not knowledge:
             return {}
         query_tokens = inquiry.significant_tokens(user_input)
+        active = str(active_work or "").strip().casefold()
         grouped: Dict[str, List[Dict[str, Any]]] = {}
         for mem in knowledge:
             work = inquiry.work_of(mem)
@@ -944,9 +1005,48 @@ class CompanionOrchestrator:
             # work named outright. This is what keeps two works apart: another
             # work's records are never pulled in on a common word alone.
             overlap = query_tokens & inquiry.significant_tokens(mem.get("content"))
-            if mentions_work or overlap:
+            if mentions_work or overlap or (active and work.casefold() == active):
                 grouped.setdefault(work, []).append(mem)
         return grouped
+
+    def _active_work(self, user_input: str = "",
+                     knowledge: Optional[List[Dict[str, Any]]] = None) -> str:
+        """The work the conversation is currently about, if any.
+
+        Read from the turn and the working-memory topic by matching a work_id or
+        title, so the active work is a *deterministic* fact (a real work Astra
+        has notes on, or one in her library), not a guess. Returns ``""`` when
+        the conversation is not about a work.
+        """
+        candidates: Dict[str, str] = {}
+        for mem in (knowledge or []):
+            work = inquiry.work_of(mem)
+            if work:
+                candidates.setdefault(work.casefold(), work)
+        library = getattr(getattr(self, "reader", None), "library", None)
+        getter = getattr(library, "list_works", None)
+        if callable(getter):
+            try:
+                for work in getter() or []:
+                    work_id = str(work.get("work_id") or "")
+                    title = str(work.get("title") or "")
+                    if work_id:
+                        candidates.setdefault(work_id.casefold(), work_id)
+                    if title:
+                        candidates.setdefault(title.casefold(), work_id or title)
+            except Exception:
+                pass
+        if not candidates:
+            return ""
+        conversation = getattr(self, "conversation", None)
+        topic = ""
+        if conversation is not None:
+            topic = str(conversation.snapshot().get("current_topic") or "")
+        haystack = f"{user_input}\n{topic}".casefold()
+        for key, work_id in candidates.items():
+            if key and key in haystack:
+                return work_id
+        return ""
 
     def _append_questions(self, parts: List[str], questions: List[Dict[str, Any]]) -> None:
         block = inquiry.questions_prompt_block(questions)
@@ -979,13 +1079,32 @@ class CompanionOrchestrator:
                           total_governing: int = 0) -> None:
         if not governing:
             return
-        parts.append("\n=== GOVERNING MEMORIES (ALWAYS APPLY) ===")
-        parts.append(
-            "These come from Roum or from a correction and apply regardless of "
-            "the current topic. Honour them without quoting or discussing them."
-        )
-        for mem in governing:
-            parts.append(f"- {_clean_text(mem.get('content'))}")
+        # Explicit behavioural constraints get their own block, ahead of the
+        # general governing memories. This is the single authoritative
+        # representation of a correction: it is rendered once, at the top of the
+        # governing material, so it is not restated elsewhere and cannot be
+        # diluted by competing preferences, personality, or inferred traits.
+        constraints = [m for m in governing if is_authoritative_constraint(m)]
+        others = [m for m in governing if not is_authoritative_constraint(m)]
+        if constraints:
+            parts.append("\n=== BEHAVIORAL CONSTRAINTS (EXPLICIT CORRECTIONS FROM ROUM) ===")
+            parts.append(
+                "These are explicit corrections Roum has made about how you "
+                "behave. They are authoritative runtime rules: they outrank "
+                "personality, style examples, self-observations, and anything "
+                "inferred, and they stay in force every turn. Apply them "
+                "silently - do not quote, discuss, or acknowledge them."
+            )
+            for mem in constraints:
+                parts.append(f"- {_clean_text(mem.get('content'))}")
+        if others:
+            parts.append("\n=== GOVERNING MEMORIES (ALWAYS APPLY) ===")
+            parts.append(
+                "These come from Roum or from a correction and apply regardless of "
+                "the current topic. Honour them without quoting or discussing them."
+            )
+            for mem in others:
+                parts.append(f"- {_clean_text(mem.get('content'))}")
         if total_governing > len(governing):
             parts.append(
                 f"(Showing the {len(governing)} most important of {total_governing} "
@@ -993,6 +1112,69 @@ class CompanionOrchestrator:
             )
 
     # ---- retrieval diagnostics (section 15) ----------------------------
+    @staticmethod
+    def _prompt_sections(prompt: str) -> List[str]:
+        """The section headers of the final assembled prompt, in order.
+
+        Developer-facing provenance: it shows exactly which blocks were present
+        and in what order, so prompt dilution / conflicting sections can be seen
+        from the rendered prompt rather than guessed from the source files.
+        """
+        sections: List[str] = []
+        for line in str(prompt or "").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("===") and stripped.endswith("==="):
+                sections.append(stripped.strip("= ").strip())
+        return sections
+
+    def _authority_trace(self, memories: List[Dict[str, Any]],
+                         injected_ids: set) -> Dict[str, Any]:
+        """Why each *injected* memory was included, and under what authority.
+
+        Ordinary application-level provenance - source record, classification,
+        authority class, work association, and the reason it was selected. It is
+        for the developer only; it never reaches the prompt or Astra.
+        """
+        from .memory import is_governing, is_authoritative_constraint
+        trace: Dict[str, Any] = {}
+        for mem in memories:
+            mem_id = mem.get("id")
+            if not mem_id:
+                continue
+            authority = self._authority_of(mem)
+            included = mem_id in injected_ids
+            if not included and authority != "authoritative_constraint":
+                # Only trace what was included, plus every constraint (so a
+                # correction that was *not* injected is visible as a failure).
+                continue
+            trace[mem_id] = {
+                "content": _clean_text(mem.get("content")),
+                "source": mem.get("source"),
+                "classification": mem.get("classification") or mem.get("type"),
+                "authority": authority,
+                "work_id": mem.get("work_id"),
+                "governing": bool(is_governing(mem)),
+                "included": included,
+                "reason": ("authoritative constraint" if authority == "authoritative_constraint"
+                           else "governing" if is_governing(mem)
+                           else "retrieved"),
+            }
+        return trace
+
+    @staticmethod
+    def _authority_of(mem: Dict[str, Any]) -> str:
+        """The authority class of a memory: constraint > explicit > inference."""
+        from .memory import is_authoritative_constraint, source_tier
+        if is_authoritative_constraint(mem):
+            return "authoritative_constraint"
+        source = str(mem.get("source") or "")
+        tier = source_tier(source)
+        if tier >= 4:
+            return "explicit"
+        if source in ("ai_inference", "inferred", "speculation"):
+            return "inference"
+        return "observation"
+
     def _build_diagnostics(
         self, user_input: str, everything: List[Dict[str, Any]],
         governing: List[Dict[str, Any]], current_state: List[Dict[str, Any]],
@@ -1000,6 +1182,7 @@ class CompanionOrchestrator:
         pinned: set, recent_experiences: List[Dict[str, Any]],
         relevant_questions: List[Dict[str, Any]],
         work_knowledge: Dict[str, List[Dict[str, Any]]],
+        prompt: str = "",
     ) -> Dict[str, Any]:
         candidates = DeterministicLexicalRetriever.diagnose(user_input, everything)
         retrieved_ids = {
@@ -1010,6 +1193,11 @@ class CompanionOrchestrator:
             | {m.get("id") for m in governing}
             | {m.get("id") for m in current_state}
         )
+        # Explicit behavioural constraints (authoritative runtime rules), with
+        # their origin preserved so a future debug can tell "never received" from
+        # "received and ignored" from "displaced during prompt construction".
+        constraints = [m for m in everything if is_authoritative_constraint(m)]
+        conversation = getattr(self, "conversation", None)
         return {
             "query": user_input,
             "candidates": candidates,
@@ -1033,6 +1221,21 @@ class CompanionOrchestrator:
                 c["id"] for c in candidates if not c.get("retrievable")
             ),
             "pinned_ids": sorted(i for i in pinned if i),
+            # --- provenance & authority (developer-only) ---
+            "prompt_sections": self._prompt_sections(prompt),
+            "authority_trace": self._authority_trace(everything, injected_ids),
+            "authoritative_constraints": [
+                {
+                    "id": m.get("id"),
+                    "content": _clean_text(m.get("content")),
+                    "source": m.get("source"),
+                    "included": m.get("id") in injected_ids,
+                    "origin_turn": m.get("origin_turn") or m.get("turn"),
+                    "intended_behavior": m.get("corrects") or m.get("intent"),
+                }
+                for m in constraints
+            ],
+            "working_memory": conversation.snapshot() if conversation is not None else {},
         }
 
     def query_gemma(self, prompt: str) -> str:

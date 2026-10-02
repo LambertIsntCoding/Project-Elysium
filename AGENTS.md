@@ -286,3 +286,74 @@ Top-level `memory_store.py`, `orchestrator.py`, `elysium.py`, `consolidator.py`,
   invents a pause, and pausing relies on the session signalling one. `build_session`
   starts the reader by default (`enable_reader=False` to disable); the session
   marks activity on every input and re-checks for games each loop iteration.
+
+## Astra audit: authority, provenance, grounding (behavioural regression suite)
+
+The audit's root cause was **authority and provenance collapsing into retrieval**,
+not missing storage. Four kinds of thing had become one undifferentiated pool of
+"context": authoritative runtime constraints, knowledge about Astra, experiences
+she had, and interpretations she holds. The fixes keep the existing architecture
+and separate those channels:
+
+- **Explicit behavioural constraints** (`type/source == authoritative_constraint`)
+  are the single authoritative representation of a user correction. They render
+  *once*, in their own `=== BEHAVIORAL CONSTRAINTS ===` block ahead of general
+  governing memories (`orchestrator._append_governing`), are excluded from generic
+  retrieval so they cannot be restated as a fact about Roum or as an observation,
+  and still live in `everything` so they govern. Do not duplicate a correction in
+  another prompt section - duplication must not add authority.
+- **Canonical identity** is a settled, non-retrievable source of truth rendered
+  first (`selfhood.canonical_identity_block`); identity is never stored as extra
+  memories to fight retrieval.
+- **Grounded response constraints** live once in `config/identity.yaml`
+  (`behavioral_constraints`), rendered as
+  `=== GROUNDED RESPONSE CONSTRAINTS (EXPLICIT, ALWAYS APPLY) ===`. They target
+  unnecessary theatricality / unearned profundity, not emotion - keep Astra
+  expressive. Edit them there, not by adding scattered prompt lines.
+- **Work attribution / provenance**: `_relevant_work_knowledge` now also treats
+  the conversation's *active work* (`orchestrator._active_work`, deterministic
+  from `work_id`/title in the turn or working-memory topic) as in play, so a
+  follow-up like "what does that mean to you?" stays anchored to the concrete
+  material instead of drifting to generic abstraction. It still pulls in *only
+  that work's* records - work isolation is preserved.
+- **Reading journal**: `store.add_reading_journal_entry` / `get_reading_journal`
+  (tagged `entry_kind="reading"`, work-scoped) is the place to read Astra's
+  reactions to books (`/reading-journal [work_id]`). It is not a memory and never
+  reaches the prompt; `/journal` excludes it.
+- **Working memory** (`astra/working_memory.py`) is a session-only middle layer
+  (topic, goal, next-turn detail, references, expiring assumptions, resumable
+  threads). It is updated on the live path and only *read* at prompt time; it
+  never writes through the store.
+- **Reading concentration/pace** (`reading.concentration_ok` / `reading_pace`):
+  extreme weary/frustration stands the reader down, concentration and elapsed
+  time scale the amount. Affect components include `happy`/`sad`/`angry`.
+
+Diagnostics (`/debug <message>`; `orchestrator.build_prompt_with_diagnostics`)
+expose `prompt_sections`, `authoritative_constraints`, `authority_trace`
+(per-injected-memory authority/classification/work/reason), and `working_memory`
+- developer-only, never part of Astra's context.
+
+Invariants preserved: nothing-is-deleted, explicit-correction authority,
+self/roum routing, the non-human boundary, absent-experience protection,
+owned-trait protection, epistemic uncertainty, derived self-portrait,
+`work_id` isolation, contradiction/restatement behaviour, source separation,
+read-only prompt construction, compact persistent records, temporal /
+relational / affect separation, reading-position semantics, process-policy
+semantics, Elysium routing, application-level decision authority.
+
+Regression suite: `tests/test_behavioral_regression.py` (47 cases, positive and
+negative) covers identity stability, correction adherence, work attribution,
+grounded literary discussion, uncertainty, self-reinforcement, ordinary
+conversation, provenance/authority/read-only, reading-not-autobiography, the
+journal, working memory, and reading concentration/pace. Tests assert behaviour
+and authority boundaries, not prompt strings. Full suite: 443 tests.
+
+### Reading progress is measured in words
+
+`/reading` and `/library` report progress in words, not chunks or percentages
+alone: a chunk is an internal unit. `reading.words_in_text` / `words_at` are the
+single measure, `total_words`/`words_read` live in the reading state (written on
+the reader's live path), and `library.word_measure(state)` derives the counts
+read-only for a legacy record so opening an old library never rewrites its state
+file. The character offset remains the truth for resuming and for the
+byte-for-byte read guarantee; the word count is only how progress is shown.

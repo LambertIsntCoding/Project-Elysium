@@ -138,6 +138,10 @@ class BackgroundReader:
         self._thread: Optional[threading.Thread] = None
         self.last_cycle: Dict[str, Any] = {}
         self.last_reason: str = reading.IDLE_NO_WORK
+        # The current pace (chunks this cycle, rest afterwards) and the state it
+        # was derived from, kept for diagnostics. Set each cycle.
+        self.last_pace: Dict[str, Any] = {}
+        self._rest_seconds = DEFAULT_POLL_SECONDS
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> None:
@@ -170,7 +174,10 @@ class BackgroundReader:
             except Exception:
                 # A background courtesy must never take down the conversation.
                 pass
-            self._stop.wait(self.poll_seconds)
+            # Reading takes time: after a cycle, rest for the pace the current
+            # state calls for rather than hammering the work. An interaction or
+            # a game is still noticed during the wait.
+            self._stop.wait(max(self.poll_seconds, self._rest_seconds))
 
     # -- signals -----------------------------------------------------------
     def note_activity(self) -> None:
@@ -219,6 +226,41 @@ class BackgroundReader:
             return None  # no interaction observed yet: not "active"
         return max(0.0, self._clock() - last)
 
+    def _affect_snapshot(self) -> Dict[str, Any]:
+        """The current experiential-affect state, read from the store.
+
+        Read-only and tolerant: a store without the affect method (or an empty
+        state) simply yields neutral values, so the gate never invents a reason
+        to stop and reading is never silently disabled by a missing record.
+        """
+        getter = getattr(self.store, "current_affect", None)
+        if not callable(getter):
+            return {}
+        try:
+            return getter() or {}
+        except Exception:
+            return {}
+
+    def _gap_seconds(self) -> Optional[float]:
+        """Seconds since Astra was last present, or ``None`` if not recorded."""
+        last = getattr(self.store, "last_present", None)
+        if not callable(last):
+            return None
+        try:
+            stamp = last()
+        except Exception:
+            return None
+        if not stamp:
+            return None
+        try:
+            from datetime import datetime as _dt
+            ts = _dt.fromisoformat(str(stamp))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            return max(0.0, (_dt.now(timezone.utc) - ts).total_seconds())
+        except (TypeError, ValueError):
+            return None
+
     def _conditions(self) -> Dict[str, Any]:
         with self._lock:
             game = self._game_override
@@ -247,6 +289,7 @@ class BackgroundReader:
                 cpu_load = self.cpu_load_fn()
             except Exception:
                 cpu_load = None
+        affect = self._affect_snapshot()
         return {
             "enabled": self.enabled,
             "seconds_since_input": self._seconds_since_input(),
@@ -254,6 +297,10 @@ class BackgroundReader:
             "gpu_busy": gpu_busy,
             "machine_busy_flag": busy_signalled or busy_scanned,
             "cpu_load": cpu_load,
+            # Reading requires concentration: the gate reads her current state.
+            "concentration": affect.get("concentration"),
+            "weary": affect.get("weary"),
+            "frustration": affect.get("frustration"),
         }
 
     def may_read(self, *, force: bool = False) -> tuple:
@@ -300,7 +347,25 @@ class BackgroundReader:
         state = self.library.get_state(work_id)
         read_chunks: List[Dict[str, Any]] = []
 
-        for _ in range(self.chunks_per_cycle):
+        # How much to read is a function of her current state and her sense of
+        # elapsed time - not a fixed count. Reading takes concentration, and a
+        # long absence lets her catch up a little when she is engaged.
+        affect = self._affect_snapshot()
+        pace = reading.reading_pace(
+            concentration=affect.get("concentration"),
+            weary=affect.get("weary"),
+            engagement=affect.get("engagement"),
+            frustration=affect.get("frustration"),
+            gap_seconds=self._gap_seconds(),
+            base_chunks=self.chunks_per_cycle,
+        )
+        self.last_pace = pace
+        self._rest_seconds = float(pace.get("rest_seconds") or 0.0)
+        if not pace.get("allowed", True):
+            return self._report(False, reading.IDLE_NOT_CONCENTRATING, [])
+        chunks_this_cycle = int(pace.get("chunks") or 0)
+
+        for _ in range(chunks_this_cycle):
             offset = int(state.get("char_offset") or 0)
             if offset >= len(text):
                 self._finish(work_id, state)
@@ -328,12 +393,15 @@ class BackgroundReader:
             applied = self._apply(work_id, state, digest, passage) if digest else {"memories": 0}
             state = reading.advance(
                 state, char_offset=end, units_read=int(state.get("units_read") or 0) + 1,
+                words_read=reading.words_at(text, end),
                 resume_context=reading.resume_context_from(digest) or state.get("resume_context", ""),
                 finished=end >= len(text),
             )
             state["last_read_at"] = _now()
             state = self.library.save_state(work_id, state)
             read_chunks.append({"work_id": work_id, "start": start, "end": end,
+                                "words": reading.words_at(text, end)
+                                - reading.words_at(text, start),
                                 "memories": applied.get("memories", 0)})
             if state.get("status") == reading.WORK_FINISHED:
                 self._finish(work_id, state)
@@ -409,10 +477,14 @@ class BackgroundReader:
             "read": bool(read),
             "reason": reason,
             "chunks": len(chunks),
+            # Words read this cycle: the human-facing measure, summed from the
+            # chunks actually processed (a chunk carries how many words it held).
+            "words": sum(int(c.get("words") or 0) for c in chunks),
             "work_id": chunks[-1]["work_id"] if chunks else self.library.current_work_id(),
             "detail": chunks,
             "outcome": "ok" if read else reason,
             "at": _now(),
+            "pace": dict(self.last_pace or {}),
         }
         self.last_cycle = report
         return report
@@ -431,8 +503,16 @@ class BackgroundReader:
 
     def format_diagnostics(self) -> str:
         d = self.diagnostics()
+        # The human-facing measure is words; a legacy state carries only character
+        # offsets, so fill the word counts in (read-only) for the display.
+        state = self.library.current_state()
+        measure = getattr(self.library, "word_measure", None)
+        if callable(measure):
+            words_read, total_words = measure(state)
+            state = dict(state) | {"words_read": words_read,
+                                   "total_words": total_words}
         return reading.format_diagnostics(
-            self.library.current_state(), enabled=d["enabled"], reason=d["reason"],
+            state, enabled=d["enabled"], reason=d["reason"],
             game=d["game"], busy=d["busy"], work_queue=d["queue"],
             last_cycle=d["last_cycle"],
         )

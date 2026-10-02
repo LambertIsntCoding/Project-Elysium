@@ -44,7 +44,23 @@ AFFECT_COMPONENTS = (
     "frustration",            # friction that pushes toward abandoning
     "emotional_investment",   # how much this matters to her
     "anticipation",           # forward pull toward an expected outcome
+    # Valence/emotion dimensions. These are the ordinary emotions the brief
+    # calls out as important; they are momentary states (like the rest of this
+    # accumulator), not traits, and they decay toward neutral. Each is included
+    # only because it has a concrete consumer: the reading gate reads
+    # ``concentration`` and these valence terms to decide whether and how much
+    # to read, and ``prompt_block`` surfaces them as grounded state.
+    "happy",                  # pleased, delighted, amused
+    "sad",                    # low, moved to sadness, grieving
+    "angry",                  # irritated, indignant
+    "calm",                   # settled, at ease
+    "tender",                 # warm, affectionate, moved
+    "weary",                  # tired, drained, needing to stop
 )
+
+# The valence/emotion dimensions, kept together so consumers can reason about
+# "how she feels" without touching the processing dimensions.
+EMOTION_COMPONENTS = ("happy", "sad", "angry", "calm", "tender", "weary")
 
 # Experience kinds. Kept as plain strings so callers do not depend on internals.
 EXPERIENCE_READ = "read"
@@ -55,6 +71,15 @@ EXPERIENCE_FRUSTRATION = "frustration"
 EXPERIENCE_INTERACTION = "interaction"
 EXPERIENCE_UNEXPECTED = "unexpected"
 EXPERIENCE_ATTACHMENT = "attachment"
+# Valence-bearing experience kinds. A reading passage (or an interaction) can
+# move her emotionally; these name the emotion so it reaches the accumulator
+# without inventing a parallel store.
+EXPERIENCE_HAPPY = "happy"
+EXPERIENCE_SAD = "sad"
+EXPERIENCE_ANGRY = "angry"
+EXPERIENCE_TENDER = "tender"
+EXPERIENCE_WEARY = "weary"
+EXPERIENCE_CALM = "calm"
 
 # How each kind of experience moves the current state. Deliberately small: a
 # single experience nudges, it does not saturate. Significance and intensity
@@ -62,14 +87,29 @@ EXPERIENCE_ATTACHMENT = "attachment"
 _KIND_DELTAS: Dict[str, Dict[str, float]] = {
     EXPERIENCE_READ: {"engagement": 0.08, "concentration": 0.06, "curiosity": 0.04},
     EXPERIENCE_COMPLETED: {"engagement": 0.10, "anticipation": -0.08,
-                           "frustration": -0.15, "emotional_investment": 0.06},
-    EXPERIENCE_DISCOVERED: {"curiosity": 0.12, "engagement": 0.06},
+                           "frustration": -0.15, "emotional_investment": 0.06,
+                           "happy": 0.08, "weary": -0.05},
+    EXPERIENCE_DISCOVERED: {"curiosity": 0.12, "engagement": 0.06, "happy": 0.05},
     EXPERIENCE_REALIZATION: {"curiosity": 0.08, "engagement": 0.05,
                              "concentration": 0.03},
-    EXPERIENCE_FRUSTRATION: {"frustration": 0.14, "engagement": -0.05},
+    EXPERIENCE_FRUSTRATION: {"frustration": 0.14, "engagement": -0.05,
+                             "angry": 0.08, "calm": -0.04},
     EXPERIENCE_INTERACTION: {"engagement": 0.06, "emotional_investment": 0.05},
     EXPERIENCE_UNEXPECTED: {"curiosity": 0.10, "concentration": -0.05},
-    EXPERIENCE_ATTACHMENT: {"emotional_investment": 0.12, "engagement": 0.04},
+    EXPERIENCE_ATTACHMENT: {"emotional_investment": 0.12, "engagement": 0.04,
+                            "tender": 0.10, "happy": 0.05},
+    # Valence kinds. The positive ones settle frustration; sadness and anger are
+    # their own states, not merely "not happy".
+    EXPERIENCE_HAPPY: {"happy": 0.16, "sad": -0.08, "angry": -0.06,
+                       "calm": 0.04, "engagement": 0.05},
+    EXPERIENCE_SAD: {"sad": 0.16, "happy": -0.08, "tender": 0.05,
+                     "emotional_investment": 0.06},
+    EXPERIENCE_ANGRY: {"angry": 0.16, "calm": -0.10, "happy": -0.06,
+                       "frustration": 0.06},
+    EXPERIENCE_TENDER: {"tender": 0.16, "calm": 0.05, "happy": 0.05},
+    EXPERIENCE_WEARY: {"weary": 0.16, "concentration": -0.12,
+                       "engagement": -0.06, "calm": -0.03},
+    EXPERIENCE_CALM: {"calm": 0.16, "angry": -0.08, "frustration": -0.06},
 }
 
 _KIND_ALIASES = {
@@ -84,6 +124,22 @@ _KIND_ALIASES = {
     "failed": EXPERIENCE_FRUSTRATION,
     "surprised": EXPERIENCE_UNEXPECTED,
     "attached": EXPERIENCE_ATTACHMENT,
+    # Valence aliases so a reading reaction can name an emotion directly.
+    "joy": EXPERIENCE_HAPPY,
+    "delight": EXPERIENCE_HAPPY,
+    "amused": EXPERIENCE_HAPPY,
+    "sorrow": EXPERIENCE_SAD,
+    "grief": EXPERIENCE_SAD,
+    "moved": EXPERIENCE_SAD,
+    "anger": EXPERIENCE_ANGRY,
+    "irritated": EXPERIENCE_ANGRY,
+    "indignant": EXPERIENCE_ANGRY,
+    "warmth": EXPERIENCE_TENDER,
+    "affection": EXPERIENCE_TENDER,
+    "tired": EXPERIENCE_WEARY,
+    "drained": EXPERIENCE_WEARY,
+    "settled": EXPERIENCE_CALM,
+    "peaceful": EXPERIENCE_CALM,
 }
 
 # State relaxation. Faster than the relational state on purpose: a current
@@ -237,6 +293,14 @@ _AFFECT_PHRASES: Dict[str, tuple] = {
     "emotional_investment": ("deeply invested", "invested", "somewhat invested"),
     "anticipation": ("eager for something to happen", "anticipating something",
                      "mildly anticipating something"),
+    # Ordinary emotions. Worded plainly and proportionally so the state is
+    # available without pushing her toward melodrama.
+    "happy": ("in a good mood", "a little pleased", "quietly content"),
+    "sad": ("sad", "a little down", "faintly subdued"),
+    "angry": ("angry", "irritated", "a little annoyed"),
+    "calm": ("calm", "settled", "fairly even"),
+    "tender": ("tender", "warm", "a little soft"),
+    "weary": ("weary", "tired", "a bit drained"),
 }
 
 

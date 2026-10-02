@@ -589,9 +589,32 @@ class TestNRoutingToSelf(_GovernanceCase):
             "is_explicit_user_statement": True,
         })
         self.assertEqual(decision["target_model"], "self")
-        self.assertEqual(decision["type"], "self_observation")
+        # An explicit behavioural correction is an authoritative runtime
+        # constraint, not a plain self-observation: it is a rule the application
+        # enforces, not a piece of knowledge about her. It still lives in the
+        # self model, so self/roum routing is preserved.
+        self.assertEqual(decision["type"], "authoritative_constraint")
         self.assertEqual(self.store.get_memory("self", mem_id)["content"],
                          "Astra should stop narrating her internal analysis.")
+        self.assertEqual(self.store.get_memories("roum", status=None), [])
+
+    def test_explicit_correction_stays_authoritative_through_consolidation(self):
+        # The classification the model proposed (a preference) must not demote an
+        # explicit correction back to ordinary context: the deterministic
+        # derivation of an authoritative constraint wins, and the correction is
+        # stored as a runtime rule that will govern.
+        from astra.memory import is_authoritative_constraint, is_governing
+        decision, mem_id = self.ingest({
+            "classification": "persistent_user_preference",
+            "content": "Don't be so dramatic about small things.",
+            "is_explicit_user_statement": True,
+        })
+        self.assertEqual(decision["classification"], "authoritative_constraint")
+        self.assertEqual(decision["type"], "authoritative_constraint")
+        mem = self.store.get_memory("self", mem_id)
+        self.assertTrue(is_authoritative_constraint(mem))
+        self.assertTrue(is_governing(mem))
+        # And it is not stored as a fact about Roum.
         self.assertEqual(self.store.get_memories("roum", status=None), [])
 
     def test_feedback_tag_routes_to_self(self):

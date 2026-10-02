@@ -288,6 +288,10 @@ class Library:
                 total_units=len(text),
                 fingerprint=fingerprint or _fingerprint(text),
             )
+            # The human-facing measure is words. ``total_units`` (characters)
+            # stays the truth for the byte-for-byte read guarantee; the word
+            # count is what progress is shown in.
+            state["total_words"] = reading.words_in_text(text)
             state["source_path"] = source_path or os.path.relpath(cache_path, self.data_dir)
             state["started_at"] = _now()
             self.state["works"][work_id] = state
@@ -399,6 +403,25 @@ class Library:
     def get_state(self, work_id: str) -> Dict[str, Any]:
         with self._lock:
             return reading.coerce_state(self.state["works"].get(str(work_id)))
+
+    def word_measure(self, state: Dict[str, Any]) -> tuple:
+        """``(words_read, total_words)`` for a work, backfilling legacy records.
+
+        The word count is the human-facing measure. Records written before it
+        existed carry only character offsets, so the counts are derived here from
+        the cached text. This is read-only - nothing new is stored, and the
+        character offset stays the truth for resuming - so opening a legacy
+        library never rewrites its state file.
+        """
+        state = reading.coerce_state(state)
+        total_words = int(state.get("total_words") or 0)
+        words_read = int(state.get("words_read") or 0)
+        if not total_words:
+            text = self.text_for(str(state.get("work_id") or ""))
+            total_words = reading.words_in_text(text)
+            if total_words and int(state.get("char_offset") or 0) > 0:
+                words_read = reading.words_at(text, state.get("char_offset"))
+        return words_read, total_words
 
     def current_work_id(self) -> str:
         with self._lock:

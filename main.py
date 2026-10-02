@@ -66,10 +66,11 @@ HELP_TEXT = """
  /experiences       : List stored experiences (what she has actually done or met)
  /questions         : Open lines of inquiry and their evidence (not yet resolved)
  /work [id]         : Work-specific understanding: observations, interpretations
- /reading           : Background reader status: what she is reading, why (not) now
+ /reading           : Background reader status: what she is reading, how many
+                      words in, and why she is (not) reading right now
  /time              : Astra's sense of elapsed time: the gap since she was last
                       present, long-open questions, and long-running works
- /library           : Local works ingested and Astra's position in each
+ /library           : Local works ingested and how many words she has read of each
  /library-scan [folder] : List the books in the books folder, numbered, without
                       ingesting; then ingest one by number. Default folder is
                       storage/library/books, or pass one: /library-scan "C:\\Books"
@@ -87,6 +88,7 @@ HELP_TEXT = """
  /restore <id>      : Bring an archived memory back
  /correct           : Interactive workflow to supersede an incorrect memory
  /journal [period]  : AI journal reflections; optional period, e.g. 2026-09
+ /reading-journal [work_id] : Astra's reactions to books, grouped by work
  /debug <message>   : Show memory retrieval diagnostics for a message
  /exit              : Save session and exit
 --------------------
@@ -261,6 +263,16 @@ class ChatSession:
         # the live path - never inside build_prompt, which stays read-only.
         self._record_relational_event(user_input, response)
         self._record_turn(user_input, response, consolidate=not response.startswith("[Error"))
+        # Working memory is updated on the live path only, and after the turn, so
+        # the conversation's scratch state (topic, goal, references, threads)
+        # reflects what has happened. It is never written through the memory
+        # store, so it cannot become durable memory by accident.
+        conversation = getattr(self.orchestrator, "conversation", None)
+        if conversation is not None and not response.startswith("[Error"):
+            try:
+                conversation.observe_turn(user_input, response, self.history)
+            except Exception:
+                pass
         # Maintenance runs after the turn's memory writes, never during prompt
         # building (which must stay read-only). It is throttled internally.
         self._run_maintenance()
@@ -427,6 +439,8 @@ class ChatSession:
                 self._emit("Usage: /restore <mem_id>")
         elif command == "/journal":
             self._display_journal(parts[1] if len(parts) > 1 else None)
+        elif command == "/reading-journal":
+            self._display_reading_journal(parts[1] if len(parts) > 1 else None)
         elif command == "/timeline":
             self._display_timeline(parts[1:])
         elif command == "/debug":
@@ -787,9 +801,14 @@ class ChatSession:
         for state in works:
             marker = "*" if state.get("work_id") == current else " "
             pct = int(round(reading.progress(state) * 100))
+            words_read, total_words = library.word_measure(state)
+            if total_words:
+                measure = f"{words_read:,}/{total_words:,} words"
+            else:
+                measure = f"{words_read:,} words"
             self._emit(
                 f" {marker} {state.get('work_id')} | {state.get('status')} | {pct}% "
-                f"| {state.get('chunks', 0)} chunk(s) | {state.get('title') or ''}"
+                f"| {measure} | {state.get('title') or ''}"
             )
         self._emit("\n  (* = current; use /reading for detail)")
 
@@ -831,7 +850,7 @@ class ChatSession:
         reader.clear_activity()
         report = reader.run_once(force=force)
         if report.get("read"):
-            self._emit(f"  Read {report['chunks']} chunk(s) from {report.get('work_id')}.")
+            self._emit(f"  Read {int(report.get('words') or 0):,} words from {report.get('work_id')}.")
         elif report.get("reason") == reading.IDLE_GAME_RUNNING:
             self._emit("  Not reading: game_running (a game is running; forced "
                        "cycles still yield to a game).")
@@ -993,7 +1012,8 @@ class ChatSession:
         self._emit(json.dumps(mem, indent=2, ensure_ascii=False))
 
     def _display_journal(self, period: Optional[str] = None) -> None:
-        entries = self.orchestrator.store.get_journal()
+        entries = [e for e in self.orchestrator.store.get_journal()
+                   if e.get("entry_kind") != "reading"]
         self._emit("\n=== AI MEMORY JOURNAL ===")
         if period:
             entries = [e for e in entries
@@ -1004,6 +1024,34 @@ class ChatSession:
         for entry in entries:
             self._emit(f"[{entry.get('timestamp')}] {entry.get('title')}")
             self._emit(f"  {entry.get('observation')}\n")
+
+    def _display_reading_journal(self, work_id: Optional[str] = None) -> None:
+        """Astra's reactions to books, grouped by work.
+
+        This is the place to read her literary reactions directly: each entry is
+        tagged with the work it came from, so works are never blurred together.
+        Developer/owner view only - it is not part of her conversational context.
+        """
+        getter = getattr(self.orchestrator.store, "get_reading_journal", None)
+        entries = getter(work_id=work_id) if callable(getter) else []
+        scope = f" for {work_id}" if work_id else ""
+        self._emit(f"\n=== ASTRA'S READING JOURNAL{scope} ===")
+        if not entries:
+            self._emit("  (No reading reactions recorded yet)")
+            return
+        by_work: Dict[str, List[Dict[str, Any]]] = {}
+        for entry in entries:
+            by_work.setdefault(entry.get("work_id") or "?", []).append(entry)
+        for work, items in by_work.items():
+            title = items[0].get("title") or work
+            self._emit(f"\n  {title}  [{work}]")
+            for entry in items:
+                stamp = str(entry.get("timestamp", ""))[:10]
+                emotion = entry.get("emotion")
+                mood = f" ({emotion})" if emotion else ""
+                self._emit(f"    [{stamp}]{mood} {entry.get('reaction')}")
+                if entry.get("reflection"):
+                    self._emit(f"      ~ {entry.get('reflection')}")
 
     def _display_timeline(self, args: List[str]) -> None:
         """A cheap date index over memories: counts per day/month/year.
@@ -1067,6 +1115,45 @@ class ChatSession:
                 f"| contradicted={cand['contradicted']}"
             )
             self._emit(f"        {cand['content']}")
+
+        # --- prompt provenance: which blocks were present, in order ---
+        sections = diag.get("prompt_sections") or []
+        if sections:
+            self._emit(f"\nPrompt sections ({len(sections)}, in order):")
+            self._emit("  " + " -> ".join(sections))
+
+        # --- explicit behavioural constraints (authoritative runtime rules) ---
+        constraints = diag.get("authoritative_constraints") or []
+        self._emit(f"\nAuthoritative constraints ({len(constraints)}):")
+        if not constraints:
+            self._emit("  (none - no explicit behavioural correction is stored)")
+        for c in constraints:
+            state = "injected" if c.get("included") else "NOT INJECTED"
+            self._emit(f"  [{state}] {c.get('id')} (source={c.get('source')})")
+            self._emit(f"        {c.get('content')}")
+
+        # --- authority / provenance of each injected memory ---
+        trace = diag.get("authority_trace") or {}
+        self._emit(f"\nInjected-memory authority ({len(trace)}):")
+        for mem_id, info in sorted(trace.items()):
+            self._emit(
+                f"  {mem_id} | authority={info.get('authority')} "
+                f"| reason={info.get('reason')} | work={info.get('work_id') or '-'} "
+                f"| src={info.get('source')} | classification={info.get('classification')}"
+            )
+
+        # --- working memory (this session only, never a memory) ---
+        working = diag.get("working_memory") or {}
+        if working:
+            self._emit("\nWorking memory (this session only):")
+            for key in ("current_topic", "answer_goal", "unresolved_references",
+                        "expiring_assumptions", "threads"):
+                value = working.get(key)
+                if value:
+                    self._emit(f"  {key}: {value}")
+            nxt = working.get("next_turn_details")
+            if nxt:
+                self._emit(f"  next_turn_details: {nxt}")
 
     def _correct_memory(self) -> None:
         self._emit("\n--- MEMORY CORRECTION WORKFLOW ---")
