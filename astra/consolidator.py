@@ -169,7 +169,12 @@ def resolve_candidate(candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         source=source,
         confidence=float(candidate.get("confidence", 0.7) or 0.7),
     )
-    if not is_persistent_classification(derived):
+    # A deterministic derivation of an authoritative constraint always wins: a
+    # direct correction about Astra's behaviour is a runtime rule, and no other
+    # persistent label the model proposed may demote it back to context.
+    if derived == "authoritative_constraint":
+        classification = derived
+    elif not is_persistent_classification(derived):
         classification = derived
     elif not is_persistent_classification(classification):
         classification = derived
@@ -195,9 +200,12 @@ def resolve_candidate(candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     # Directives and feedback about Astra belong in the self model, not filed as
     # facts about Roum (section 7). ``add_memory`` enforces this too, for paths
-    # that bypass consolidation.
+    # that bypass consolidation. The source is threaded through so an explicit
+    # correction can be recognised as user-originated (and so promoted to an
+    # authoritative constraint) rather than being demoted to an observation.
     target_model, mem_type = route_candidate_target(
-        classification, mem_type, target_model, content, candidate.get("tags", [])
+        classification, mem_type, target_model, content, candidate.get("tags", []),
+        source,
     )
 
     return {

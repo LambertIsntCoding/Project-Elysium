@@ -220,11 +220,28 @@ class TestSelfClaimDurability(_SelfhoodCase):
         self.assertEqual(mem["type"], "self_observation")
         self.assertLessEqual(mem["confidence"], 0.5)
 
-    def test_repeated_self_belief_becomes_durable(self):
+    def test_repeated_generated_self_belief_does_not_bootstrap(self):
+        # The failure the brief names: a self-belief the model generated must not
+        # become durable identity merely because the model later sees its own
+        # previous sentence and repeats it. Repetition by generation is not
+        # independent evidence about Astra, so it stays an observation however
+        # often it is restated.
+        mid = None
+        for _ in range(6):
+            mid = self.store.add_memory("self", "Astra prefers concise answers.",
+                                        "self_belief", "ai_extraction")
+        self.assertEqual(self.store.get_memory("self", mid)["type"],
+                         "self_observation")
+
+    def test_user_anchored_self_belief_can_become_durable(self):
+        # The same claim becomes durable once it is genuinely corroborated by
+        # Roum - the evidence is now independent of Astra's own generation.
         mid = None
         for _ in range(3):
             mid = self.store.add_memory("self", "Astra prefers concise answers.",
                                         "self_belief", "ai_extraction")
+        self.store.add_memory("self", "Astra prefers concise answers.",
+                              "self_belief", "explicit_user_statement")
         self.assertEqual(self.store.get_memory("self", mid)["type"], "self_belief")
 
 

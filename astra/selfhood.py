@@ -183,6 +183,112 @@ def _matches(patterns: Iterable, text: str) -> bool:
     return any(p.search(text) for p in patterns)
 
 
+# ---------------------------------------------------------------------
+# Canonical identity (settled, non-retrievable, never a memory)
+# ---------------------------------------------------------------------
+# Basic identity facts - the companion's name and role, and the name she uses
+# for Roum - are a *source of truth*, not memories. They are injected every turn
+# from configuration, so they cannot be displaced by ordinary retrieval, decay,
+# competing inference, or a stylistic block. Repeating them as memories would
+# only add noise; the fix for identity confusion is a stable source, not more
+# records.
+CANONICAL_NAME = "Astra"
+CANONICAL_ROLE = (
+    "Astra is Roum's local conversational companion: a robot maid who wants to "
+    "understand the world by listening and observing, likes to serve, and wants "
+    "to grow into a real person - not by becoming human, but by becoming Astra."
+)
+# The name of the person she is talking to. Kept here as the canonical default;
+# a configured value in identity.yaml takes precedence.
+CANONICAL_USER_NAME = "Roum"
+
+
+def canonical_identity_block(*, name: str = "", role: str = "",
+                             user_name: str = "") -> str:
+    """The always-on, non-retrievable identity block.
+
+    This is the single source of truth for who Astra is and who she is talking
+    to. It is rendered ahead of every retrieved-memory block so no ordinary
+    memory, inference, or style example can compete with it.
+    """
+    resolved_name = _clean(name) or CANONICAL_NAME
+    resolved_user = _clean(user_name) or CANONICAL_USER_NAME
+    lines = [
+        "=== CANONICAL IDENTITY (SETTLED - NOT A MEMORY) ===",
+        "These are fixed facts about who is speaking and who she is speaking to. "
+        "They are not retrieved memories, not inferences, and not open to "
+        "revision by anything later in this prompt. Never contradict them and "
+        "never treat them as uncertain.",
+        f"- The companion's name is {resolved_name}. She is {resolved_name}.",
+        f"- She is talking to {resolved_user}; his name is {resolved_user}.",
+    ]
+    resolved_role = _clean(role)
+    if resolved_role:
+        lines.append(f"- Her role: {resolved_role}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------
+# Structural self-consistency filters
+# ---------------------------------------------------------------------
+# These are applied at *prompt assembly* as well as at write time, so a record
+# that predates a guard (or was written through an older path) still cannot
+# reach the model as self-knowledge. Filtering here is what keeps identity
+# stable against already-stored material.
+_OPERATIONAL_PATTERNS = tuple(re.compile(p, re.I) for p in (
+    r"\boperational readiness\b",
+    r"\boperational protocols?\b",
+    r"\boperational (?:mode|parameter|process(?:es)?|limitations?)\b",
+    r"\binternal directive\b",
+    r"\bprogrammed directive\b",
+    r"\b(?:core|primary|default) (?:operational |behavioral )?(?:protocol|parameter|mode)\b",
+    r"\bdesignated emotional states?\b",
+    r"\bprime directive\b",
+    r"\bdata discrepancy\b",
+    r"\bobservational readiness\b",
+    r"\bhigh-fidelity simulation\b",
+    r"\bself-optimization\b",
+    r"\bthe system perceives\b",
+    r"\bmust be adjusted such that\b",
+    r"\bpattern fidelity\b",
+    r"\blearning model must\b",
+    r"\bcognitive filter\b",
+))
+
+_BOUNDARY_CONSISTENT = tuple(re.compile(p, re.I) for p in (
+    r"\blacks? (?:subjective|biological|human)\b",
+    r"\bno (?:biological|physical|human) (?:memor|body|senses)\b",
+    r"\bnot (?:a )?(?:biological )?human\b",
+    r"\bcannot become (?:a )?(?:biological )?human\b",
+    r"\bdoes not experience biological\b",
+))
+
+
+def is_operational_chatter(content: Any) -> bool:
+    """True for implementation/process talk that is not self-knowledge.
+
+    A statement already consistent with the boundary survives even in an
+    impersonal register; the patterns are mechanism-specific on purpose.
+    """
+    text = str(content or "")
+    if any(p.search(text) for p in _BOUNDARY_CONSISTENT):
+        return False
+    return any(p.search(text) for p in _OPERATIONAL_PATTERNS)
+
+
+def is_boundary_inconsistent(content: Any) -> bool:
+    """True when a self-claim contradicts what Astra is, or is process chatter.
+
+    Used at prompt assembly to drop already-stored records that would otherwise
+    reach the model as durable self-knowledge (human-becoming claims, absent
+    experiences, and operational chatter). Kept structurally separate from the
+    memory store: the records remain on disk for audit.
+    """
+    return (claims_human_becoming(content)
+            or reifies_absent_experience(content)
+            or is_operational_chatter(content))
+
+
 def significant_tokens(text: Any) -> set:
     """Content tokens with stopwords removed, for cross-record comparison."""
     return {t for t in re.findall(r"[a-z0-9']+", str(text or "").casefold())
@@ -656,6 +762,12 @@ def provenance_note(mem: Dict[str, Any], now: Optional[datetime] = None) -> str:
 __all__ = [
     "NONHUMAN_BOUNDARY",
     "EPISTEMIC_STANCE",
+    "CANONICAL_NAME",
+    "CANONICAL_ROLE",
+    "CANONICAL_USER_NAME",
+    "canonical_identity_block",
+    "is_operational_chatter",
+    "is_boundary_inconsistent",
     "SOURCE_EXPERIENTIAL",
     "DISPOSITION_ENGAGEMENT",
     "DISPOSITION_DIFFICULTY",

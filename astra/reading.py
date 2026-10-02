@@ -61,10 +61,12 @@ IDLE_WORK_FINISHED = "work_finished"     # the current work is done; pick anothe
 IDLE_MODEL_FAILED = "model_unavailable"  # the local model could not be reached
 IDLE_HELD = "held"                       # no model call was permitted this cycle
 IDLE_FORCED = "forced"                   # Roum forced a cycle: the gate was bypassed
+IDLE_NOT_CONCENTRATING = "not_concentrating"  # too scattered/weary to read well
 
 # The reasons that are genuine *interruptions* (as opposed to "fine to read" or
 # "nothing to read"). Only these are worth telling Astra about in her prompt.
-_PAUSE_REASONS = (IDLE_USER_ACTIVE, IDLE_GAME_RUNNING, IDLE_MACHINE_BUSY)
+_PAUSE_REASONS = (IDLE_USER_ACTIVE, IDLE_GAME_RUNNING, IDLE_MACHINE_BUSY,
+                  IDLE_NOT_CONCENTRATING)
 
 # Default thresholds. Kept as module constants so the behaviour is auditable and
 # tunable, exactly like the memory heuristics in ``astra.memory``.
@@ -74,8 +76,107 @@ DEFAULT_CHUNK_CHARS = 3500         # max characters of a work per model call
 DEFAULT_CHUNKS_PER_CYCLE = 1       # bounded work per wake
 DEFAULT_MIN_CHUNK_CHARS = 200      # ignore trailing fragments shorter than this
 
-# Reading is a background courtesy, so it never assumes a GPU/CPU budget: the
-# caller may pass ``gpu_busy`` (e.g. a game) and it is treated like a game.
+# Reading is not free: it needs a settled mind. A weary or worked-up state
+# stands the reader down; how *concentrated* she is then scales how much she
+# reads, and a long absence lets her read a little more to catch up. All of it
+# is read from the existing experiential-affect state - no new store. Note that
+# this accumulator is zero-neutral: 0 means "no particular condition", so a low
+# concentration *value* is not a scattered state - a scattered state is high
+# weary/frustration. Concentration is therefore a modifier, not a gate.
+#
+# The gate only stops at *extreme* weariness; moderate weariness reads less
+# (``WEARY_CEILING`` below), so "reading takes concentration" makes her read
+# more slowly rather than not at all.
+WEARY_GATE_CEILING = 0.80       # at/above this she is too drained to read
+FRUSTRATION_CEILING = 0.75      # at/above this she is too worked up to read
+CONCENTRATION_HIGH = 0.50       # at/above this she reads a little more
+WEARY_CEILING = 0.55            # at/above this she reads less, not more
+DEFAULT_PACE_CHUNKS = 1            # the normal amount per cycle
+MAX_PACE_CHUNKS = 2               # never more than this, however fresh
+LONG_ABSENCE_SECONDS = 3 * 86400.0  # an absence this long counts as "a while"
+# A small rest between cycles so reading a work takes time rather than being
+# consumed in one burst. Scaled by the pace (see ``reading_pace``).
+DEFAULT_REST_SECONDS = 20.0
+WEARY_REST_SECONDS = 90.0
+
+
+def concentration_ok(*, concentration: Optional[float] = None,
+                     weary: Optional[float] = None,
+                     frustration: Optional[float] = None) -> bool:
+    """True when Astra is settled enough to read well.
+
+    Reading requires concentration in the sense that a scattered state - too
+    weary, or too frustrated - is not a reading moment. Deliberately lenient:
+    an unknown or neutral state is fine, so a missing affect record never
+    silently disables reading. ``concentration`` is accepted for callers that
+    pass it but is a *modifier* (see ``reading_pace``), not a gate.
+    """
+    for value, ceiling in ((weary, WEARY_GATE_CEILING), (frustration, FRUSTRATION_CEILING)):
+        if value is None:
+            continue
+        try:
+            if float(value) >= ceiling:
+                return False
+        except (TypeError, ValueError):
+            continue
+    return True
+
+
+def reading_pace(*, concentration: Optional[float] = None,
+                 weary: Optional[float] = None, engagement: Optional[float] = None,
+                 frustration: Optional[float] = None,
+                 gap_seconds: Optional[float] = None,
+                 base_chunks: int = DEFAULT_PACE_CHUNKS) -> Dict[str, Any]:
+    """How much to read this cycle, from Astra's state and her sense of time.
+
+    Reading requires concentration and takes time. The amount read is a *derived*
+    function of the existing experiential-affect state and the elapsed gap since
+    she was last present - never a stored counter:
+
+    * a weary or frustrated state reads less (or nothing);
+    * a long absence since she was last present lets her read a little more to
+      catch up, but only when she is engaged and not weary;
+    * otherwise she reads the base amount, a little more when she is
+      concentrating well.
+
+    Returns a small dict with ``chunks``, ``rest_seconds``, ``allowed`` and a
+    plain-language ``reason`` for diagnostics.
+    """
+    chunks = max(0, int(base_chunks))
+    allowed = concentration_ok(concentration=concentration, weary=weary,
+                               frustration=frustration)
+    if not allowed:
+        return {"chunks": 0, "rest_seconds": 0.0, "allowed": False,
+                "reason": "not settled enough to read"}
+
+    def _num(value: Optional[float]) -> float:
+        try:
+            return float(value) if value is not None else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    weary_value = _num(weary)
+    engaged = _num(engagement)
+    focused = _num(concentration)
+
+    if weary_value >= WEARY_CEILING:
+        chunks = min(chunks, 1)
+        rest = WEARY_REST_SECONDS
+        reason = "weary: reading a little, then resting"
+    else:
+        rest = DEFAULT_REST_SECONDS
+        if focused >= CONCENTRATION_HIGH:
+            chunks = min(MAX_PACE_CHUNKS, chunks + 1)
+            reason = "concentrating well: reading a bit more"
+        else:
+            reason = "reading at a steady pace"
+        # A long absence plus genuine engagement lets her catch up a little.
+        if (gap_seconds is not None and float(gap_seconds) >= LONG_ABSENCE_SECONDS
+                and engaged >= 0.4):
+            chunks = min(MAX_PACE_CHUNKS, max(chunks, base_chunks + 1))
+            reason = "been away a while and engaged: reading a bit more to catch up"
+    return {"chunks": max(0, chunks), "rest_seconds": float(rest),
+            "allowed": True, "reason": reason}
 
 # ---------------------------------------------------------------------
 # Reading-state schema helpers
@@ -85,7 +186,10 @@ def blank_state(work_id: str, *, title: str = "", source_format: str = "",
     """A fresh reading-progress state for a work.
 
     Deliberately small: position, a bounded resume context, and the counters
-    needed to explain progress. The understanding itself lives in memories.
+    needed to explain progress. ``total_units`` is the length of the cached text
+    (characters), which is what the byte-for-byte read guarantee is expressed in;
+    ``units_read`` and ``words_read`` are the human-facing measure - words.
+    The understanding itself lives in memories.
     """
     return {
         "work_id": str(work_id or "").strip(),
@@ -95,6 +199,8 @@ def blank_state(work_id: str, *, title: str = "", source_format: str = "",
         "status": WORK_READING,
         "total_units": int(total_units or 0),
         "units_read": 0,
+        "words_read": 0,
+        "total_words": 0,
         "char_offset": 0,
         "resume_context": "",
         "started_at": "",
@@ -118,6 +224,14 @@ def coerce_state(raw: Any, work_id: str = "") -> Dict[str, Any]:
             state[field] = max(0, int(raw.get(field, 0) or 0))
         except (TypeError, ValueError):
             state[field] = 0
+    try:
+        state["words_read"] = max(0, int(raw.get("words_read", 0) or 0))
+    except (TypeError, ValueError):
+        state["words_read"] = 0
+    try:
+        state["total_words"] = max(0, int(raw.get("total_words", 0) or 0))
+    except (TypeError, ValueError):
+        state["total_words"] = 0
     if state["status"] not in WORK_STATUSES:
         state["status"] = WORK_READING
     return state
@@ -132,16 +246,35 @@ def progress(state: Any) -> float:
     return round(min(1.0, max(0.0, int(state.get("char_offset") or 0) / total)), 4)
 
 
+def words_in_text(text: str) -> int:
+    """Approximate word count of ``text`` (whitespace-delimited tokens)."""
+    return len(str(text or "").split())
+
+
+def words_at(text: str, char_offset: int) -> int:
+    """Words fully read when the reader has reached ``char_offset`` characters.
+
+    The same measure as :func:`words_in_text`, applied to the prefix, so
+    "words read" and "total words" are always computed the same way.
+    """
+    text = str(text or "")
+    offset = max(0, min(len(text), int(char_offset or 0)))
+    return words_in_text(text[:offset])
+
+
 def is_live(state: Any) -> bool:
     return coerce_state(state).get("status") in LIVE_WORK_STATUSES
 
 
 def advance(state: Any, *, char_offset: int, units_read: int,
-            resume_context: str = "", finished: bool = False) -> Dict[str, Any]:
+            words_read: Optional[int] = None, resume_context: str = "",
+            finished: bool = False) -> Dict[str, Any]:
     """Return ``state`` advanced to a new position (never mutates the input)."""
     state = dict(coerce_state(state))
     state["char_offset"] = max(0, int(char_offset))
     state["units_read"] = max(0, int(units_read))
+    if words_read is not None:
+        state["words_read"] = max(0, int(words_read))
     state["chunks"] = int(state.get("chunks", 0)) + 1
     if resume_context:
         state["resume_context"] = str(resume_context)[:600]
@@ -312,18 +445,25 @@ def should_read(*, enabled: bool = True, seconds_since_input: Optional[float] = 
                 machine_busy_flag: bool = False, cpu_load: Optional[float] = None,
                 idle_threshold: float = DEFAULT_IDLE_SECONDS,
                 load_ceiling: float = DEFAULT_LOAD_CEILING,
-                has_work: bool = True, force: bool = False) -> Tuple[bool, str]:
+                has_work: bool = True, force: bool = False,
+                concentration: Optional[float] = None,
+                weary: Optional[float] = None,
+                frustration: Optional[float] = None) -> Tuple[bool, str]:
     """Whether the reader may run now, and the single reason for the decision.
 
     Pure and deterministic: given the same observable conditions it always
     returns the same answer, so the reader's wakefulness is explainable rather
     than arbitrary. A game (or an explicitly busy GPU) always wins over reading.
 
+    Reading requires concentration: a scattered or exhausted state stands the
+    reader down (``IDLE_NOT_CONCENTRATING``), because reading is not free and a
+    distracted pass produces noise rather than understanding.
+
     ``force`` is the explicit override: Roum asked for a cycle now, so the
-    courtesy conditions (idle, load, a busy task) are bypassed. The hard stops
-    are kept even under force - reading switched off, a running game, and
-    nothing to read - because those are about not fighting the machine, not
-    about politeness.
+    courtesy conditions (idle, load, a busy task, concentration) are bypassed.
+    The hard stops are kept even under force - reading switched off, a running
+    game, and nothing to read - because those are about not fighting the
+    machine, not about politeness.
     """
     if not enabled:
         return False, IDLE_DISABLED
@@ -339,6 +479,9 @@ def should_read(*, enabled: bool = True, seconds_since_input: Optional[float] = 
         return False, IDLE_MACHINE_BUSY
     if machine_busy(cpu_load=cpu_load, ceiling=load_ceiling):
         return False, IDLE_MACHINE_BUSY
+    if not concentration_ok(concentration=concentration, weary=weary,
+                            frustration=frustration):
+        return False, IDLE_NOT_CONCENTRATING
     if not has_work:
         return False, IDLE_NO_WORK
     return True, IDLE_OK
@@ -349,17 +492,20 @@ def pause_reason(*, enabled: bool = True, seconds_since_input: Optional[float] =
                  machine_busy_flag: bool = False, cpu_load: Optional[float] = None,
                  idle_threshold: float = DEFAULT_IDLE_SECONDS,
                  load_ceiling: float = DEFAULT_LOAD_CEILING,
-                 force: bool = False) -> Optional[str]:
+                 force: bool = False, concentration: Optional[float] = None,
+                 weary: Optional[float] = None,
+                 frustration: Optional[float] = None) -> Optional[str]:
     """Why reading should *stop* mid-cycle, or ``None`` if it may continue.
 
     The same conditions as :func:`should_read`, without the "is there work"
     question: a running cycle checks this between chunks so an interaction or a
     game takes effect immediately rather than after the whole cycle.
 
-    Under ``force`` the courtesy conditions (idle, load, a busy task) are ignored
-    between chunks too - otherwise forcing against a busy task would start a
-    cycle and immediately read nothing. A game is still a hard stop: a forced
-    cycle never fights the GPU, it just declines to wait for idle.
+    Under ``force`` the courtesy conditions (idle, load, a busy task,
+    concentration) are ignored between chunks too - otherwise forcing against a
+    busy task would start a cycle and immediately read nothing. A game is still a
+    hard stop: a forced cycle never fights the GPU, it just declines to wait for
+    idle.
     """
     if force:
         return IDLE_GAME_RUNNING if (game or gpu_busy) else None
@@ -367,6 +513,7 @@ def pause_reason(*, enabled: bool = True, seconds_since_input: Optional[float] =
         enabled=enabled, seconds_since_input=seconds_since_input, game=game,
         gpu_busy=gpu_busy, machine_busy_flag=machine_busy_flag, cpu_load=cpu_load,
         idle_threshold=idle_threshold, load_ceiling=load_ceiling, has_work=True,
+        concentration=concentration, weary=weary, frustration=frustration,
     )
     return None if reason == IDLE_OK else reason
 
@@ -374,7 +521,8 @@ def pause_reason(*, enabled: bool = True, seconds_since_input: Optional[float] =
 def interruption_priority(reason: Optional[str]) -> int:
     """Order pause reasons so the most important one is reported."""
     order = {IDLE_DISABLED: 0, IDLE_GAME_RUNNING: 1, IDLE_USER_ACTIVE: 2,
-             IDLE_MACHINE_BUSY: 3, IDLE_NO_WORK: 4, IDLE_FORCED: 5}
+             IDLE_MACHINE_BUSY: 3, IDLE_NOT_CONCENTRATING: 4, IDLE_NO_WORK: 5,
+             IDLE_FORCED: 6}
     return order.get(reason or "", 9)
 
 
@@ -439,6 +587,7 @@ Rules:
 - If something is unclear or the passage references something not shown, record it as an open question rather than guessing.
 - Separate what the passage states (observation) from what you infer from it (interpretation/hypothesis).
 - Keep each item short. Prefer a few real items over many thin ones.
+- Also record Astra's own reaction to this passage: what she actually felt or noticed while reading it, and what she was thinking about besides the book. This is her momentary response, not a claim about who she is - do not turn it into a personality trait or a life lesson.
 
 Return STRICT JSON only:
 {{
@@ -449,7 +598,11 @@ Return STRICT JSON only:
   "observations": ["something the passage states"],
   "interpretations": ["a tentative reading of the passage"],
   "questions": ["something the passage leaves unresolved"],
-  "associations": ["something this reminds you of, inside the work so far"]
+  "associations": ["something this reminds you of, inside the work so far"],
+  "reaction": "Astra's own brief, concrete reaction to this passage (what she felt or noticed), or empty.",
+  "reaction_emotion": "one of: happy, sad, angry, tender, calm, weary, frustration, unexpected, realization, attachment, or empty",
+  "reaction_intensity": 0.0,
+  "reflection": "what Astra was thinking about besides the book, and how it connects to how she feels, or empty."
 }}
 
 {context}Passage:
@@ -491,6 +644,13 @@ def parse_extraction(raw: Any) -> Dict[str, List[Any]]:
     empty = {key: [] for key in (
         "entities", "events", "relationships", "ideas", "observations",
         "interpretations", "questions", "associations")}
+    # Scalar reaction fields: her momentary response, kept distinct from the
+    # analytical lists above. They are re-materialised even when the model omits
+    # them, so a bad reply costs one chunk and never crashes the reader.
+    empty["reaction"] = ""
+    empty["reaction_emotion"] = ""
+    empty["reflection"] = ""
+    empty["reaction_intensity"] = 0.0
     text = str(raw or "").strip()
     if not text:
         return empty
@@ -502,7 +662,8 @@ def parse_extraction(raw: Any) -> Dict[str, List[Any]]:
         return empty
     if not isinstance(data, dict):
         return empty
-    for key in empty:
+    for key in ("entities", "events", "relationships", "ideas", "observations",
+                "interpretations", "questions", "associations"):
         value = data.get(key)
         if value is None:
             continue
@@ -513,6 +674,16 @@ def parse_extraction(raw: Any) -> Dict[str, List[Any]]:
         if isinstance(value, (list, tuple)):
             cleaned = [v for v in value if v not in (None, "", [], {})]
             empty[key] = cleaned[:8]
+    for key in ("reaction", "reaction_emotion", "reflection"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            empty[key] = value.strip()[:600]
+    try:
+        empty["reaction_intensity"] = max(
+            0.0, min(1.0, float(data.get("reaction_intensity", 0.0) or 0.0))
+        )
+    except (TypeError, ValueError):
+        pass
     return empty
 
 
@@ -547,12 +718,19 @@ def resume_context_from(digest: Dict[str, List[Any]]) -> str:
 # ---------------------------------------------------------------------
 def reading_experience_kind(*, discovered: bool = False, surprise: bool = False,
                             attached: bool = False, resolved: bool = False,
-                            frustrated: bool = False, finished: bool = False) -> str:
+                            frustrated: bool = False, finished: bool = False,
+                            emotion: str = "") -> str:
     """The experience kind that best describes how a reading step went.
 
     Returned as a *name*; the caller records it through the store, so the
-    affective system stays grounded in events rather than in reading mood.
+    affective system stays grounded in events rather than in reading mood. An
+    explicit ``emotion`` (from the passage reaction) takes precedence over the
+    generic flags, so reading can produce an actual feeling rather than only an
+    analytical note.
     """
+    emotion_name = str(emotion or "").strip().casefold()
+    if emotion_name:
+        return emotion_name
     if finished:
         return "completed"
     if frustrated:
@@ -602,11 +780,19 @@ def _clean(text: Any) -> str:
     return " ".join(str(text or "").split())
 
 
+def _format_words(count: Any) -> str:
+    """A word count as a plain, readable number (e.g. ``12,480 words``)."""
+    try:
+        return f"{int(count):,} words"
+    except (TypeError, ValueError):
+        return "0 words"
+
+
 def render_progress(state: Any) -> str:
     state = coerce_state(state)
     title = state.get("title") or state.get("work_id") or "(untitled)"
     pct = int(round(progress(state) * 100))
-    return f"{title} [{state.get('status')}] {pct}% ({state.get('chunks', 0)} chunk(s))"
+    return f"{title} [{state.get('status')}] {pct}% ({_format_words(state.get('words_read'))})"
 
 
 def reader_prompt_block(state: Any, *, current_condition: Optional[str] = None) -> Optional[str]:
@@ -654,6 +840,8 @@ def diagnostics(state: Any, *, enabled: bool = True, reason: str = IDLE_NO_WORK,
         "progress": progress(state),
         "units_read": state.get("units_read"),
         "total_units": state.get("total_units"),
+        "words_read": state.get("words_read"),
+        "total_words": state.get("total_words"),
         "chunks": state.get("chunks"),
         "resume_context": state.get("resume_context") or None,
         "last_read_at": state.get("last_read_at") or None,
@@ -677,8 +865,13 @@ def format_diagnostics(state: Any, *, enabled: bool = True, reason: str = IDLE_N
         lines.append(f"Paused for busy task: {d['busy']}")
     if d["work_id"]:
         lines.append(f"Current: {d['title'] or d['work_id']} [{d['status']}]")
-        lines.append(f"Progress: {int(round((d['progress'] or 0) * 100))}% "
-                     f"({d['units_read']}/{d['total_units']} units, {d['chunks']} chunk(s))")
+        total_words = int(d["total_words"] or 0)
+        words_read = int(d["words_read"] or 0)
+        if total_words:
+            lines.append(f"Progress: {int(round((d['progress'] or 0) * 100))}% "
+                         f"({_format_words(words_read)} of {_format_words(total_words)})")
+        else:
+            lines.append(f"Progress: {_format_words(words_read)} read")
         if d["resume_context"]:
             lines.append(f"Where she is: {d['resume_context']}")
         if d["last_read_at"]:
@@ -690,7 +883,7 @@ def format_diagnostics(state: Any, *, enabled: bool = True, reason: str = IDLE_N
     last = d.get("last_cycle") or {}
     if last:
         lines.append(
-            f"Last cycle: read {last.get('chunks', 0)} chunk(s) from "
+            f"Last cycle: read {_format_words(last.get('words'))} from "
             f"{last.get('work_id') or '?'} ({last.get('outcome') or 'ok'})"
         )
     return "\n".join(lines)
@@ -713,11 +906,15 @@ __all__ = [
     "SOURCE_FORMAT_TEXT", "SOURCE_FORMAT_EPUB",
     "IDLE_OK", "IDLE_USER_ACTIVE", "IDLE_GAME_RUNNING", "IDLE_MACHINE_BUSY",
     "IDLE_NO_WORK", "IDLE_DISABLED", "IDLE_WORK_FINISHED", "IDLE_MODEL_FAILED",
-    "IDLE_HELD", "IDLE_FORCED",
+    "IDLE_HELD", "IDLE_FORCED", "IDLE_NOT_CONCENTRATING",
     "DEFAULT_IDLE_SECONDS", "DEFAULT_LOAD_CEILING", "DEFAULT_CHUNK_CHARS",
     "DEFAULT_CHUNKS_PER_CYCLE", "DEFAULT_MIN_CHUNK_CHARS",
     "DEFAULT_ALWAYS_IGNORED", "ProcessPolicy",
+    "WEARY_CEILING", "DEFAULT_PACE_CHUNKS",
+    "MAX_PACE_CHUNKS", "LONG_ABSENCE_SECONDS", "DEFAULT_REST_SECONDS",
+    "WEARY_REST_SECONDS", "concentration_ok", "reading_pace",
     "blank_state", "coerce_state", "progress", "is_live", "advance",
+    "words_in_text", "words_at",
     "looks_like_game", "is_user_active", "machine_busy", "should_read",
     "pause_reason", "interruption_priority",
     "chunk_bounds", "chunk_count", "READING_EXTRACTION_PROMPT", "reading_prompt",

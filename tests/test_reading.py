@@ -368,7 +368,8 @@ class TestExtractionParsing(unittest.TestCase):
         self.assertEqual(digest["events"], [])
         self.assertEqual(set(digest), {
             "entities", "events", "relationships", "ideas", "observations",
-            "interpretations", "questions", "associations"})
+            "interpretations", "questions", "associations",
+            "reaction", "reaction_emotion", "reflection", "reaction_intensity"})
 
     def test_entity_dicts_become_readable_lines(self):
         digest = reading.parse_extraction(
@@ -686,7 +687,7 @@ class TestCliReadingCommands(_Base):
     def test_read_now_runs_a_cycle_despite_being_interaction(self):
         session, _ = self._session(lambda p: "{}")
         session._handle_slash("/read")
-        self.assertTrue(any("Read 1 chunk(s)" in line for line in self.out))
+        self.assertTrue(any("words from" in line for line in self.out))
         self.assertGreater(self.library.get_state("sea")["char_offset"], 0)
 
     def test_read_pause_and_resume_toggle_the_reader(self):
@@ -705,7 +706,7 @@ class TestCliReadingCommands(_Base):
         session._handle_slash("/read")
         self.assertFalse(any("Read " in line for line in self.out))
         session._handle_slash("/read force")
-        self.assertTrue(any("Read 1 chunk(s)" in line for line in self.out))
+        self.assertTrue(any("words from" in line for line in self.out))
 
     def test_read_now_still_refuses_while_a_game_runs(self):
         session, reader = self._session(lambda p: "{}")
@@ -713,6 +714,22 @@ class TestCliReadingCommands(_Base):
         session._handle_slash("/read")
         self.assertTrue(any("game_running" in line for line in self.out))
         self.assertEqual(self.library.get_state("sea")["char_offset"], 0)
+
+    def test_reading_display_reports_words_not_chunks(self):
+        session, reader = self._session(lambda p: "{}")
+        session._handle_slash("/read")
+        # The reader's own report and the /reading diagnostics both speak in
+        # words, which is the measure Roum asked for; chunks are an internal
+        # unit and should not be the visible measure.
+        self.assertTrue(any("words from" in line for line in self.out))
+        session._display_reading()
+        text = "\n".join(self.out)
+        self.assertIn("words", text)
+        self.assertNotIn("chunk(s)", text)
+        state = self.library.get_state("sea")
+        self.assertGreater(state["words_read"], 0)
+        self.assertGreater(state["total_words"], 0)
+        self.assertGreaterEqual(state["total_words"], state["words_read"])
 
     def test_library_lists_ingested_works(self):
         session, _ = self._session(lambda p: "{}")
