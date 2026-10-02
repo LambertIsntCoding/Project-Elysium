@@ -498,7 +498,8 @@ class CompanionOrchestrator:
     # Public API
     # -----------------------------------------------------------------
     def build_prompt(self, user_input: str, conversation_history: List[Dict[str, str]]) -> str:
-        prompt, _ = self.build_prompt_with_diagnostics(user_input, conversation_history)
+        prompt, _ = self.build_prompt_with_diagnostics(
+            user_input, conversation_history, detailed=False)
         return prompt
 
     def note_retrieval(self, diagnostics: Dict[str, Any]) -> None:
@@ -521,7 +522,8 @@ class CompanionOrchestrator:
             pass
 
     def build_prompt_with_diagnostics(
-        self, user_input: str, conversation_history: List[Dict[str, str]]
+        self, user_input: str, conversation_history: List[Dict[str, str]],
+        *, detailed: bool = True,
     ) -> tuple:
         """Assemble the prompt and return ``(prompt, diagnostics)``.
 
@@ -529,6 +531,11 @@ class CompanionOrchestrator:
         building being side-effect free (e.g. the persistence tests) still hold.
         The diagnostics object records, per stage, which memories existed, which
         were retrieved, and which actually reached the prompt (section 15).
+
+        ``detailed=False`` returns the lean diagnostics (see
+        :meth:`_build_diagnostics`): the prompt is byte-for-byte identical, but
+        the developer-only analyses are skipped. The live turn path uses it so a
+        real reply does not pay for ``/debug``-only work.
         """
         identity_data = self._load_yaml("identity.yaml")
         examples_data = self._load_yaml("behavior_examples.yaml")
@@ -719,6 +726,7 @@ class CompanionOrchestrator:
             user_input, everything, governing, current_state, boundaries,
             retrieved_roum, retrieved_self, retrieved_rel, pinned, recent_experiences,
             relevant_questions, work_knowledge, prompt="\n".join(parts),
+            detailed=detailed,
         )
         return "\n".join(parts), diagnostics
 
@@ -994,13 +1002,14 @@ class CompanionOrchestrator:
         if not knowledge:
             return {}
         query_tokens = inquiry.significant_tokens(user_input)
+        haystack = str(user_input or "").casefold()
         active = str(active_work or "").strip().casefold()
         grouped: Dict[str, List[Dict[str, Any]]] = {}
         for mem in knowledge:
             work = inquiry.work_of(mem)
             if not work:
                 continue
-            mentions_work = work.casefold() in str(user_input or "").casefold()
+            mentions_work = work.casefold() in haystack
             # Significant overlap with the turn (never a bare stopword), or the
             # work named outright. This is what keeps two works apart: another
             # work's records are never pulled in on a common word alone.
@@ -1134,19 +1143,24 @@ class CompanionOrchestrator:
         Ordinary application-level provenance - source record, classification,
         authority class, work association, and the reason it was selected. It is
         for the developer only; it never reaches the prompt or Astra.
+
+        Only injected records and every authoritative constraint are examined,
+        so the trace is O(injected) rather than O(store).
         """
         from .memory import is_governing, is_authoritative_constraint
+        by_id = {m.get("id"): m for m in memories if m.get("id")}
+        wanted = {i for i in injected_ids if i}
+        wanted.update(
+            m.get("id") for m in memories
+            if m.get("id") and is_authoritative_constraint(m)
+        )
         trace: Dict[str, Any] = {}
-        for mem in memories:
-            mem_id = mem.get("id")
-            if not mem_id:
+        for mem_id in wanted:
+            mem = by_id.get(mem_id)
+            if mem is None:
                 continue
             authority = self._authority_of(mem)
             included = mem_id in injected_ids
-            if not included and authority != "authoritative_constraint":
-                # Only trace what was included, plus every constraint (so a
-                # correction that was *not* injected is visible as a failure).
-                continue
             trace[mem_id] = {
                 "content": _clean_text(mem.get("content")),
                 "source": mem.get("source"),
@@ -1182,9 +1196,18 @@ class CompanionOrchestrator:
         pinned: set, recent_experiences: List[Dict[str, Any]],
         relevant_questions: List[Dict[str, Any]],
         work_knowledge: Dict[str, List[Dict[str, Any]]],
-        prompt: str = "",
+        prompt: str = "", detailed: bool = True,
     ) -> Dict[str, Any]:
-        candidates = DeterministicLexicalRetriever.diagnose(user_input, everything)
+        """Assemble the turn's diagnostics.
+
+        ``detailed=True`` (the default) computes the full developer picture:
+        per-candidate scores, affinity/affect breakdowns, prompt sections, and
+        the authority trace. The live conversation path asks for the *lean*
+        form, which keeps the fields it actually consumes (``injected_ids`` for
+        ``note_retrieval``, plus the injected/retrieved id sets) and skips the
+        O(store) analyses that only ``/debug`` ever reads. The returned dict
+        always carries the same keys, so a consumer never sees a KeyError.
+        """
         retrieved_ids = {
             m.get("id") for m in (retrieved_roum + retrieved_self + retrieved_rel)
         }
@@ -1198,32 +1221,26 @@ class CompanionOrchestrator:
         # "received and ignored" from "displaced during prompt construction".
         constraints = [m for m in everything if is_authoritative_constraint(m)]
         conversation = getattr(self, "conversation", None)
-        return {
+        diagnostics: Dict[str, Any] = {
             "query": user_input,
-            "candidates": candidates,
+            "candidates": [],
             "governing_ids": [m.get("id") for m in governing],
             "total_governing": sum(1 for m in everything if is_governing(m) and m.get("content")),
             "current_state_slots": {m.get("slot"): _clean_text(m.get("content")) for m in current_state},
             "boundaries": boundaries,
-            "relational_affinity": self.affinity_diagnostics(),
-            "experiential_affect": self.affect_diagnostics(),
+            "relational_affinity": {},
+            "experiential_affect": {},
             "experience_ids": [m.get("id") for m in recent_experiences],
             "question_ids": [m.get("id") for m in relevant_questions],
             "work_context": {work: [m.get("id") for m in mems]
                              for work, mems in work_knowledge.items()},
             "retrieved_ids": sorted(i for i in retrieved_ids if i),
             "injected_ids": sorted(i for i in injected_ids if i),
-            "omitted_ids": sorted(
-                c["id"] for c in candidates
-                if c["id"] not in injected_ids and c.get("retrievable")
-            ),
-            "non_retrievable_ids": sorted(
-                c["id"] for c in candidates if not c.get("retrievable")
-            ),
+            "omitted_ids": [],
+            "non_retrievable_ids": [],
             "pinned_ids": sorted(i for i in pinned if i),
-            # --- provenance & authority (developer-only) ---
-            "prompt_sections": self._prompt_sections(prompt),
-            "authority_trace": self._authority_trace(everything, injected_ids),
+            "prompt_sections": [],
+            "authority_trace": {},
             "authoritative_constraints": [
                 {
                     "id": m.get("id"),
@@ -1237,6 +1254,25 @@ class CompanionOrchestrator:
             ],
             "working_memory": conversation.snapshot() if conversation is not None else {},
         }
+        if not detailed:
+            return diagnostics
+
+        candidates = DeterministicLexicalRetriever.diagnose(user_input, everything)
+        diagnostics.update({
+            "candidates": candidates,
+            "relational_affinity": self.affinity_diagnostics(),
+            "experiential_affect": self.affect_diagnostics(),
+            "omitted_ids": sorted(
+                c["id"] for c in candidates
+                if c["id"] not in injected_ids and c.get("retrievable")
+            ),
+            "non_retrievable_ids": sorted(
+                c["id"] for c in candidates if not c.get("retrievable")
+            ),
+            "prompt_sections": self._prompt_sections(prompt),
+            "authority_trace": self._authority_trace(everything, injected_ids),
+        })
+        return diagnostics
 
     def query_gemma(self, prompt: str) -> str:
         payload = {

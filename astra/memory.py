@@ -27,6 +27,7 @@ import uuid
 from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import math
@@ -304,6 +305,7 @@ _STOPWORDS = {
 }
 
 
+@lru_cache(maxsize=4096)
 def _stem(word: str) -> str:
     """Very small, *consistent* stemmer.
 
@@ -311,6 +313,10 @@ def _stem(word: str) -> str:
     same way ("likes"/"like" -> "like", "called"/"calling" -> "call"). It is
     not linguistically complete and does not need to be: it exists only to make
     contradiction detection a little more tolerant of inflection.
+
+    Cached because contradiction/restatement checks stem every word of every
+    stored record on each write; the input space is tiny, so the hit rate is
+    near-total.
     """
     for suffix in ("ing", "ed", "s"):
         if word.endswith(suffix) and len(word) - len(suffix) >= 3:
@@ -318,10 +324,23 @@ def _stem(word: str) -> str:
     return word
 
 
-def _content_tokens(text: Any) -> set:
-    """Stemmed, stop-word- and negation-free content words."""
-    words = re.findall(r"[a-z0-9']+", str(text or "").casefold())
-    return {_stem(w) for w in words if w not in _STOPWORDS and w not in _NEGATIONS and len(w) > 1}
+@lru_cache(maxsize=16384)
+def _content_tokens_cached(text: str) -> frozenset:
+    words = re.findall(r"[a-z0-9']+", text.casefold())
+    return frozenset(
+        _stem(w) for w in words
+        if w not in _STOPWORDS and w not in _NEGATIONS and len(w) > 1
+    )
+
+
+def _content_tokens(text: Any) -> frozenset:
+    """Stemmed, stop-word- and negation-free content words.
+
+    Cached and returned as a frozenset: callers only intersect/union/measure it,
+    and the same record content is re-analysed against many candidates during
+    contradiction and restatement checks.
+    """
+    return _content_tokens_cached(str(text or ""))
 
 
 # Terms whose polarity (asserted vs negated) actually decides a contradiction.
@@ -1389,9 +1408,26 @@ _NULL_READ_FIELDS = ("supersedes", "superseded_by")
 _LIST_READ_FIELDS = ("tags", "keywords", "contradicts")
 
 
+def _deep_copy(value: Any) -> Any:
+    """A fast, fully independent copy of JSON-shaped data.
+
+    Equivalent to :func:`copy.deepcopy` for the dict/list/str/number/bool/None
+    shapes a memory record can hold, but far cheaper. ``deepcopy`` resolves its
+    memo table and dispatches through ``__deepcopy__`` at every node, which
+    dominates the read path once thousands of records are materialised per turn;
+    a plain recursive rebuild of the two container types avoids all of it while
+    keeping lists and dicts unshared, so callers can never mutate the store.
+    """
+    if type(value) is dict:
+        return {key: _deep_copy(item) for key, item in value.items()}
+    if type(value) is list:
+        return [_deep_copy(item) for item in value]
+    return value
+
+
 def _present(mem: Dict[str, Any]) -> Dict[str, Any]:
     """A deep copy of ``mem`` with compact-layout defaults restored for reading."""
-    out = copy.deepcopy(mem)
+    out = _deep_copy(mem)
     for field, default in _READ_DEFAULTS.items():
         out.setdefault(field, default)
     for field in _NULL_READ_FIELDS:
@@ -1732,11 +1768,18 @@ class TripleMemoryStore:
 
     @contextmanager
     def _transaction(self, key: str) -> Iterator[None]:
-        """Mutate, then save; if anything fails, restore the previous state."""
-        snapshot = copy.deepcopy(self._get_list(key))
+        """Mutate, then save; if anything fails, restore the previous state.
+
+        The write is skipped when the mutation left the list identical (e.g. a
+        maintenance sweep that found nothing to change), so an idle store is not
+        re-serialised on every maintenance tick. The comparison is a cheap
+        equality walk, far cheaper than the JSON dump it avoids.
+        """
+        snapshot = _deep_copy(self._get_list(key))
         try:
             yield
-            self._persist(key)
+            if self._get_list(key) != snapshot:
+                self._persist(key)
         except BaseException:
             self._set_list(key, snapshot)
             raise
@@ -2766,7 +2809,7 @@ class TripleMemoryStore:
                 key=lambda m: str(m.get("timestamp", "")),
             )
             with self._lock:
-                snapshot = copy.deepcopy(self.memories[target_model])
+                snapshot = _deep_copy(self.memories[target_model])
                 earlier: List[Dict[str, Any]] = []
                 for mem in ordered:
                     if mem.get("status") == "active":

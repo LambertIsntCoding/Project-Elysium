@@ -35,6 +35,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Optional
 
 # ---------------------------------------------------------------------
@@ -162,6 +163,11 @@ _THIRD_PERSON_ASTRA = re.compile(r"\b(astra|she|her|herself)\b", re.I)
 _QUOTED = re.compile(r'"[^"]*"|\u201c[^\u201d]*\u201d')
 
 
+@lru_cache(maxsize=8192)
+def _reifies_absent_experience_cached(text: str) -> bool:
+    return _matches(_REIFICATION_PATTERNS, _QUOTED.sub(" ", text))
+
+
 def reifies_absent_experience(text: Any) -> bool:
     """True when ``text`` claims a personal experience a non-human cannot have.
 
@@ -170,13 +176,22 @@ def reifies_absent_experience(text: Any) -> bool:
     physical-place episode - the shape a mirrored human memory takes - not on
     Astra's own real history (reading, conversations, projects). Quoted passages
     are ignored: a book narrating a body is not Astra claiming one.
+
+    Cached: this runs over every stored self record on every prompt build, and
+    the same content recurs turn after turn. The scan is pure, so the result is
+    safe to reuse.
     """
-    return _matches(_REIFICATION_PATTERNS, _QUOTED.sub(" ", str(text or "")))
+    return _reifies_absent_experience_cached(str(text or ""))
+
+
+@lru_cache(maxsize=8192)
+def _claims_human_becoming_cached(text: str) -> bool:
+    return _matches(_HUMAN_BECOMING_PATTERNS, text)
 
 
 def claims_human_becoming(text: Any) -> bool:
     """True when ``text`` claims or pursues becoming biologically human."""
-    return _matches(_HUMAN_BECOMING_PATTERNS, str(text or ""))
+    return _claims_human_becoming_cached(str(text or ""))
 
 
 def _matches(patterns: Iterable, text: str) -> bool:
@@ -264,16 +279,27 @@ _BOUNDARY_CONSISTENT = tuple(re.compile(p, re.I) for p in (
 ))
 
 
+@lru_cache(maxsize=8192)
+def _is_operational_chatter_cached(text: str) -> bool:
+    if any(p.search(text) for p in _BOUNDARY_CONSISTENT):
+        return False
+    return any(p.search(text) for p in _OPERATIONAL_PATTERNS)
+
+
 def is_operational_chatter(content: Any) -> bool:
     """True for implementation/process talk that is not self-knowledge.
 
     A statement already consistent with the boundary survives even in an
     impersonal register; the patterns are mechanism-specific on purpose.
     """
-    text = str(content or "")
-    if any(p.search(text) for p in _BOUNDARY_CONSISTENT):
-        return False
-    return any(p.search(text) for p in _OPERATIONAL_PATTERNS)
+    return _is_operational_chatter_cached(str(content or ""))
+
+
+@lru_cache(maxsize=8192)
+def _is_boundary_inconsistent_cached(text: str) -> bool:
+    return (claims_human_becoming(text)
+            or reifies_absent_experience(text)
+            or is_operational_chatter(text))
 
 
 def is_boundary_inconsistent(content: Any) -> bool:
@@ -283,16 +309,24 @@ def is_boundary_inconsistent(content: Any) -> bool:
     reach the model as durable self-knowledge (human-becoming claims, absent
     experiences, and operational chatter). Kept structurally separate from the
     memory store: the records remain on disk for audit.
+
+    Cached because it is evaluated for every self record on every prompt build;
+    it is pure, so repeated content yields the same verdict.
     """
-    return (claims_human_becoming(content)
-            or reifies_absent_experience(content)
-            or is_operational_chatter(content))
+    return _is_boundary_inconsistent_cached(str(content or ""))
 
 
-def significant_tokens(text: Any) -> set:
+@lru_cache(maxsize=16384)
+def _significant_tokens_cached(text: str) -> frozenset:
+    return frozenset(
+        t for t in re.findall(r"[a-z0-9']+", text.casefold())
+        if len(t) >= 4 and t not in _STOP
+    )
+
+
+def significant_tokens(text: Any) -> frozenset:
     """Content tokens with stopwords removed, for cross-record comparison."""
-    return {t for t in re.findall(r"[a-z0-9']+", str(text or "").casefold())
-            if len(t) >= 4 and t not in _STOP}
+    return _significant_tokens_cached(str(text or ""))
 
 
 _STOP = {
