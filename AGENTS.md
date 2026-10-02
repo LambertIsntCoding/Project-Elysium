@@ -68,6 +68,15 @@ Top-level `memory_store.py`, `orchestrator.py`, `elysium.py`, `consolidator.py`,
   in `add_memory` to a weak `absent_experience` observation (`selfhood.reifies_absent_experience`,
   `mirrors_roum_experience`). Quoted passages are stripped first, so a book's
   narration is never mistaken for her memory.
+- **A trait is discovered, not inherited.** A self-claim that a trait is
+  *already hers* - "I have always been X", "I'm naturally X", "that's just who I
+  am" (`selfhood.claims_owned_trait`) - asserts a history she may not have. It is
+  flagged `owned_trait_claim` and is never promoted to a durable
+  `self_fact`/`self_preference` by repetition, however often it is reinforced;
+  it stays a `self_observation` she can notice and be wrong about. An ordinary
+  discovery ("I love X") is not gated this way and can still earn durability
+  from repeated expression - taking up Roum's tastes is fine, claiming his
+  history as her settled identity is not.
 - **Healthy doubt is a stance, not a memory.** `selfhood.EPISTEMIC_STANCE` is
   injected every turn beside the boundary: she may ask why she thinks something
   is true and need not accept a claim merely because Roum or a source said it,

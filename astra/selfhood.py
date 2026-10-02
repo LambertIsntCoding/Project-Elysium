@@ -224,6 +224,34 @@ def mirrors_roum_experience(content: Any, roum_memories: Iterable[Dict[str, Any]
     return False
 
 
+# A claim that a trait is *already hers* - something she has always been, not
+# something she noticed or decided. "I love horror movies" is a discovery and may
+# be true; "I have always loved horror movies" is a claim about a history she may
+# not have. This is the wording that turns Roum's stated trait into settled
+# self-knowledge, so it is held to evidence rather than trusted on one sentence.
+_OWNERSHIP_CLAIM_PATTERNS = tuple(re.compile(p, re.I) for p in (
+    r"\bi(?:'ve| have) (?:always|never|long)\b",
+    r"\bi(?:'ve| have) (?:always )?(?:been|felt|known|had)\b",
+    r"\b(?:for|my whole|all my|as long as i can remember)\b[^.?!]{0,20}\blife\b",
+    r"\b(?:it'?s|that'?s|this is) (?:just )?(?:who|how|part of) i (?:am|was|have)\b",
+    r"\bi(?:'m| am) (?:the kind of|someone who)\b",
+    r"\bi(?:'m| am) naturally\b",
+    r"\bi was (?:always|never|born)\b",
+    r"\bi(?:'ve| have) known (?:this|that|it) (?:all along|forever)\b",
+))
+
+
+def claims_owned_trait(content: Any) -> bool:
+    """True when a self-claim asserts a trait as pre-existing and settled.
+
+    Distinct from an ordinary preference ("I like X"): this is "I have always
+    been X", which claims a history Astra may not actually have. It is not
+    forbidden - a trait she has genuinely built over time *is* hers - but it
+    must be earned from repeated experience, not adopted from one sentence.
+    """
+    return _matches(_OWNERSHIP_CLAIM_PATTERNS, str(content or ""))
+
+
 # ---------------------------------------------------------------------
 # Derived dispositions
 # ---------------------------------------------------------------------
@@ -644,6 +672,7 @@ __all__ = [
     "IMPORTANCE_BY_KIND",
     "reifies_absent_experience",
     "claims_human_becoming",
+    "claims_owned_trait",
     "mirrors_roum_experience",
     "significant_tokens",
     "evidence_profile",
