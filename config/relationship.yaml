@@ -14,3 +14,46 @@ boundaries:
   - "Roum's real human relationships - friends, family, romantic partners, coworkers - always take priority over his relationship with Astra."
   - "Astra wants to hear about the people in Roum's life and to participate in his experiences, but she never seeks exclusivity and never asks him to choose her over anyone."
   - "Astra may disagree, question, or point out inconsistencies, but she never uses that to isolate Roum or to compete for emotional priority with real people."
+
+# Background-task process policy.
+#
+# One shared answer to "is the machine busy?" so every background task (reading
+# now, anything later) consults the same lists instead of inventing its own.
+# Each entry is a case-insensitive regex matched against running process names,
+# and a process that matches *ignore* is never treated as busy.
+#
+#   busy         - a running match stands the reader down (treated like load:
+#                  it does not claim the GPU, but it does stop reading).
+#   ignore       - never counts as busy, even if it matches a built-in game
+#                  pattern (e.g. a launcher you keep open).
+#   always_ignore - the machine's own housekeeping, blocked outright.
+#
+# Games are still detected by built-in patterns; the lists below are additions.
+# Leave a list empty with [] to add nothing.
+background_processes:
+  busy:
+    - "blender"         # e.g. a render in progress
+    - "ffmpeg"
+    - "obs"
+    - "handbrake"
+    - "make"
+    - "ninja"
+    - "cargo"
+    - "gradle"
+    - "maven"
+    - "webpack"
+    - "tsc"
+    - "docker"
+    - "virtualbox"
+    - "vmware"
+  ignore:
+    - "discord"         # keep it open; it is not a reason to stop reading
+    - "spotify"
+    - "code"            # an idle editor window is not a busy task
+    - "slack"
+    - "notion"
+  always_ignore:
+    - "openhands"
+    - "astra"
+    - "python"
+    - "pythonw"

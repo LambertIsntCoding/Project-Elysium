@@ -138,6 +138,21 @@ Top-level `memory_store.py`, `orchestrator.py`, `elysium.py`, `consolidator.py`,
   `boredom = time_since_last_interaction` would be the arbitrary timer the brief
   forbids. `temporal.BOREDOM_IMPLEMENTED` records that as a decision; only add it
   with a real consumer that gates a concrete choice.
+- **The process policy is shared, config-driven, and one-directional.** `reading.ProcessPolicy`
+  (built from `config/relationship.yaml` `background_processes`) is the single
+  answer to "is the machine busy?" for *every* background task: `busy` patterns
+  stand the reader down (like load, not GPU), `ignore` names never count even if
+  they match a built-in game pattern, `always_ignore` is an absolute block
+  (Astra's own processes). Order matters: always_ignore and ignore are checked
+  before busy and before the game patterns. Games are still built-in patterns;
+  a name matching both counts as a game (the GPU-claiming case). New background
+  tasks must consult this policy, not invent their own process lists.
+- **`/read force` is the escape hatch, and it is bounded.** `force=True` bypasses
+  the courtesy conditions (idle, load, a busy task) at both the start and the
+  between-chunk check, so forcing against a busy task actually reads. It does
+  *not* bypass the hard stops: reading disabled, nothing to read, and a running
+  game (not fighting the machine is not a courtesy). `should_read` keeps the
+  game/gpu check ahead of the force branch for exactly this reason.
 - **`/library-scan` is read-only; the number it prints is the pick.** It lists
   the books folder (default `storage/library/books`, overridable) and never
   ingests. `/read add <n>` selects by that index, so a filename with spaces is
