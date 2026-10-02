@@ -24,6 +24,7 @@ import atexit
 import json
 import os
 import threading
+import time
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -57,6 +58,11 @@ MEMORY_VIEW_LIMIT = 40
 # Prefixes used only for the display label in the input loop.
 _ELYSIUM_LABEL = "Elysium > "
 _ASTRA_LABEL = "Astra > "
+
+# How long a checkpoint turn waits for pending background consolidation before
+# saving anyway. A wedged model call must never freeze the session; whatever is
+# still pending is flushed on the next checkpoint or on exit.
+CHECKPOINT_DRAIN_TIMEOUT = 20.0
 
 HELP_TEXT = """
 ==========================================================
@@ -179,6 +185,7 @@ class ChatSession:
         conversation_id: Optional[str] = None,
         reader: Any = None,
         background_consolidation: bool = False,
+        checkpoint_every: int = 2,
         input_fn: Callable[[str], str] = input,
         output_fn: Callable[[str], None] = print,
     ):
@@ -222,7 +229,18 @@ class ChatSession:
                 daemon=True,
             )
             self._consolidation_thread.start()
-            atexit.register(self._drain_consolidation)
+            atexit.register(self.close)
+        # An abrupt close (a killed .bat window, a crash) must not cost the
+        # session's work: the run loop traps SIGTERM and, on Windows, the
+        # console-close/logoff events so the store is flushed before the process
+        # goes away. Handlers are installed in run() only, so an in-process test
+        # session never mutates global signal handlers.
+        self._shutdown_installed = False
+        # Checkpoint cadence: every N turns the session flushes pending
+        # background consolidation and saves the store, so a window closed
+        # without a clean exit loses at most N turns. 0 disables it.
+        self._checkpoint_every = max(0, int(checkpoint_every))
+        self._checkpoint_counter = 0
 
     def _emit(self, text: str) -> None:
         self.output_fn(text)
@@ -274,6 +292,7 @@ class ChatSession:
         command_response = self.cmd_store.check_trigger(user_input)
         if command_response:
             self._record_turn(user_input, command_response, consolidate=False)
+            self._checkpoint()
             return command_response
 
         # 2. ELYSIUM root-layer routing, decided by the application *before*
@@ -301,6 +320,7 @@ class ChatSession:
         # the live path - never inside build_prompt, which stays read-only.
         self._record_relational_event(user_input, response)
         self._record_turn(user_input, response, consolidate=not response.startswith("[Error"))
+        self._checkpoint()
         # Working memory is updated on the live path only, and after the turn, so
         # the conversation's scratch state (topic, goal, references, threads)
         # reflects what has happened. It is never written through the memory
@@ -441,20 +461,122 @@ class ChatSession:
                     with self._consolidation_lock:
                         self._consolidation_pending -= 1
 
-    def _drain_consolidation(self) -> None:
-        """Wait for queued consolidation jobs so no memory is lost on exit."""
+    def _drain_consolidation(self, max_wait: Optional[float] = None) -> None:
+        """Wait for queued consolidation jobs so no memory is lost on exit.
+
+        ``max_wait`` bounds the wait (seconds) so a checkpoint can never freeze
+        the session on a wedged model call; a clean shutdown passes ``None`` and
+        waits as long as it takes.
+        """
         thread = self._consolidation_thread
         if thread is None or not thread.is_alive():
             return
+        deadline = None if max_wait is None else time.monotonic() + max_wait
         while True:
             with self._consolidation_lock:
                 if self._consolidation_pending == 0:
                     break
+            if deadline is not None and time.monotonic() >= deadline:
+                break
             thread.join(timeout=0.05)
 
+    def checkpoint(self) -> None:
+        """Commit pending work every couple of turns.
+
+        Consolidation runs in the background so the reply is not delayed; this
+        is the point where it is flushed and the store is asked to save, so a
+        session that is closed without a clean exit loses at most a turn or two.
+        """
+        self._checkpoint_counter += 1
+        if self._checkpoint_every <= 0 or self._checkpoint_counter % self._checkpoint_every:
+            return
+        self._drain_consolidation(max_wait=CHECKPOINT_DRAIN_TIMEOUT)
+        store = getattr(self.orchestrator, "store", None)
+        if store is not None and callable(getattr(store, "flush", None)):
+            store.flush()
+
+    def _checkpoint(self) -> None:
+        self.checkpoint()
+
     def close(self) -> None:
-        """Flush pending background work so a clean shutdown loses nothing."""
-        self._drain_consolidation()
+        """Flush pending background work so a clean shutdown loses nothing.
+
+        The wait is bounded so a wedged model call cannot hang an exit or an OS
+        shutdown; at worst the last queued extraction is not applied, and the
+        store is still flushed.
+        """
+        self._drain_consolidation(max_wait=CHECKPOINT_DRAIN_TIMEOUT)
+        store = getattr(self.orchestrator, "store", None)
+        if store is not None and callable(getattr(store, "flush", None)):
+            store.flush()
+
+    # -- shutdown (window close / signal) ----------------------------------
+    def _install_shutdown_handlers(self) -> None:
+        """Best-effort traps so closing the window still saves.
+
+        SIGINT is deliberately *not* overridden: the default KeyboardInterrupt
+        already breaks the loop and flushes through the normal ``finally``, and
+        trapping it would swallow Ctrl+C. SIGTERM covers ``kill``/logoff, and on
+        Windows the console X raises a control event that is not a Python signal
+        at all (see ``_install_windows_console_handler``).
+        """
+        import signal
+
+        def _flush_before_exit(signum, frame):
+            self._flush_and_exit()
+
+        for name in ("SIGTERM", "SIGBREAK"):
+            sig = getattr(signal, name, None)
+            if sig is None:
+                continue
+            try:
+                signal.signal(sig, _flush_before_exit)
+            except (ValueError, OSError, RuntimeError):
+                # Not on the main thread, or the signal is not supported here.
+                pass
+        self._shutdown_installed = True
+        self._install_windows_console_handler()
+
+    def _install_windows_console_handler(self) -> None:
+        """Trap the console X / logoff on Windows so a close still flushes.
+
+        Closing a console window raises CTRL_CLOSE_EVENT, which is *not*
+        delivered as a Python signal. A tiny SetConsoleCtrlHandler shim forwards
+        it to the same flush path; if ctypes is unavailable this is skipped and
+        only the signal handlers apply. Windows only grants a few seconds before
+        force-killing the process, so the flush is bounded and then exits hard.
+        """
+        if os.name != "nt":
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            handler_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+            ctrl_close, ctrl_logoff, ctrl_shutdown = 2, 5, 6
+
+            def _console_handler(event):
+                if event in (ctrl_close, ctrl_logoff, ctrl_shutdown):
+                    try:
+                        self.close()
+                    except Exception:
+                        pass
+                    os._exit(0)
+                return 0
+
+            self._console_handler_ref = handler_type(_console_handler)
+            kernel32 = ctypes.windll.kernel32
+            kernel32.SetConsoleCtrlHandler(self._console_handler_ref, True)
+        except Exception:
+            self._console_handler_ref = None
+
+    def _flush_and_exit(self) -> None:
+        """Flush the store, then exit the process."""
+        try:
+            self.close()
+        except Exception:
+            pass
+        raise SystemExit(0)
 
     # -- slash commands ----------------------------------------------------
     def _handle_slash(self, user_input: str) -> None:
@@ -1311,6 +1433,11 @@ class ChatSession:
 
     # -- main loop ---------------------------------------------------------
     def run(self) -> None:
+        # A real interactive run installs the shutdown traps; an in-process test
+        # session (which never sets background_consolidation) does not, so tests
+        # never touch global signal state.
+        if self._consolidate_in_background:
+            self._install_shutdown_handlers()
         self._emit("==========================================================")
         self._emit("  Astra - Local Companion Core")
         self._emit("  Backend: Ollama (gemma4:e4b)")
@@ -1321,9 +1448,10 @@ class ChatSession:
         try:
             self._run_loop()
         finally:
-            # Flush queued memory extraction before tearing anything down, so a
-            # turn's memory is not lost when the process exits.
-            self._drain_consolidation()
+            # Flush queued memory extraction and save the store before tearing
+            # anything down, so a turn's memory is not lost when the process
+            # exits - including an abrupt close of the console window.
+            self.close()
             # The reader is a daemon; stop it so the process can exit cleanly and
             # no half-cycle is left running against a closed store.
             reader = self.reader

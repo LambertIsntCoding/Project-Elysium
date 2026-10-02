@@ -398,6 +398,28 @@ The turn path is kept fast without changing what is stored or rendered:
 - **`/memories`, `/search` and `/debug` cap long listings** at `MEMORY_VIEW_LIMIT`
   with an explicit "... and N more" footer. This is a display cap only - nothing
   is hidden from the store or from the retrieval path.
+- **Every turn is saved; a checkpoint every N turns is only a safety net.**
+  Mutations persist through `_transaction` as they happen, so a normal session
+  already loses nothing. `ChatSession.checkpoint` (every `checkpoint_every`
+  conversation turns, default 2) additionally drains queued background
+  consolidation - bounded by `CHECKPOINT_DRAIN_TIMEOUT` so a wedged model call
+  cannot freeze the session - and calls `store.flush()`, which re-saves any
+  model in `_dirty`. So a window closed without a clean exit loses at most N
+  turns. `_transaction` marks a model dirty on change (and on rollback) but
+  `_persist` clears it, which is what makes `flush()` normally a no-op. Do not
+  remove `_dirty`/`flush` or the dirty marking.
+- **A window close still saves.** `ChatSession.run` installs shutdown traps for
+  a real run only (never for an in-process test session, so tests do not touch
+  global signal state): `SIGTERM`/`SIGBREAK` flush and exit, and on Windows a
+  `SetConsoleCtrlHandler` shim catches `CTRL_CLOSE_EVENT` (the console X),
+  logoff and shutdown, which are not Python signals. `SIGINT` is deliberately
+  left alone so Ctrl+C keeps its normal `KeyboardInterrupt` path. Handlers only
+  flush and exit; they change no other behaviour.
+- **Store mutations take `self._lock`.** With background consolidation writing
+  from a worker thread, `record_use`, `apply_decay`, `apply_utility_decay` and
+  `expire_governing_slots` must hold the lock for their whole read-mutate-persist
+  sequence (RLock, so nesting is fine). Without it a checkpoint/autosave can
+  interleave with a mutation and persist a torn state.
 
 Measured on the real store (~8k records): live prompt build ~277ms -> ~57ms,
 `record_use` ~130ms -> ~108ms, `add_memory` ~247ms -> ~160ms, idle maintenance
