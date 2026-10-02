@@ -25,6 +25,7 @@ contradiction is recorded rather than silently decided.
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 # ---------------------------------------------------------------------
@@ -535,12 +536,22 @@ def _tokens(text: str) -> set:
     return {t for t in re.findall(r"[a-z0-9']+", str(text or "").casefold()) if len(t) >= 3}
 
 
-def significant_tokens(text: Any) -> set:
+@lru_cache(maxsize=16384)
+def _significant_tokens_cached(text: str) -> frozenset:
+    return frozenset(_tokens(text) - _STOP)
+
+
+def significant_tokens(text: Any) -> frozenset:
     """Content tokens of ``text`` with stopwords removed.
 
     The shared retriever scores raw token overlap and does not filter stopwords,
     so a turn containing "the" can match unrelated records. Work-scoping and
     question-relevance use this stricter view so a common word never drags in
     another work's context.
+
+    Cached: the same record content is re-tokenized on every turn (and, for the
+    question set, several times within one turn), so the analysis is pure and the
+    result is safe to reuse. Callers only test membership/intersection, so the
+    frozenset return keeps a cached value from being mutated.
     """
-    return _tokens(str(text or "")) - _STOP
+    return _significant_tokens_cached(str(text or ""))

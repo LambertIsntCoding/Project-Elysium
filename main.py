@@ -20,8 +20,11 @@ tested without a terminal or a live model.
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
+import threading
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -46,52 +49,66 @@ _COMMAND_HINTS = ("next time", "when i say", "whenever i say", "from now on when
 
 _EXIT_WORDS = {"exit", "quit", "/exit", "/quit"}
 
+# How many records of a single type /memories prints before summarising the
+# rest. The store can hold thousands of records; this keeps the overview
+# readable without hiding anything from the store itself.
+MEMORY_VIEW_LIMIT = 40
+
 # Prefixes used only for the display label in the input loop.
 _ELYSIUM_LABEL = "Elysium > "
 _ASTRA_LABEL = "Astra > "
 
 HELP_TEXT = """
---- CLI COMMANDS ---
- /memories [target] : Grouped memory overview; 'all' (or no target) lists everything
-                      (target optional: roum, self, relationship, all)
- /memory <id>       : Display full record and provenance for a memory
- /search <text>     : Search memories by content, keywords, or tags
- /governing         : Show the memories that always apply
- /temporary         : Show transient context for this session (not stored)
- /contradictions    : Show memories that were weakened or superseded
- /reconcile         : Link same-subject contradictions that were never resolved
- /relationship      : Astra's accumulated Roum-specific command-affinity state
- /affect            : Astra's current experiential affect (temporary, not memory)
- /self              : Astra's self-portrait: what she is, and patterns from her history
- /experiences       : List stored experiences (what she has actually done or met)
- /questions         : Open lines of inquiry and their evidence (not yet resolved)
- /work [id]         : Work-specific understanding: observations, interpretations
- /reading           : Background reader status: what she is reading, how many
-                      words in, and why she is (not) reading right now
- /time              : Astra's sense of elapsed time: the gap since she was last
-                      present, long-open questions, and long-running works
- /library           : Local works ingested and how many words she has read of each
- /library-scan [folder] : List the books in the books folder, numbered, without
-                      ingesting; then ingest one by number. Default folder is
-                      storage/library/books, or pass one: /library-scan "C:\\Books"
- /read [pause|resume|force|add ...] : One bounded reading cycle, or control it.
-                      force : run a cycle now even if the idle/busy gate says no
-                      (a running game still stops it; see config/relationship.yaml)
-                      add <number> : ingest book #<number> from the last scan
-                      add "<path>" [title] : ingest a file; quote paths with spaces
-                      e.g. /read force   or   /read add 3
- /dormant           : Show stale memories that have gone dormant
- /stats             : Memory health summary (counts, types, utility)
- /timeline [gran] [target] : Memory counts by date; gran = month (default), day, year
-                      (e.g. /timeline month roum, /timeline day)
- /forget <id>       : Retire a memory without deleting it (archive)
- /restore <id>      : Bring an archived memory back
- /correct           : Interactive workflow to supersede an incorrect memory
- /journal [period]  : AI journal reflections; optional period, e.g. 2026-09
- /reading-journal [work_id] : Astra's reactions to books, grouped by work
- /debug <message>   : Show memory retrieval diagnostics for a message
- /exit              : Save session and exit
---------------------
+==========================================================
+  CLI COMMANDS
+==========================================================
+
+  Browsing memory
+    /memories [target]        Grouped memory overview. target: roum, self,
+                              relationship, or all (default)
+    /memory <id>              Full record and provenance for one memory
+    /search <text>            Search memories by content, keyword, or tag
+    /governing                The memories that always apply
+    /temporary                Transient context for this session (not stored)
+    /contradictions           Memories weakened or superseded by a later one
+    /dormant                  Stale memories that have gone dormant
+    /stats                    Memory health summary (counts, types, utility)
+    /timeline [gran] [target] Counts by date; gran = month (default), day, year
+    /journal [period]         AI journal reflections (e.g. /journal 2026-09)
+    /reading-journal [id]     Astra's reactions to books, grouped by work
+
+  Editing memory
+    /forget <id>              Retire a memory without deleting it (archive)
+    /restore <id>             Bring an archived memory back
+    /correct                  Interactive workflow to supersede a memory
+    /reconcile                Link same-subject contradictions never resolved
+
+  Astra's state
+    /relationship             Accumulated Roum-specific command-affinity state
+    /affect                   Current experiential affect (temporary, not memory)
+    /self                     Self-portrait: what she is, and patterns from her past
+    /experiences              What she has actually done or met
+    /questions                Open lines of inquiry and their evidence
+    /work [id]                Work-specific observations and interpretations
+    /time                     Elapsed time, long-open questions, long-running works
+
+  Reading
+    /reading                  Reader status: what she is reading, how far, and why
+    /library                  Ingested works and words read of each
+    /library-scan [folder]    Number the books folder (no ingest), then /read add N.
+                              Default: storage/library/books
+    /read [pause|resume|force|add ...]
+                              One bounded cycle, or control the reader:
+                                force            read now despite the idle/busy gate
+                                                 (a running game still stops it)
+                                add <number>     ingest book #N from the last scan
+                                add "<path>" [t] ingest a file; quote spaced paths
+
+  Session
+    /help                     Show this list
+    /debug <message>          Memory retrieval diagnostics for a message
+    /exit                     Save session and exit
+==========================================================
 """
 
 
@@ -161,6 +178,7 @@ class ChatSession:
         consolidator: Optional[Callable[..., None]] = None,
         conversation_id: Optional[str] = None,
         reader: Any = None,
+        background_consolidation: bool = False,
         input_fn: Callable[[str], str] = input,
         output_fn: Callable[[str], None] = print,
     ):
@@ -185,6 +203,26 @@ class ChatSession:
         self.output_fn = output_fn
         self.history: List[Dict[str, str]] = []
         self.turn_counter = 0
+
+        # Consolidation is a second model call per turn. Off by default (a plain
+        # ChatSession stays synchronous and deterministic, which the tests rely
+        # on); build_session turns it on for real runs so the reply is not
+        # delayed by memory extraction. The daemon thread processes jobs in
+        # submission order and is drained on exit.
+        self._consolidate_in_background = bool(background_consolidation)
+        self._consolidation_queue: deque = deque()
+        self._consolidation_pending = 0
+        self._consolidation_lock = threading.Lock()
+        self._consolidation_event = threading.Event()
+        self._consolidation_thread: Optional[threading.Thread] = None
+        if self._consolidate_in_background and consolidator is not None:
+            self._consolidation_thread = threading.Thread(
+                target=self._consolidate_worker,
+                name="astra-consolidation",
+                daemon=True,
+            )
+            self._consolidation_thread.start()
+            atexit.register(self._drain_consolidation)
 
     def _emit(self, text: str) -> None:
         self.output_fn(text)
@@ -250,7 +288,7 @@ class ChatSession:
         # 4. Normal conversational turn.
         self.turn_counter += 1
         prompt, diagnostics = self.orchestrator.build_prompt_with_diagnostics(
-            user_input, self.history
+            user_input, self.history, detailed=False
         )
         response = self.orchestrator.query_gemma(prompt)
         # Retrieval is the only real "use" of a memory, so record it now. This
@@ -371,10 +409,52 @@ class ChatSession:
         self.history.append({"role": "assistant", "content": response})
         self._mark_present()
         if consolidate and self.consolidator is not None:
-            self.consolidator(
-                user_input, response, self.orchestrator.store,
-                self.conversation_id, self.turn_counter,
-            )
+            job = (user_input, response, self.orchestrator.store,
+                   self.conversation_id, self.turn_counter)
+            if self._consolidate_in_background:
+                # Memory extraction is a second model call that does not affect
+                # the reply already shown, so it runs off the critical path. Jobs
+                # are processed one at a time in submission order (see
+                # _consolidate_worker), so memory state stays deterministic.
+                with self._consolidation_lock:
+                    self._consolidation_queue.append(job)
+                    self._consolidation_pending += 1
+                self._consolidation_event.set()
+            else:
+                self.consolidator(*job)
+
+    # -- background consolidation ------------------------------------------
+    def _consolidate_worker(self) -> None:
+        while True:
+            self._consolidation_event.wait()
+            while True:
+                with self._consolidation_lock:
+                    if not self._consolidation_queue:
+                        self._consolidation_event.clear()
+                        break
+                    job = self._consolidation_queue.popleft()
+                try:
+                    self.consolidator(*job)
+                except Exception:  # never let a worker failure kill the thread
+                    pass
+                finally:
+                    with self._consolidation_lock:
+                        self._consolidation_pending -= 1
+
+    def _drain_consolidation(self) -> None:
+        """Wait for queued consolidation jobs so no memory is lost on exit."""
+        thread = self._consolidation_thread
+        if thread is None or not thread.is_alive():
+            return
+        while True:
+            with self._consolidation_lock:
+                if self._consolidation_pending == 0:
+                    break
+            thread.join(timeout=0.05)
+
+    def close(self) -> None:
+        """Flush pending background work so a clean shutdown loses nothing."""
+        self._drain_consolidation()
 
     # -- slash commands ----------------------------------------------------
     def _handle_slash(self, user_input: str) -> None:
@@ -453,9 +533,10 @@ class ChatSession:
     def _display_memories(self, target_filter: Optional[str] = None) -> None:
         """Grouped overview. ``all`` (the default) covers every model.
 
-        Nothing is hidden by default: superseded and dormant records are shown,
-        but grouped and counted so the shape of the store is visible at a glance
-        instead of one undifferentiated 480-line stream.
+        The store can hold thousands of records, so each type shows at most
+        ``MEMORY_VIEW_LIMIT`` entries with a pointer to the full set. Nothing is
+        deleted or hidden from the store - the cap only keeps this overview
+        readable; ``/search``, ``/memory <id>`` and ``/timeline`` reach the rest.
         """
         if target_filter in ("roum", "self", "relationship"):
             targets = [target_filter]
@@ -502,18 +583,23 @@ class ChatSession:
             for mem_type in sorted(by_type, key=lambda t: (-len(by_type[t]), t)):
                 group = by_type[mem_type]
                 self._emit(f"\n  -- {mem_type} ({len(group)}) --")
-                for mem in group:
+                shown = group[:MEMORY_VIEW_LIMIT]
+                for mem in shown:
                     status = mem.get("status", "unknown")
                     if status == "superseded":
                         status = f"SUPERSEDED by {mem.get('superseded_by')}"
                     tag = "" if is_sourced(mem) else "  [unsourced]"
-                    self._emit(f"   ID: {mem.get('id')} | Status: {status}{tag}")
-                    self._emit(f"      Content: {mem.get('content')}")
+                    self._emit(f"   {mem.get('id')}  [{status}]{tag}")
+                    self._emit(f"      {mem.get('content')}")
                     self._emit(
-                        f"      Source: {mem.get('source')} | Conf: {mem.get('confidence')}"
-                        f" | Turn: {mem.get('originating_turn', '-')}"
+                        f"      source={mem.get('source')}  conf={mem.get('confidence')}"
+                        f"  turn={mem.get('originating_turn', '-')}"
                     )
-                    self._emit("  " + "-" * 48)
+                if len(group) > len(shown):
+                    self._emit(
+                        f"   ... and {len(group) - len(shown)} more "
+                        f"(use /search, /memory <id>, or /timeline)"
+                    )
 
         if len(targets) > 1:
             self._emit(f"\n=== TOTAL: {grand_total} memories across {len(targets)} models ===")
@@ -544,9 +630,18 @@ class ChatSession:
         if not hits:
             self._emit("  (Nothing matched)")
             return
-        for target, mem in hits:
-            self._emit(f" [{target}] {mem.get('id')} | {mem.get('status')} | {mem.get('type')}")
-            self._emit(f"    {mem.get('content')}")
+        shown = hits[:MEMORY_VIEW_LIMIT]
+        for target, mem in shown:
+            self._emit(
+                f"  [{target}] {mem.get('id')}  "
+                f"({mem.get('type')}, {mem.get('status')})"
+            )
+            self._emit(f"      {mem.get('content')}")
+        if len(hits) > len(shown):
+            self._emit(
+                f"  ... and {len(hits) - len(shown)} more "
+                f"(narrow the search, or use /memory <id>)"
+            )
 
     def _display_governing(self) -> None:
         """The memories that are always injected, regardless of the query."""
@@ -954,18 +1049,21 @@ class ChatSession:
         for target in ("roum", "self", "relationship"):
             info = stats.get(target, {})
             self._emit(
-                f" {target:>12}: {info.get('active', 0)} active / {info.get('total', 0)} total"
+                f"  {target:<12} {info.get('active', 0):>5} active / "
+                f"{info.get('total', 0):>5} total"
             )
-            by_type = info.get("by_type") or {}
-            if by_type:
-                self._emit(f"      types: {by_type}")
-            by_utility = info.get("by_utility") or {}
-            if by_utility:
-                self._emit(f"      utility: {by_utility}")
-            by_status = info.get("by_status") or {}
-            if by_status:
-                self._emit(f"      status: {by_status}")
-        self._emit(f" journal entries: {stats.get('journal_entries', 0)}")
+            for label, key in (("types", "by_type"), ("utility", "by_utility"),
+                               ("status", "by_status")):
+                counts = info.get(key) or {}
+                if counts:
+                    self._emit(f"      {label:<8} {self._format_counts(counts)}")
+        self._emit(f"  journal entries: {stats.get('journal_entries', 0)}")
+
+    @staticmethod
+    def _format_counts(counts: Dict[str, Any]) -> str:
+        """Render a ``{name: count}`` map as ``name n, name n`` (largest first)."""
+        ordered = sorted(counts.items(), key=lambda kv: (-int(kv[1] or 0), str(kv[0])))
+        return ", ".join(f"{name} {count}" for name, count in ordered)
 
     def _archive_memory(self, mem_id: str) -> None:
         """Retire a memory without deleting it."""
@@ -1002,6 +1100,15 @@ class ChatSession:
                     return target, mem
         return None
 
+    # Field order for the readable single-record view; anything not listed is
+    # shown afterwards, sorted, so no field is ever hidden.
+    _RECORD_FIELD_ORDER = (
+        "id", "type", "status", "content", "source", "confidence",
+        "timestamp", "last_used", "use_count", "importance",
+        "tags", "keywords", "work_id", "superseded_by", "supersession_reason",
+        "contradiction_reason",
+    )
+
     def _display_memory(self, mem_id: str) -> None:
         found = self._find_memory(mem_id)
         if not found:
@@ -1009,7 +1116,20 @@ class ChatSession:
             return
         target, mem = found
         self._emit(f"\n=== FULL RECORD: {mem.get('id')} ({target.upper()} MODEL) ===")
-        self._emit(json.dumps(mem, indent=2, ensure_ascii=False))
+        self._emit(f"  {'field':<20} value")
+        self._emit(f"  {'-' * 20} {'-' * 40}")
+        ordered = [f for f in self._RECORD_FIELD_ORDER if f in mem]
+        ordered += sorted(k for k in mem if k not in ordered)
+        for key in ordered:
+            value = mem[key]
+            if key == "content":
+                self._emit(f"  {key:<20} {value}")
+            elif isinstance(value, (list, tuple)):
+                self._emit(f"  {key:<20} {', '.join(str(v) for v in value)}")
+            elif isinstance(value, dict):
+                self._emit(f"  {key:<20} {json.dumps(value, ensure_ascii=False)}")
+            else:
+                self._emit(f"  {key:<20} {value}")
 
     def _display_journal(self, period: Optional[str] = None) -> None:
         entries = [e for e in self.orchestrator.store.get_journal()
@@ -1077,6 +1197,8 @@ class ChatSession:
             return
         for period, count in summary:
             self._emit(f"  {period} : {count}")
+        total = sum(int(c) for _, c in summary)
+        self._emit(f"  {'TOTAL':>10} : {total}")
         self._emit("  Tip: /journal <period> to read reflections from one period.")
 
     def _display_debug(self, message: str) -> None:
@@ -1103,18 +1225,23 @@ class ChatSession:
             f"Non-retrievable: {len(diag['non_retrievable_ids'])}"
         )
         self._emit("\nCandidates (by score):")
-        for cand in diag["candidates"]:
+        candidates = diag["candidates"]
+        for cand in candidates[:MEMORY_VIEW_LIMIT]:
             mark = "INJECTED" if cand["id"] in diag["injected_ids"] else "omitted"
             if not cand["retrievable"]:
                 mark = f"non-retrievable ({cand['status']})"
             self._emit(
-                f"  [{mark}] {cand['id']} | score={cand['score']} "
-                f"| rel={cand['relevance']} | strength={cand['effective_strength']} "
-                f"| conf={cand['confidence']} | imp={cand['importance']} "
-                f"| src={cand['source']} | status={cand['status']} "
-                f"| contradicted={cand['contradicted']}"
+                f"  [{mark}] {cand['id']}"
+            )
+            self._emit(
+                f"        score={cand['score']} rel={cand['relevance']} "
+                f"strength={cand['effective_strength']} conf={cand['confidence']} "
+                f"imp={cand['importance']} src={cand['source']} "
+                f"status={cand['status']} contradicted={cand['contradicted']}"
             )
             self._emit(f"        {cand['content']}")
+        if len(candidates) > MEMORY_VIEW_LIMIT:
+            self._emit(f"  ... and {len(candidates) - MEMORY_VIEW_LIMIT} more candidates")
 
         # --- prompt provenance: which blocks were present, in order ---
         sections = diag.get("prompt_sections") or []
@@ -1185,13 +1312,18 @@ class ChatSession:
     # -- main loop ---------------------------------------------------------
     def run(self) -> None:
         self._emit("==========================================================")
-        self._emit("  Astra Local Companion Core (Gemma 4 E4B)")
+        self._emit("  Astra - Local Companion Core")
+        self._emit("  Backend: Ollama (gemma4:e4b)")
         self._emit("  Type /help for memory inspection & correction commands.")
+        self._emit("  Type exit or /exit to save and quit.")
         self._emit("==========================================================")
 
         try:
             self._run_loop()
         finally:
+            # Flush queued memory extraction before tearing anything down, so a
+            # turn's memory is not lost when the process exits.
+            self._drain_consolidation()
             # The reader is a daemon; stop it so the process can exit cleanly and
             # no half-cycle is left running against a closed store.
             reader = self.reader
@@ -1274,6 +1406,7 @@ def build_session(
     return ChatSession(
         orchestrator, cmd_store, elysium=elysium, recorder=recorder,
         consolidator=_default_consolidator, reader=reader,
+        background_consolidation=True,
     )
 
 
