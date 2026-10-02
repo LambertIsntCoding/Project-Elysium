@@ -12,6 +12,7 @@ from . import inquiry
 from . import reading
 from . import relational
 from . import selfhood
+from . import temporal
 from .elysium import (  # noqa: F401 - re-exported for import compatibility
     CommandExtractor,
     ElysiumCommandRecorder,
@@ -525,6 +526,13 @@ class CompanionOrchestrator:
         # The experiential-affect accumulator is likewise presented through its
         # own block, so its backing record stays out of generic retrieval.
         all_self = [m for m in all_self if not affect.affect_memory_filter(m)]
+        # A claim that Astra can become biologically human, or to an experience
+        # she could not have had (Roum's life, a body, a childhood), is not
+        # knowledge about her. It is kept as history but never surfaced - not as
+        # a self-fact and not as one of her own recollections. Filtering here,
+        # before the experience split, is what keeps it out of *every* block.
+        all_self = [m for m in all_self
+                    if not m.get("boundary_violation") and not m.get("absent_experience")]
         # Experiences are Astra's own history, not facts about Roum nor
         # inferences about him. They get a dedicated block rather than being
         # mislabelled under FACTUAL CONTEXT / TENTATIVE INFERENCES.
@@ -534,9 +542,6 @@ class CompanionOrchestrator:
         # traumatic) are surfaced separately, with real elapsed time.
         formative_experiences = self._formative_experiences(all_experiences)
         all_self = [m for m in all_self if m.get("type") != "experience"]
-        # A claim that Astra can become biologically human is not knowledge
-        # about her; it is kept as history but never presented as a self-fact.
-        all_self = [m for m in all_self if not m.get("boundary_violation")]
         # Questions and work-specific knowledge are presented through their own
         # labelled blocks (below), so their raw records stay out of generic
         # retrieval - otherwise a tentative interpretation would be injected as
@@ -621,6 +626,7 @@ class CompanionOrchestrator:
         self._append_dispositions(parts)
         self._append_questions(parts, relevant_questions)
         self._append_work_knowledge(parts, work_knowledge)
+        self._append_temporal(parts, all_questions)
         self._append_current_state(parts, current_state)
         self._append_governing(parts, governing, total_governing)
         self._append_adaptations(parts, active_adaptations)
@@ -773,6 +779,27 @@ class CompanionOrchestrator:
         # building a prompt must not scan processes or touch the machine.
         condition = getattr(reader, "last_reason", None) if reader is not None else None
         block = reading.reader_prompt_block(state, current_condition=condition)
+        if block:
+            parts.append("\n" + block)
+
+    def _append_temporal(self, parts: List[str], all_questions: List[Dict[str, Any]]) -> None:
+        """How much time has passed around her, and what that time contains.
+
+        Read-only: it reports the gap since she was last present, long-running
+        questions, and long projects, but never records presence itself - that is
+        the session's job on a real turn, so a prompt build cannot erase a gap.
+        """
+        last_seen = None
+        store = self.store
+        if callable(getattr(store, "last_present", None)):
+            last_seen = store.last_present()
+        works: List[Dict[str, Any]] = []
+        library = getattr(getattr(self, "reader", None), "library", None)
+        if library is not None and callable(getattr(library, "list_works", None)):
+            works = library.list_works()
+        block = temporal.temporal_prompt_block(
+            last_seen=last_seen, open_questions=all_questions, works=works,
+        )
         if block:
             parts.append("\n" + block)
 

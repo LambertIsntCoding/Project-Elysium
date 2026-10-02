@@ -67,8 +67,16 @@ HELP_TEXT = """
  /questions         : Open lines of inquiry and their evidence (not yet resolved)
  /work [id]         : Work-specific understanding: observations, interpretations
  /reading           : Background reader status: what she is reading, why (not) now
+ /time              : Astra's sense of elapsed time: the gap since she was last
+                      present, long-open questions, and long-running works
  /library           : Local works ingested and Astra's position in each
- /read [pause|resume|add <path> [title]] : One bounded reading cycle, or control it
+ /library-scan [folder] : List the books in the books folder, numbered, without
+                      ingesting; then ingest one by number. Default folder is
+                      storage/library/books, or pass one: /library-scan "C:\\Books"
+ /read [pause|resume|add ...] : One bounded reading cycle, or control it.
+                      add <number> : ingest book #<number> from the last scan
+                      add "<path>" [title] : ingest a file; quote paths with spaces
+                      e.g. /read add 3   or   /read add "C:\\Books\\My Book.md"
  /dormant           : Show stale memories that have gone dormant
  /stats             : Memory health summary (counts, types, utility)
  /timeline [gran] [target] : Memory counts by date; gran = month (default), day, year
@@ -87,6 +95,39 @@ def looks_like_command_request(text: str) -> bool:
     """True when ``text`` reads like a request to register a conditional command."""
     lowered = text.casefold()
     return any(hint in lowered for hint in _COMMAND_HINTS)
+
+
+def split_args(text: str) -> List[str]:
+    """Split a slash-command tail into arguments, honouring quotes.
+
+    ``str.split()`` breaks a Windows path on every space, so a quoted argument
+    is kept whole and the quotes are removed. A backslash is left untouched: in a
+    Windows path it is a separator, not an escape, so ``"C:\\Books\\a b.md"``
+    survives intact.
+    """
+    args: List[str] = []
+    buf: List[str] = []
+    quote = ""
+    started = False
+    for ch in str(text or ""):
+        if quote:
+            if ch == quote:
+                quote = ""
+            else:
+                buf.append(ch)
+        elif ch in ("'", '"'):
+            quote = ch
+            started = True
+        elif ch.isspace():
+            if started:
+                args.append("".join(buf))
+                buf, started = [], False
+        else:
+            buf.append(ch)
+            started = True
+    if started:
+        args.append("".join(buf))
+    return args
 
 
 def _default_consolidator(
@@ -293,9 +334,20 @@ class ChatSession:
             return True
         return False
 
+    def _mark_present(self) -> None:
+        """Note that Astra is present now, so a later session can sense the gap.
+
+        Only a real turn or an explicit command does this - never a prompt build,
+        which stays read-only and must not erase the gap it is reporting.
+        """
+        mark = getattr(self.orchestrator.store, "mark_present", None)
+        if callable(mark):
+            mark()
+
     def _record_turn(self, user_input: str, response: str, *, consolidate: bool) -> None:
         self.history.append({"role": "user", "content": user_input})
         self.history.append({"role": "assistant", "content": response})
+        self._mark_present()
         if consolidate and self.consolidator is not None:
             self.consolidator(
                 user_input, response, self.orchestrator.store,
@@ -304,7 +356,7 @@ class ChatSession:
 
     # -- slash commands ----------------------------------------------------
     def _handle_slash(self, user_input: str) -> None:
-        parts = user_input.split()
+        parts = split_args(user_input)
         command = parts[0].lower()
 
         if command == "/help":
@@ -341,10 +393,14 @@ class ChatSession:
             self._display_work(parts[1] if len(parts) > 1 else None)
         elif command == "/reading":
             self._display_reading()
+        elif command == "/time":
+            self._display_time()
         elif command == "/library":
             self._display_library()
         elif command == "/read":
             self._read_now(parts[1:])
+        elif command == "/library-scan":
+            self._library_scan(" ".join(parts[1:]).strip() or None)
         elif command == "/dormant":
             self._display_dormant()
         elif command == "/stats":
@@ -673,6 +729,31 @@ class ChatSession:
             return
         self._emit("\n" + reader.format_diagnostics())
 
+    def _display_time(self) -> None:
+        """Astra's sense of elapsed time: the gap, and what that time contains."""
+        from astra import temporal
+
+        store = self.orchestrator.store
+        last_seen = store.last_present() if callable(getattr(store, "last_present", None)) else None
+        reader = self.reader
+        library = getattr(reader, "library", None) if reader is not None else None
+        works = library.list_works() if library is not None else []
+        questions = [
+            m for m in store.get_memories("self", status=None) if inquiry.is_question(m)
+        ]
+        self._emit("\n=== SENSE OF TIME ===")
+        if last_seen:
+            self._emit(f"  Last present: {last_seen}")
+        else:
+            self._emit("  Last present: (not recorded yet)")
+        block = temporal.temporal_prompt_block(
+            last_seen=last_seen, open_questions=questions, works=works,
+        )
+        if block:
+            self._emit(block)
+        else:
+            self._emit("  (No gap worth naming; nothing long-running right now.)")
+
     def _display_library(self) -> None:
         """The local works Astra has ingested, and her position in each."""
         reader = self.reader
@@ -718,6 +799,13 @@ class ChatSession:
         if args and args[0] == "add":
             self._library_add(args[1:])
             return
+        if args and args[0] in ("scan", "list"):
+            self._library_scan(" ".join(args[1:]).strip() or None)
+            return
+        # A bare number is a pick from the last scan: it is a book, not a cycle.
+        if args and args[0].isdigit():
+            self._library_add(args)
+            return
         # An explicit request is itself interaction; do not let it block itself.
         reader.clear_activity()
         report = reader.run_once()
@@ -727,24 +815,78 @@ class ChatSession:
             self._emit(f"  Did not read: {report.get('reason')}")
 
     def _library_add(self, args: List[str]) -> None:
+        """Ingest a book by number, filename, or quoted path.
+
+        ``/read add 3`` picks #3 from the last ``/library-scan``. A full path
+        with spaces must be quoted, e.g. ``/read add "C:\\Books\\My Book.md"``;
+        without quotes, pass a bare filename and it resolves inside the books
+        folder. A title after the path overrides the filename-derived one.
+        """
         reader = self.reader
         library = getattr(reader, "library", None) if reader is not None else None
         if library is None:
             self._emit("  (No library attached in this session)")
             return
         if not args:
-            self._emit("Usage: /read add <path> [title]")
+            self._emit('Usage: /read add <number|path> [title]')
+            self._emit('  e.g. /library-scan   then   /read add 3')
+            self._emit('       /read add "C:\\Books\\My Book.md"')
             return
-        path, title = args[0], (" ".join(args[1:]) or None)
+        target, title = args[0], (" ".join(args[1:]) or None)
         try:
-            state = library.add_file(path, title=title)
+            state = library.add_book(target, folder=self._library_folder())
+            if title:
+                # Rename in place: the work id stays derived from the file, so a
+                # title override never spawns a duplicate work.
+                state = library.save_state(state["work_id"], dict(state, title=title))
         except Exception as exc:
-            self._emit(f"  Could not ingest {path!r}: {exc}")
+            self._emit(f"  Could not ingest {target!r}: {exc}")
             return
         self._emit(
             f"  Added '{state.get('work_id')}' ({state.get('total_units')} chars, "
             f"{state.get('source_format')})."
         )
+
+    def _library_folder(self) -> Optional[str]:
+        """The books folder for this session, or ``None`` to use the default."""
+        return getattr(self, "_books_folder", None)
+
+    def _library_scan(self, folder: Optional[str] = None) -> None:
+        """List the books in the books folder, numbered, without ingesting.
+
+        The numbers are what ``/read add <n>`` uses, so a filename with spaces
+        never has to be typed or quoted. ``folder`` overrides the default
+        ``<storage>/library/books`` for this scan and the adds that follow it.
+        """
+        reader = self.reader
+        library = getattr(reader, "library", None) if reader is not None else None
+        if library is None:
+            self._emit("  (No library attached in this session)")
+            return
+        if folder:
+            folder = os.path.abspath(os.path.expanduser(folder))
+        # Remember it so a following ``/read add <n>`` resolves in the same place.
+        self._books_folder = folder
+        entries = library.scan_books(folder)
+        where = folder or library.books_path
+        if not os.path.isdir(where):
+            self._emit(f"\n=== BOOKS ({where}) ===")
+            self._emit("  (Folder not found. Put books there, or pass a folder:")
+            self._emit('   /library-scan "C:\\Books")')
+            return
+        self._emit(f"\n=== BOOKS ({where}) ===")
+        if not entries:
+            self._emit("  (No .txt/.md/.epub files here yet)")
+            return
+        for entry in entries:
+            authors = " + ".join(entry["authors"]) if entry["authors"] else ""
+            who = f"  by {authors}" if authors else ""
+            mark = "  [in library]" if entry["ingested"] else ""
+            self._emit(
+                f"  [{entry['index']:>2}] {entry['title']}{who}  "
+                f"({entry['format']}, {entry['size']} bytes){mark}"
+            )
+        self._emit("\n  Ingest one with: /read add <number>   (or a quoted path)")
 
     def _display_dormant(self) -> None:
         """Stale, low-value memories - readable and retrievable, but not governing."""
