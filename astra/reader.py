@@ -29,6 +29,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
+from . import behavior
 from . import reading
 from .library import Library
 
@@ -351,10 +352,27 @@ class BackgroundReader:
         # elapsed time - not a fixed count. Reading takes concentration, and a
         # long absence lets her catch up a little when she is engaged.
         affect = self._affect_snapshot()
+        # Feed the behavioural modulation into the existing pace function rather
+        # than reimplementing the gate: a lowered energy/enthusiasm/interest (a
+        # sad or weary state) reads like lower engagement and more hesitation, so
+        # sadness visibly slows reading through the one arithmetic that already
+        # exists. The modulation is derived, read-only, and stores nothing. A
+        # neutral state leaves the raw affect inputs untouched, so reading is
+        # never silently altered by the modulation layer itself.
+        mod = behavior.from_affect(affect)
+        if behavior.is_neutral(mod):
+            concentration = affect.get("concentration")
+            weary = affect.get("weary")
+            engagement = affect.get("engagement")
+        else:
+            mods = behavior.reading_modifiers(mod)
+            concentration = mods.get("concentration")
+            weary = mods.get("weary")
+            engagement = mods.get("engagement")
         pace = reading.reading_pace(
-            concentration=affect.get("concentration"),
-            weary=affect.get("weary"),
-            engagement=affect.get("engagement"),
+            concentration=concentration,
+            weary=weary,
+            engagement=engagement,
             frustration=affect.get("frustration"),
             gap_seconds=self._gap_seconds(),
             base_chunks=self.chunks_per_cycle,

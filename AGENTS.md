@@ -1,14 +1,21 @@
 # Project Elysium
 
-Astra: a local conversational companion. `main.py` is the CLI; the runtime lives
-in the `astra/` package. Memory is stored as JSON under `storage/`.
+Astra: a local conversational companion. `main.py` is the CLI/admin console; the
+runtime lives in the `astra/` package. Code lives in the Git checkout; Astra's
+accumulated memory is *runtime state* and is stored as JSON under the runtime
+tree (`runtime/storage/`, or `$ASTRA_RUNTIME_DIR`), never in the checkout. See
+`docs/runtime_separation.md`.
 
 ## Run
 
 ```bash
-python main.py            # start the CLI
+python main.py            # start the runtime + admin console (seeds runtime state once)
+python main.py --supervise   # start under the supervisor (restart-on-crash, graceful redeploy)
+python main.py --status      # print the running version/commit
+python main.py --restart     # ask the supervisor to restart Astra gracefully
 python -m tests           # full suite (unittest + the two script-style suites)
 python -m unittest tests.test_memory_governance -v   # one module
+python deploy.py --dry-run   # show the deploy plan (runs tests unless --skip-tests)
 ```
 
 The model backend is Ollama at `http://localhost:11434/api/generate`
@@ -25,15 +32,25 @@ HTTP stub, and consolidation tests call the decision layer directly.
 | `astra/selfhood.py` | self-knowledge: the non-human boundary, the epistemic stance, absent-experience guard, derived self-portrait, formative/traumatic experience classification (pure, no I/O) |
 | `astra/temporal.py` | Astra's sense of elapsed time: session gaps, long-open questions, long projects, and the impatience pull of stalled things (pure render, never stored) |
 | `astra/orchestrator.py` | prompt assembly and retrieval |
+| `astra/generation.py` | the response-generation contract: how internal state is *used* (as cause, not topic) |
 | `astra/consolidator.py` | turn -> governed memory decisions |
 | `astra/inquiry.py` | questions, uncertainty, and revisable work knowledge (Slice 2) |
 | `astra/reading.py` | reading vocabulary + the reader's idle/game/load gate (pure, no I/O) |
 | `astra/library.py` | local ingestion (text/epub) + resumable reading position |
 | `astra/reader.py` | the low-priority background reader daemon |
 | `astra/elysium.py` | application-level root command layer |
-| `main.py` | CLI, routing, slash commands |
+| `astra/paths.py` | runtime/code separation: resolves the runtime root and seeds legacy state (pure, no policy) |
+| `astra/version.py` | running-vs-on-disk code version, start/deploy/restart records |
+| `astra/supervisor.py` | start/watch/restart the runtime; single-instance lock; owns no state |
+| `astra/admin.py` | admin layer: menu registry, paging, snapshot store, live screens |
+| `astra/telemetry.py` | 0-100 rendering of internal state for the admin screens (display only) |
+| `astra/behavior.py` | state -> behaviour modulation (energy, initiative, pace, ...); stores nothing |
+| `astra/screens.py` | live relationship/status/affect admin screens |
+| `astra/menus.py` | numbered admin menu + command routes |
+| `deploy.py` | non-destructive deployment: test, restart gracefully, verify version |
+| `main.py` | CLI/admin console, routing, slash commands, supervisor/status flags |
 | `config/*.yaml` | identity, relationship boundaries, style examples |
-| `storage/*.json` | persistent memory (never hand-edit; never migrate blindly) |
+| `runtime/storage/*.json` | persistent memory (runtime state; never hand-edit; never migrate blindly) |
 
 ## Maintenance scripts
 
@@ -178,6 +195,22 @@ Top-level `memory_store.py`, `orchestrator.py`, `elysium.py`, `consolidator.py`,
   an invocation must never reach `build_prompt()` or `query_gemma()`.
 - The model proposes; the application decides. Classification heuristics live in
   `astra/memory.py`, not in the prompt.
+- **Internal state is a cause of behaviour, not a topic.** `astra/generation.py`
+  renders one always-on, subsystem-agnostic block (`response_generation_block`,
+  appended near the top of the prompt) that tells the model how to *use* every
+  state block - as something Astra simply has, not something she reports. It
+  names no affect/memory/reading/question value, so there is nothing in it to
+  narrate back, and it is code-owned (only the `response_generation.enabled`
+  switch lives in `identity.yaml`). Each subsystem block already carries the
+  same discipline at its own level: affect is translated into tendencies rather
+  than a mood to announce, questions are resources rather than a queue, reading
+  is perspective rather than a progress feed, and the relational block is
+  companion-like and bounded (never dependency, exclusivity, or competition).
+  Keep that separation - a state that is only *named* gets narrated; a state
+  given behavioural consequences gets acted on. Do not reintroduce explicit
+  "report your affect/state" instructions, and do not let a literal component
+  name (e.g. `engagement `) leak into the prompt: `test_selfhood` asserts the
+  numeric/component names stay out.
 
 ## Notes
 
@@ -516,3 +549,74 @@ Measured on the real store (~8k records): live prompt build ~277ms -> ~57ms,
 `record_use` ~130ms -> ~108ms, `add_memory` ~247ms -> ~160ms, idle maintenance
 ~403ms -> ~97ms; a real turn no longer blocks on the extraction model call.
 
+
+
+## Runtime separation, supervision, and the admin console
+
+**Code changes through Git; Astra's accumulated state belongs to the runtime
+environment.** See `docs/runtime_separation.md` for the full file classification.
+The invariants:
+
+- **Runtime state lives outside the checkout.** `astra/paths.py` resolves the
+  runtime root (`$ASTRA_RUNTIME_DIR`, else `<repo>/runtime`); storage, logs,
+  snapshots, deploy records and control files all live under it, and
+  `.gitignore` keeps `runtime/` out of Git. `build_session()` defaults to the
+  runtime storage and *seeds* it once from the legacy in-repo `storage/`
+  (copying only missing files, never overwriting, never deleting). Passing an
+  explicit `storage_dir` (tests do) uses it verbatim and never seeds. The book
+  fixtures under `storage/library/**` stay tracked; the `storage/*.json` state
+  files are ignored as a seed source only.
+- **Process continuity is not required; state continuity is.** The
+  `astra/supervisor.py` process manager starts the runtime, holds a
+  single-instance lock, detects unexpected exits and restarts with exponential
+  backoff (reset after a stable run), supports an intentional graceful restart
+  via a control file, and logs failures. It owns **no** state: it never touches
+  the store, it only asks the runtime to stop through the runtime's own flush
+  path (`ChatSession.close` -> `store.flush` -> drain consolidation). Do not add
+  a "kill and hope the JSON survived" path.
+- **Restart is graceful even when the console is blocked.** `ChatSession.run`
+  starts a small daemon control watcher (`_install_control_watcher`) on a real
+  run that flushes and exits when `runtime/control/{restart,stop}.request`
+  appears. `SIGTERM`/Windows console handlers remain as before. The single-
+  instance lock (`SingleInstanceLock`, `runtime/runtime.lock`) is acquired at the
+  top of `run()` and released only after teardown.
+- **The deployment system is non-destructive.** `deploy.py` runs the suite first
+  and refuses to deploy on failure; it records the deploy in the runtime's
+  version file, requests a graceful restart, and verifies the new runtime came
+  up; on failure the previous commit is recorded for restore and runtime state is
+  never modified. `main.py --supervise` runs under the supervisor, `--restart`/
+  `--stop` request a control action, `--status` prints the running version.
+- **The version/status distinction is explicit.** `astra/version.py`
+  (`RuntimeInfo`) records the commit the running process actually started from
+  and flags `code_changed_since_start` when the on-disk checkout differs, so
+  "the code changed" is never confused with "the running process changed".
+- **The CLI is a backend/admin console, not the personality.** Discord is the
+  conversational client; the console can be closed and reopened without
+  disturbing the runtime. `menu` / `/menu` opens the numbered admin menu
+  (`astra/menus.py` + `astra/admin.py`); live screens (`astra/screens.py`) render
+  relationship/status/affect continuously with a bounded rolling snapshot buffer
+  (`SnapshotStore`, never an unbounded log).
+- **Affect is displayed at 0-100 but stored normalized.** `astra/telemetry.py`
+  renders the existing `0.0..1.0` accumulators as integers on a 0-100 scale with
+  direction and a supplemental qualitative band. This is *display only*: no
+  stored value is rewritten and no migration is performed. Astra's prompt still
+  receives only the natural-language summary - never `Happiness = 64`.
+- **Behaviour modulation is the bridge from state to conduct.**
+  `astra/behavior.py` turns the temporary affect and felt time into bounded
+  behavioural modifiers (energy, initiative, enthusiasm, pace, brevity,
+  hesitation) rendered as *how she engages*, never as a number or a topic. It
+  stores nothing; sadness recovers through the existing affect decay. The prompt
+  modulation block and the admin modulation view read the same derivation. The
+  reader feeds the modulation into the existing `reading.reading_pace` (only
+  when the state is non-neutral, so a neutral state leaves reading untouched).
+- **Inquiry clustering is relevance, not truth.** `astra/inquiry.py` adds
+  `cluster_questions` / `priority_score` / `prioritise_questions` /
+  `resurface_questions` and an explicit `apply_question_priority_decay` maintenance
+  call. Crowded/near-duplicate open questions are prioritised *down* (and may be
+  weakened by the explicit maintenance call) but never deleted; an emotionally
+  significant question is protected. Re-association uses structured topic
+  information (work + significant tokens), never "next to the thought that made
+  it". None of this affects whether an interpretation is true.
+
+New tests: `tests/test_infrastructure.py` (12) and `tests/test_behavior_admin.py`
+(23). Full suite: 630 tests.

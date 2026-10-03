@@ -332,7 +332,8 @@ def temporal_prompt_block(
         "These are facts about elapsed time, not instructions about how to feel: "
         "a gap or a long-standing question need not produce any particular "
         "emotion. What it means depends on what happened and what she still cares "
-        "about. Mention it only where it is genuinely relevant.",
+        "about. Mention it only where it is genuinely relevant - do not open with "
+        "a report of the gap or of what she has been thinking while Roum was away.",
         *lines,
     ])
 
@@ -357,7 +358,8 @@ def impatience_prompt_block(
         "a while. It is not a feeling about Roum and not a state she must show. "
         "It exists because she cares about these things and they are stuck; if it "
         "fits, it may make her a little more inclined to pick one back up or "
-        "raise it - and if it does not fit the moment, she can let it wait.",
+        "raise it - and if it does not fit the moment, she can let it wait "
+        "without mentioning it.",
         *lines,
     ])
 

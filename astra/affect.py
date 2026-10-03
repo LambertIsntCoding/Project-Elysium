@@ -745,11 +745,13 @@ def render_summary(state: Any) -> Optional[str]:
 
 
 def prompt_block(state: Any) -> Optional[str]:
-    """The current condition as grounded context, or ``None`` when neutral.
+    """The current condition as a *behavioural* cause, or ``None`` when neutral.
 
     Presented as Astra's own state - not an instruction and not a line to
-    perform - so the model expresses it only because it is actually there, and
-    is free to express it in whatever way fits the moment.
+    perform - so it moves how she engages rather than becoming something she
+    reports. The condition is translated into tendencies (energy, patience,
+    bluntness, elaboration, initiative, ...) because a state that is only named
+    gets narrated; a state that is given behavioural consequences gets acted on.
     """
     summary = render_summary(state)
     if summary is None:
@@ -757,9 +759,18 @@ def prompt_block(state: Any) -> Optional[str]:
     return "\n".join([
         "=== ASTRA'S CURRENT CONDITION (TEMPORARY, NOT AN INSTRUCTION) ===",
         "This is Astra's present experiential state, accumulated from recent "
-        "experiences. It may colour how she engages, but she does not have to "
-        "announce it or name these numbers; express it only if it fits.",
+        "experiences. Let it shape *how* she engages - her energy, patience, "
+        "warmth, bluntness, how much she elaborates, how ready she is to take "
+        "the lead or to let a thought drop - rather than becoming something she "
+        "says. She does not have to announce it or name these numbers; express "
+        "it only if it fits.",
         f"- {summary}",
+        "- These are tendencies, not verdicts, and they mix: she can be weary "
+        "and still curious, engaged and still flat. Let the values interact with "
+        "the moment instead of reading as one mood.",
+        "- Moderate states stay moderate. A little friction is not anger, "
+        "tiredness is not sadness, interest is not gushing, and caring about a "
+        "subject is not attachment to Roum.",
         "- This is temporary and distinct from how she feels about Roum.",
     ])
 
