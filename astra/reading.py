@@ -30,6 +30,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from . import affect
+
 # ---------------------------------------------------------------------
 # Work vocabulary
 # ---------------------------------------------------------------------
@@ -716,6 +718,18 @@ def resume_context_from(digest: Dict[str, List[Any]]) -> str:
 # ---------------------------------------------------------------------
 # Experience mapping (a reading event -> the affect nudge Slice 1 defines)
 # ---------------------------------------------------------------------
+def _known_emotion(emotion: Any) -> str:
+    """The reaction emotion, but only if it is one the affect system knows.
+
+    The model supplies ``reaction_emotion`` freely; an unrecognised value must
+    not become an ``experience_kind``. An unknown kind is a validated no-op in
+    ``affect.record_event``, so it would silently move nothing while still
+    filing a record with a kind nothing else can interpret. Falling back to the
+    generic flags keeps the record meaningful and the affect nudge alive.
+    """
+    return affect.resolve_kind(emotion) or ""
+
+
 def reading_experience_kind(*, discovered: bool = False, surprise: bool = False,
                             attached: bool = False, resolved: bool = False,
                             frustrated: bool = False, finished: bool = False,
@@ -726,9 +740,9 @@ def reading_experience_kind(*, discovered: bool = False, surprise: bool = False,
     affective system stays grounded in events rather than in reading mood. An
     explicit ``emotion`` (from the passage reaction) takes precedence over the
     generic flags, so reading can produce an actual feeling rather than only an
-    analytical note.
+    analytical note - but only when it is a kind the affect system recognises.
     """
-    emotion_name = str(emotion or "").strip().casefold()
+    emotion_name = _known_emotion(emotion)
     if emotion_name:
         return emotion_name
     if finished:

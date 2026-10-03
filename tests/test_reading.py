@@ -380,6 +380,19 @@ class TestExtractionParsing(unittest.TestCase):
         digest = {"events": ["a" * 900], "ideas": ["b" * 900]}
         self.assertLessEqual(len(reading.resume_context_from(digest)), 600)
 
+    def test_known_emotion_is_used_and_unknown_falls_back(self):
+        # A recognised reaction emotion names the experience kind directly.
+        self.assertEqual(reading.reading_experience_kind(emotion="happy"), "happy")
+        # An alias resolves to its canonical kind.
+        self.assertEqual(reading.reading_experience_kind(emotion="joy"), "happy")
+        # An unrecognised emotion must not become an experience kind that the
+        # affect system would silently ignore; the generic flag wins instead.
+        self.assertEqual(
+            reading.reading_experience_kind(emotion="furious", discovered=True),
+            "discovered")
+        self.assertEqual(
+            reading.reading_experience_kind(emotion="bemused"), "read")
+
 
 # ---------------------------------------------------------------------
 # The reader cycle: bounded work, resume, pause, and no skip on failure

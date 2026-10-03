@@ -47,7 +47,7 @@ proactive:
   interrupt_cooldown_seconds: 1200
   # Whether a high-priority system event may bypass ordinary suppression. Only
   # ever bypasses cooldown/busy, never "user is active" or an explicit mute.
-  allow_high_priority_bypass: false
+  allow_high_priority_bypass: true
 
 voice:
   # "text" renders as text only; the interface is replaceable independently.
@@ -55,10 +55,10 @@ voice:
   enabled: false
 
 discord:
-  enabled: false
+  enabled: true
   # The token is read from this environment variable, never from this file.
   bot_token_env: DISCORD_BOT_TOKEN
   # Leave empty until configuring a server.
-  channel_id: ""
-  bot_user_id: ""
+  channel_id: "1555630373747294418"
+  bot_user_id: "1555780777072136282"
   poll_seconds: 2.0

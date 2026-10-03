@@ -38,6 +38,8 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Optional
 
+from . import affect
+
 # ---------------------------------------------------------------------
 # Foundational boundary (never a memory, never decays)
 # ---------------------------------------------------------------------
@@ -761,7 +763,8 @@ def formative_block(experiences: Iterable[Dict[str, Any]],
         work = str(mem.get("work_id") or "").strip()
         suffix = f" (re: {work})" if work else ""
         when = elapsed_phrase(_age_days(mem.get("timestamp"), now))
-        lines.append(f"- [{kind}, {when}] {_clean(mem.get('content'))}{suffix}")
+        colour = affect.memory_colour(mem)
+        lines.append(f"- [{kind}, {when}] {_coloured(mem.get('content'), colour)}{suffix}")
     return "\n".join(lines)
 
 
@@ -794,6 +797,12 @@ def provenance_note(mem: Dict[str, Any], now: Optional[datetime] = None) -> str:
     if age < 730:
         return f"{origin} about {int(age / 30)} month(s) ago"
     return f"{origin} about {int(age / 365)} year(s) ago"
+
+
+def _coloured(content: Any, colour: str) -> str:
+    """``content`` with its emotional colour appended, or plain when colourless."""
+    text = _clean(content)
+    return f"{text} (felt {colour})" if colour else text
 
 
 __all__ = [
