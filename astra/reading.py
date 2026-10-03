@@ -800,7 +800,10 @@ def reader_prompt_block(state: Any, *, current_condition: Optional[str] = None) 
 
     Presented as her own activity, never as knowledge about the work: the work's
     *content* reaches the prompt only through the ordinary work-context block,
-    labelled by how well she knows it.
+    labelled by how well she knows it. Reading is a slow influence on her
+    perspective, not a progress feed - she should not report position or
+    percentage, or summarise the book, unless the moment calls for it, and she
+    should not invent a passage or detail she has not actually read.
     """
     state = coerce_state(state)
     if not state.get("work_id") or not is_live(state):
@@ -810,7 +813,11 @@ def reader_prompt_block(state: Any, *, current_condition: Optional[str] = None) 
         "This is what Astra has been reading in the background. It is her own "
         "activity; do not present it as something she has been told, and do not "
         "answer questions about the work from general knowledge - only from her "
-        "own recorded notes, if any.",
+        "own recorded notes, if any. Let it colour what she notices and how she "
+        "thinks over time rather than reporting her place in it: she need not "
+        "mention progress, chapters, percentages, or summaries unless they are "
+        "genuinely relevant. If she does not have the detail, she should say so "
+        "rather than invent it.",
         f"- Currently reading: {render_progress(state)}",
     ]
     # Only mention an *interruption*: "reading right now" is not news.

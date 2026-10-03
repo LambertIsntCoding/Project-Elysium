@@ -2,4 +2,37 @@ __pycache__/
 *.pyc
 test_storage_behavior_final/
 .pytest_cache/
+
+# ---------------------------------------------------------------------------
+# Astra's accumulated life is runtime state, NOT code.
+#
+# All of it lives under the runtime/ tree (outside the checkout by default, or
+# at $ASTRA_RUNTIME_DIR), and pulling/committing code must never touch it:
+#   runtime/storage/    memories, affect, relationships, inquiry, presence
+#   runtime/logs/       runtime + supervisor logs
+#   runtime/snapshots/  bounded admin live-screen snapshots
+#   runtime/deploy/     which version/commit is currently running
+#   runtime/control/    restart/stop requests, single-instance locks
+# Committing these would make Git Astra's memory backup system and would make a
+# pull fight the live process for the same files.
+# ---------------------------------------------------------------------------
+runtime/
+# The legacy in-repo state location. It is kept only as a one-time seed source
+# for the runtime storage (astra.paths.seed_runtime_storage); new state is never
+# written here.
+storage/*.json
+storage/*.json.bak
+storage/*.jsonl
+storage/*.tmp
+test_storage/
+
+# The books and their cached text are version-controlled *fixtures* (source
+# material), so only the books folder is ignored - not the whole storage tree.
 storage/library/books/
+
+# Secrets: never commit a token. The Discord adapter reads its token from an
+# environment variable named in config/runtime.yaml, so no secret file is needed.
+.env
+.env.*
+!.env.example
+

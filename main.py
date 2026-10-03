@@ -24,6 +24,7 @@ import atexit
 import contextlib
 import json
 import os
+import sys
 import textwrap
 import threading
 import time
@@ -32,6 +33,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from astra.elysium import ElysiumCommandHandler, ElysiumCommandRecorder, is_elysium_invocation
+from astra import paths
 from astra.memory import (
     CommandStore,
     TIMELINE_GRANULARITIES,
@@ -45,6 +47,8 @@ from astra import inquiry
 from astra import reading
 from astra import relational
 from astra import runtime_state
+from astra import version
+from astra import menus as menu_mod
 
 # Phrases that indicate the user is *asking* to register a command. Kept
 # deliberately narrow: a bare word like "command" fires on ordinary sentences
@@ -306,14 +310,77 @@ class ChatSession:
         # injected by build_session; frontends call the router, never the store.
         self.router: Any = None
         self.discord: Any = None
+        # The administrative menu registry (built lazily). The CLI is primarily
+        # a backend/admin console now; the menu is how the whole command surface
+        # is reached without slash syntax.
+        self._menu_registry: Any = None
+        self._menu_path: List[Any] = []
+
+    # -- administrative menu ------------------------------------------------
+    def _registry(self) -> Any:
+        if self._menu_registry is None:
+            self._menu_registry = menu_mod.build_registry(
+                self, emit=self._emit)
+        return self._menu_registry
+
+    def _screen_poll(self, timeout: float) -> Optional[str]:
+        """Non-blocking-ish poll used by the live screens.
+
+        Uses the session's own ``input_fn`` so the refresh loop is testable and
+        so a real terminal reads the key the user just pressed.
+        """
+        try:
+            return self.input_fn("")
+        except (KeyboardInterrupt, EOFError):
+            return "q"
+
+    def enter_menu(self) -> None:
+        """Enter the numbered admin menu. Nested menus return here on 'q'."""
+        registry = self._registry()
+        root = registry.root()
+        path: List[Any] = [root]
+        while True:
+            node = path[-1]
+            self._emit("\n" + "\n".join(node.render()))
+            answer = registry.prompt("  select > ")
+            token = str(answer or "").strip()
+            if token.casefold() in ("q", "back", "b", "exit", ""):
+                if len(path) > 1:
+                    path.pop()
+                    continue
+                self._emit("  (left the menu)")
+                return
+            if token.casefold() in ("help", "?"):
+                self._emit("  Enter a number or word to choose; 'q' to go back.")
+                continue
+            item = node.find(token)
+            if item is None:
+                self._emit(f"  (no such entry: {token!r})")
+                continue
+            if item.action is not None:
+                result = item.action(registry and menu_mod.MenuContext(
+                    self, self._emit, registry))
+                if result == "exit":
+                    return
+                continue
+            if item.children is not None:
+                path.append(item.children)
+                continue
+            self._emit("  (that entry has nothing to do)")
 
     # -- runtime-state helpers ---------------------------------------------
     def _display_status(self) -> None:
         controller = self.controller
         if controller is None:
             self._emit("  (persistent runtime not attached in this session)")
+            self._emit("\n=== RUNTIME VERSION ===")
+            for line in version.status_lines():
+                self._emit(line)
             return
         self._emit("\n" + controller.status_report())
+        self._emit("\n=== RUNTIME VERSION ===")
+        for line in version.status_lines():
+            self._emit(line)
 
     def _sleep_now(self) -> None:
         controller = self.controller
@@ -729,6 +796,38 @@ class ChatSession:
         except Exception:
             self._console_handler_ref = None
 
+    def _install_control_watcher(self) -> None:
+        """Watch for a supervisor restart/stop request and flush before exiting.
+
+        A console process is often blocked waiting for input, so a SIGTERM is
+        not guaranteed to reach a Python handler (Windows terminates the process
+        outright). This small daemon thread is the reliable path: when the
+        supervisor leaves a control file, the runtime flushes through its normal
+        ``close()`` first and only then exits, so an intentional restart never
+        costs a completed turn. Started on a real run only, never in a test.
+        """
+        import threading
+
+        control = paths.control_dir()
+
+        def _watch() -> None:
+            while True:
+                try:
+                    if os.path.exists(os.path.join(control, "stop.request")) or \
+                            os.path.exists(os.path.join(control, "restart.request")):
+                        self._emit("\n[Supervisor requested a restart; saving state...]")
+                        try:
+                            self.close()
+                        finally:
+                            os._exit(0)
+                except Exception:
+                    pass
+                time.sleep(1.0)
+
+        self._control_thread = threading.Thread(
+            target=_watch, name="astra-control", daemon=True)
+        self._control_thread.start()
+
     def _flush_and_exit(self) -> None:
         """Flush the store, then exit the process."""
         try:
@@ -744,6 +843,8 @@ class ChatSession:
 
         if command == "/help":
             self._emit(HELP_TEXT)
+        elif command in ("/menu", "/admin"):
+            self.enter_menu()
         elif command == "/memories":
             target = parts[1].lower() if len(parts) > 1 else "all"
             self._display_memories(target)
@@ -1606,7 +1707,22 @@ class ChatSession:
         # session (which never sets background_consolidation) does not, so tests
         # never touch global signal state.
         if self._consolidate_in_background:
+            # One runtime at a time: a second copy of the process must not run
+            # against the same state (it would double-write the models).
+            from astra.supervisor import SingleInstanceLock
+            self._instance_lock = SingleInstanceLock()
+            if not self._instance_lock.acquire():
+                self._emit("Another Astra runtime is already running. Exiting.")
+                return
             self._install_shutdown_handlers()
+            # The reliable restart path: a small watcher flushes state when the
+            # supervisor requests a restart, even if the console is blocked.
+            self._install_control_watcher()
+        # Record the code version this runtime actually started from, so the
+        # admin status can distinguish "the checkout changed" from "the running
+        # process changed". Only a real run (not an in-process test) records it.
+        if self.controller is not None:
+            version.RuntimeInfo().record_start()
         # Start the persistent background runtime and the Discord transport.
         controller = self.controller
         if controller is not None:
@@ -1640,6 +1756,11 @@ class ChatSession:
             reader = self.reader
             if reader is not None and callable(getattr(reader, "stop", None)):
                 reader.stop()
+            # Release the single-instance lock only after state is flushed and
+            # workers stopped, so a new runtime cannot start mid-teardown.
+            lock = getattr(self, "_instance_lock", None)
+            if lock is not None and callable(getattr(lock, "release", None)):
+                lock.release()
 
     def _maybe_surface_proactive(self) -> None:
         """Offer preserved candidates when the user next interacts.
@@ -1698,6 +1819,12 @@ class ChatSession:
                     self.controller.touch()
                 self._handle_slash(user_input)
                 continue
+            if user_input.lower() in ("menu", "admin", "/menu"):
+                # The primary administrative interface: a numbered menu with
+                # word aliases, so the whole command surface is reachable
+                # without remembering slash syntax.
+                self.enter_menu()
+                continue
             # Conversation goes through the shared router when one is attached,
             # so a Discord turn and a CLI turn serialize on the same lock and
             # cannot mutate session state concurrently.
@@ -1712,12 +1839,19 @@ class ChatSession:
 
 def build_session(
     config_dir: str = "./config",
-    storage_dir: str = "./storage",
+    storage_dir: str = None,
     *,
     enable_command_extraction: bool = True,
     enable_reader: bool = True,
 ) -> ChatSession:
-    """Construct a ready-to-run session with the default components."""
+    """Construct a ready-to-run session with the default components.
+
+    ``storage_dir`` defaults to Astra's *runtime* storage (see
+    :mod:`astra.paths`), which lives outside the Git checkout and is seeded once
+    from the legacy in-repo ``storage/``. Passing an explicit path (tests do)
+    uses that path verbatim and never seeds it.
+    """
+    storage_dir = paths.resolve_storage_dir(storage_dir)
     store = TripleMemoryStore(data_dir=storage_dir)
     cmd_store = CommandStore(data_dir=storage_dir)
 
@@ -1811,8 +1945,70 @@ def _build_voice(runtime_config: Dict[str, Any]) -> Any:
         return NullVoiceRenderer()
 
 
-def main() -> None:
-    build_session().run()
+def _cli_parser() -> Any:
+    import argparse
+    parser = argparse.ArgumentParser(
+        prog="main.py", description="Astra runtime / admin console.")
+    parser.add_argument("--supervise", action="store_true",
+                        help="run under the supervisor (start, watch, restart)")
+    parser.add_argument("--supervisor-only", action="store_true",
+                        help="run only the supervisor (no interactive console)")
+    parser.add_argument("--restart", action="store_true",
+                        help="ask a running supervisor to restart Astra gracefully")
+    parser.add_argument("--stop", action="store_true",
+                        help="ask a running supervisor to stop Astra gracefully")
+    parser.add_argument("--status", action="store_true",
+                        help="print the running runtime's version/status and exit")
+    parser.add_argument("--config-dir", default="./config")
+    parser.add_argument("--runtime-dir", default=None,
+                        help="override the runtime state root (ASTRA_RUNTIME_DIR)")
+    return parser
+
+
+def main(argv: Optional[List[str]] = None) -> None:
+    args = _cli_parser().parse_args(argv)
+    if args.runtime_dir:
+        os.environ[paths.RUNTIME_ENV] = os.path.abspath(args.runtime_dir)
+
+    if args.status:
+        print("=== RUNTIME VERSION ===")
+        for line in version.status_lines():
+            print(line)
+        return
+
+    if args.restart or args.stop:
+        from astra.supervisor import RuntimeSupervisor
+        sup = RuntimeSupervisor(runtime_dir=args.runtime_dir)
+        if args.restart:
+            sup.request_restart()
+            print("restart requested; the supervisor will restart Astra gracefully.")
+        else:
+            sup.request_stop()
+            print("stop requested; the supervisor will stop Astra gracefully.")
+        return
+
+    if args.supervisor_only:
+        from astra.supervisor import RuntimeSupervisor
+        RuntimeSupervisor(
+            command=[sys.executable, os.path.abspath(__file__)],
+            runtime_dir=args.runtime_dir,
+        ).run()
+        return
+
+    if args.supervise:
+        from astra.supervisor import RuntimeSupervisor
+        # The supervisor starts the runtime as a plain child; the child watches
+        # the control files and flushes before exiting, so a restart is graceful.
+        RuntimeSupervisor(
+            command=[sys.executable, os.path.abspath(__file__),
+                     "--config-dir", args.config_dir],
+            runtime_dir=args.runtime_dir,
+        ).run()
+        return
+
+    # The runtime storage is resolved from ASTRA_RUNTIME_DIR (set above when
+    # --runtime-dir was given) or the default runtime/ tree; never the checkout.
+    build_session(config_dir=args.config_dir).run()
 
 
 if __name__ == "__main__":

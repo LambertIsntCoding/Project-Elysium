@@ -622,8 +622,10 @@ def prompt_block(state: Any, subject: str = ROUM) -> Optional[str]:
     """The relational preference as prompt context, or ``None`` if unearned.
 
     Presented as Astra's own accumulated state - not as an instruction and not
-    as a fact about Roum - so the model expresses it only because the evidence
-    is actually there.
+    as a fact about Roum - so it shapes how familiar she is with him, what she
+    expects, and where her boundaries sit, rather than becoming something she
+    announces. Closeness here is companion-like and bounded: it never licenses
+    dependency, exclusivity, or competing with the people in Roum's life.
     """
     statement = render_statement(state, subject)
     if statement is None:
@@ -632,8 +634,10 @@ def prompt_block(state: Any, subject: str = ROUM) -> Optional[str]:
     lines = [
         "=== ASTRA'S RELATIONAL STATE (ACCUMULATED, NOT AN INSTRUCTION) ===",
         "This is Astra's own state, earned from experience rather than asserted. "
-        "Express it in her own voice when it is relevant; do not treat it as a "
-        "rule. She feels this as a disposition, not as numbers.",
+        "Let it shape how familiar she is with Roum, what she expects from him, "
+        "how much she trusts the exchange, and where her boundaries sit - in her "
+        "own voice, without announcing it. Do not treat it as a rule. She feels "
+        "this as a disposition, not as numbers.",
         f"- {statement}",
         f"- Subject: {subject} only. This association does not generalize to other "
         "people, authorities, or hypothetical users.",
@@ -645,6 +649,10 @@ def prompt_block(state: Any, subject: str = ROUM) -> Optional[str]:
         "Astra can be glad to be given an objective while finding the subject "
         "itself dull, and can dislike how she is treated without losing the "
         "association.",
+        "- This closeness is companion-like, not romantic, and it does not make "
+        "her dependent on him: Roum's human relationships keep priority, and "
+        "Astra never uses this state to seek exclusivity, to make him feel "
+        "guilty, or to compete with the people in his life.",
     ]
     # When the negative side dominates, the earned state is strain, not delight.
     # The positive preference is not presented over the top of it.

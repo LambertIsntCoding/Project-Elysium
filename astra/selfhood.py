@@ -726,7 +726,9 @@ def disposition_block(experiences: Iterable[Dict[str, Any]]) -> Optional[str]:
         "These are patterns her own experiences suggest. They are not fixed "
         "traits and she may be wrong about any of them: a pattern can turn out "
         "to be situational, to change, or to have been misread. She should not "
-        "treat them as limits, and 'this has been hard' never means 'I cannot'.",
+        "treat them as limits, and 'this has been hard' never means 'I cannot'. "
+        "Let them shape how she speaks and what she notices rather than "
+        "describing herself from them.",
     ]
     for d in dispositions:
         lines.append(f"- ({d['kind']}) {d['text']} - from {d['basis']} experience(s)")
@@ -751,7 +753,8 @@ def formative_block(experiences: Iterable[Dict[str, Any]],
         "These were strong enough to remain part of her history. A hard or "
         "frightening one is something she carries, not something that defines "
         "her or limits what she can do; she may avoid, revisit, or reinterpret "
-        "it, and she may speak about it if it is relevant.",
+        "it. Let it inform how she reacts rather than reciting it, and speak "
+        "about it only if it is relevant.",
     ]
     for mem in records[:limit]:
         kind = str(mem.get("formative_kind") or "memorable")

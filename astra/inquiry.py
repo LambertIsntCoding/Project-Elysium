@@ -360,16 +360,21 @@ def questions_prompt_block(memories: List[Dict[str, Any]]) -> Optional[str]:
     """The open-questions block: what Astra does not know, stated as such.
 
     Only live questions appear, and they are explicitly framed as unresolved so
-    the model cannot quietly answer them with general knowledge.
+    the model cannot quietly answer them with general knowledge. They are lines
+    of inquiry she may still be turning over, not a list of questions to put to
+    Roum - she can keep thinking about one without demanding an answer.
     """
     live = open_questions(memories, limit=_MAX_BLOCK_QUESTIONS)
     if not live:
         return None
     lines = ["\n=== OPEN QUESTIONS (UNRESOLVED - ASTRA DOES NOT KNOW YET) ==="]
     lines.append(
-        "These are things Astra has not resolved. Do not answer them with general "
-        "knowledge and do not present them as settled. She may wonder about them, "
-        "say she is unsure, or ask Roum - she should not pretend to know."
+        "These are things Astra has not resolved. They are resources for how she "
+        "reads the current moment, not a queue to work through: do not answer "
+        "them with general knowledge, do not present them as settled, and do not "
+        "raise one merely because it is open. When it is relevant, she may wonder "
+        "about it, say she is unsure, or ask Roum; when it is not, she can let it "
+        "wait."
     )
     for mem in live:
         lines.append(f"  ? {render_question(mem)}")
@@ -382,7 +387,8 @@ def work_knowledge_prompt_block(memories: List[Dict[str, Any]], work_id: str) ->
     This is the boundary that keeps work-specific understanding distinct from
     the base model's knowledge: only what Astra actually recorded about the work
     appears here, and each line says whether it is known, tentative, or merely
-    suspected.
+    suspected. Stay with what is recorded - where her notes do not cover
+    something, uncertainty is preferred to invention.
     """
     scoped = [m for m in memories if is_knowledge(m) and work_of(m) == work_id and m.get("content")]
     if not scoped:
@@ -392,7 +398,9 @@ def work_knowledge_prompt_block(memories: List[Dict[str, Any]], work_id: str) ->
     lines.append(
         "These are Astra's own notes from this work, not general knowledge. A "
         "tentative line is her interpretation, not the work's statement, and it "
-        "may be revised; do not upgrade it to fact."
+        "may be revised; do not upgrade it to fact. Where her notes are silent, "
+        "she should say she does not know rather than invent a passage, a detail, "
+        "or a quotation."
     )
     for mem in scoped:
         label = epistemic_of(mem)
@@ -555,3 +563,283 @@ def significant_tokens(text: Any) -> frozenset:
     frozenset return keeps a cached value from being mutated.
     """
     return _significant_tokens_cached(str(text or ""))
+
+
+# ---------------------------------------------------------------------
+# Topic clustering, priority, and re-association
+# ---------------------------------------------------------------------
+# The question store has grown large, and many open questions are near
+# duplicates of one another. The pieces below stop a single broad topic from
+# accumulating dozens of equally-important independent records, without ever
+# deleting one: they cluster, they *rank*, and they let an old question be
+# re-found later. All are pure functions over records; the store applies the
+# consequences (decay/dormancy/priority) through its existing governance.
+
+# How much two questions must overlap to share a topic. Cheap lexical
+# containment is enough at this scale; the goal is to stop near-duplicates
+# dominating, not to do perfect semantic clustering.
+CLUSTER_SIMILARITY = 0.5
+# Beyond this many unresolved questions on one topic, further overlapping ones
+# are treated as redundant and lose priority rapidly.
+CLUSTER_REDUNDANCY_THRESHOLD = 3
+
+
+def topic_key(mem: Dict[str, Any]) -> str:
+    """A lightweight topic identity for a question.
+
+    A shared work is the strongest topic signal (two questions about the same
+    book belong together); otherwise the most distinctive content tokens stand
+    in. Deterministic and cheap, so it is safe on the whole store.
+    """
+    work = work_of(mem)
+    if work:
+        return f"work:{work.casefold()}"
+    tokens = sorted(significant_tokens(mem.get("content")))
+    # The leading distinctive tokens make a stable, human-readable topic id.
+    return "topic:" + "|".join(tokens[:3]) if tokens else "topic:"
+
+
+def question_similarity(a: Dict[str, Any], b: Dict[str, Any]) -> float:
+    """Lexical containment between two questions (0..1).
+
+    Containment (shared / shorter length) rather than Jaccard, matching the
+    rest of the project: verbose model-written sentences rarely share half their
+    union, so Jaccard would miss real near-duplicates.
+    """
+    ta, tb = significant_tokens(a.get("content")), significant_tokens(b.get("content"))
+    if not ta or not tb:
+        return 0.0
+    shared = ta & tb
+    return len(shared) / float(min(len(ta), len(tb)))
+
+
+def cluster_questions(memories: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    """Group open questions into topic clusters.
+
+    Questions that are substantially about the same subject (a shared work, or
+    high lexical overlap) land in the same cluster. Genuinely distinct questions
+    stay separate. Efficient enough for the whole store: one pass with a bounded
+    comparison against existing cluster representatives.
+    """
+    live = [m for m in memories if is_open_question(m) and m.get("content")]
+    clusters: Dict[str, List[Dict[str, Any]]] = {}
+    for mem in live:
+        placed = None
+        for key, members in clusters.items():
+            rep = members[0]
+            if work_of(rep) and work_of(rep) == work_of(mem):
+                placed = key
+                break
+            if question_similarity(rep, mem) >= CLUSTER_SIMILARITY:
+                placed = key
+                break
+        key = placed or topic_key(mem)
+        # A collision on a generated key still merges, which is the desired
+        # behaviour: they are about the same topic.
+        clusters.setdefault(key, []).append(mem)
+    return clusters
+
+
+def _emotional_significance(mem: Dict[str, Any],
+                            experiences: Optional[List[Dict[str, Any]]] = None) -> float:
+    """How emotionally significant a question is, from experience evidence.
+
+    Uses the existing experience records as evidence rather than storing raw
+    affect inside the question. A question tied (by work or by shared subject
+    tokens) to a strongly-emotional experience is more significant, so it stays
+    meaningful longer; emotionally neutral curiosity decays sooner.
+    """
+    if not experiences:
+        return 0.0
+    q_work = work_of(mem)
+    q_tokens = significant_tokens(mem.get("content"))
+    best = 0.0
+    for exp in experiences:
+        if str(exp.get("type") or "") != "experience" and not exp.get("experience_kind"):
+            continue
+        try:
+            intensity = float(exp.get("intensity") or 0.0)
+            significance = float(exp.get("significance") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        magnitude = max(intensity, significance)
+        if magnitude <= 0:
+            continue
+        e_work = work_of(exp)
+        related = (q_work and e_work and q_work == e_work)
+        if not related and q_tokens:
+            related = bool(q_tokens & significant_tokens(exp.get("content")))
+        if related:
+            best = max(best, magnitude)
+    return round(min(1.0, best), 4)
+
+
+def priority_score(mem: Dict[str, Any], *,
+                   experiences: Optional[List[Dict[str, Any]]] = None,
+                   cluster_size: int = 1, now: Optional[Any] = None) -> float:
+    """How much an open question deserves attention - relevance, not truth.
+
+    Combines the things the brief asks for: recency, significance, how long it
+    has been unresolved, accumulated evidence, and emotional significance. A
+    topic already crowded with overlapping questions pushes its members *down*
+    (redundancy), so distinct questions keep their footing. This never affects
+    whether an interpretation is correct, only what is worth thinking about.
+    """
+    score = 0.35
+    try:
+        score += 0.2 * float(mem.get("confidence", 0.5) or 0.0)
+    except (TypeError, ValueError):
+        pass
+
+    # Emotional significance (evidence-based, never a stored affect number).
+    score += 0.35 * _emotional_significance(mem, experiences)
+
+    # Accumulated evidence raises priority.
+    evidence = mem.get("question_evidence") or []
+    score += min(0.15, 0.03 * len(evidence))
+
+    # A motive to hear Roum's own view keeps a question meaningful longer.
+    if motive_of(mem) == MOTIVE_ROUM_VIEW:
+        score += 0.1
+
+    # Redundancy: a crowded topic pushes overlapping questions down quickly.
+    if cluster_size > CLUSTER_REDUNDANCY_THRESHOLD:
+        excess = cluster_size - CLUSTER_REDUNDANCY_THRESHOLD
+        score -= min(0.6, 0.15 * excess)
+
+    # A dormant question is still readable, but should not dominate.
+    if str(mem.get("status") or "active") != "active":
+        score -= 0.2
+    return round(max(0.0, min(score, 1.0)), 4)
+
+
+def prioritise_questions(memories: List[Dict[str, Any]], *,
+                         experiences: Optional[List[Dict[str, Any]]] = None,
+                         limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Open questions ranked by :func:`priority_score`, with the reasons.
+
+    Returns rows of ``{question, score, reasons, cluster}`` so the admin screen
+    can explain *why* a question is prioritised - the observability the brief
+    asks for - without any of this reaching the prompt as numbers.
+    """
+    clusters = cluster_questions(memories)
+    rows: List[Dict[str, Any]] = []
+    for key, members in clusters.items():
+        size = len(members)
+        for mem in members:
+            effective_size = size
+            # Redundancy only counts genuinely overlapping members.
+            if size > 1:
+                effective_size = 1 + sum(
+                    1 for other in members
+                    if other is not mem and question_similarity(mem, other) >= CLUSTER_SIMILARITY)
+            score = priority_score(mem, experiences=experiences, cluster_size=effective_size)
+            rows.append({
+                "question": mem, "score": score, "cluster": key,
+                "reasons": _priority_reasons(mem, score, effective_size, experiences),
+            })
+    rows.sort(key=lambda r: (r["score"], str(r["question"].get("timestamp") or "")),
+              reverse=True)
+    return rows[:limit] if limit else rows
+
+
+def _priority_reasons(mem: Dict[str, Any], score: float, cluster_size: int,
+                      experiences: Optional[List[Dict[str, Any]]]) -> List[str]:
+    reasons: List[str] = []
+    emo = _emotional_significance(mem, experiences)
+    if emo >= 0.5:
+        reasons.append("tied to a strong emotional experience")
+    if (mem.get("question_evidence") or []):
+        reasons.append(f"{len(mem['question_evidence'])} linked piece(s) of evidence")
+    if motive_of(mem) == MOTIVE_ROUM_VIEW:
+        reasons.append("she wants Roum's own view")
+    if cluster_size > CLUSTER_REDUNDANCY_THRESHOLD:
+        reasons.append(f"topic is crowded ({cluster_size} overlapping questions) - prioritised down")
+    if str(mem.get("status") or "active") != "active":
+        reasons.append("record is dormant")
+    if not reasons:
+        reasons.append("ordinary open curiosity")
+    return reasons
+
+
+def resurface_questions(memories: List[Dict[str, Any]], *,
+                        query_tokens: Any = None, active_work: str = "",
+                        experiences: Optional[List[Dict[str, Any]]] = None,
+                        limit: int = 3) -> List[Dict[str, Any]]:
+    """Open questions worth re-raising for the current context.
+
+    A question is re-found when the current turn's tokens match it, when its
+    work is now active, or when it is emotionally significant - never only when
+    it happens to sit next to the thought that created it. This is what fixes
+    "a question matters only at the moment it was created": the question carries
+    enough structured topic information (work, significant tokens) to be found
+    again later.
+    """
+    live = [m for m in memories if is_open_question(m) and m.get("content")]
+    if not live:
+        return []
+    tokens = set(query_tokens or ())
+    active = str(active_work or "").strip().casefold()
+    scored: List[tuple] = []
+    for mem in live:
+        score = 0.0
+        overlap = len(tokens & significant_tokens(mem.get("content"))) if tokens else 0
+        if overlap:
+            score += min(0.6, 0.2 * overlap)
+        if active and (work_of(mem) or "").casefold() == active:
+            score += 0.4
+        emo = _emotional_significance(mem, experiences)
+        if emo >= 0.5:
+            score += 0.3
+        if score > 0:
+            scored.append((score, str(mem.get("timestamp") or ""), mem))
+    scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
+    return [mem for _, _, mem in scored[:limit]]
+
+
+def apply_question_priority_decay(store: Any, *,
+                                  experiences: Optional[List[Dict[str, Any]]] = None,
+                                  now: Optional[Any] = None) -> Dict[str, int]:
+    """Govern crowded/redundant questions through the existing decay system.
+
+    Nothing is deleted. When a topic carries many overlapping unresolved
+    questions, the lower-priority duplicates are weakened/dormant-ed so they
+    stop competing with genuinely distinct ones; emotionally significant
+    questions are protected and left alone. Returns a small summary.
+
+    This is an explicit maintenance call (run from the admin/menu layer or a
+    migration), never something the live turn path triggers, so a normal turn
+    never rewrites the question set.
+    """
+    if store is None or not callable(getattr(store, "get_memories", None)):
+        return {"weakened": 0, "protected": 0}
+    memories = store.get_memories("self", status=None)
+    clusters = cluster_questions(memories)
+    weakened = 0
+    protected = 0
+    for key, members in clusters.items():
+        if len(members) <= CLUSTER_REDUNDANCY_THRESHOLD:
+            continue
+        ranked = sorted(
+            members,
+            key=lambda m: priority_score(m, experiences=experiences),
+            reverse=True)
+        # Keep the most significant ones untouched; weaken the rest of a crowded
+        # topic. Emotionally significant questions are protected outright.
+        for mem in ranked[CLUSTER_REDUNDANCY_THRESHOLD:]:
+            if _emotional_significance(mem, experiences) >= 0.6:
+                protected += 1
+                continue
+            try:
+                store.update_memory(
+                    "self", mem.get("id"),
+                    confidence=max(0.05, float(mem.get("confidence", 0.4) or 0.4) * 0.5),
+                    tags=[t for t in tags_for(mem) if not str(t).startswith("cluster:")]
+                    + [f"cluster:{key}", "cluster_redundant"],
+                )
+                weakened += 1
+            except Exception:
+                continue
+    return {"weakened": weakened, "protected": protected,
+
+            "clusters": len(clusters)}

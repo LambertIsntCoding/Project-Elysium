@@ -8,6 +8,8 @@ import yaml
 
 from . import elysium as _elysium
 from . import affect
+from . import behavior
+from . import generation
 from . import inquiry
 from . import prepared_context
 from . import reading
@@ -360,8 +362,9 @@ class CompanionOrchestrator:
         parts.append("\n=== TENTATIVE INFERENCES (UNVERIFIED - NOT STATED BY ROUM) ===")
         parts.append(
             "These are Astra's own guesses, not things Roum said. Treat them as "
-            "provisional: do not present them as fact, do not repeat them back as "
-            "if Roum told you, and if one matters, ask him to confirm it first."
+            "provisional: do not present them as fact and do not repeat them back "
+            "as if Roum told you. Use one only where it is relevant, and if it "
+            "matters, ask him to confirm it first."
         )
         parts.extend(f"  ~ {item}" for item in items)
 
@@ -372,6 +375,21 @@ class CompanionOrchestrator:
             return
         parts.append(f"\n=== {heading} ===")
         parts.extend(f"- {item}" for item in items)
+
+    @staticmethod
+    def _append_generation(parts: List[str], identity_data: Dict[str, Any],
+                           active_work: str = "") -> None:
+        """How Astra uses her internal state: as cause, not topic.
+
+        Always rendered (unless switched off in ``identity.yaml``) and names no
+        subsystem value, so there is nothing in it for the model to read back.
+        The block text lives in :mod:`astra.generation`; only the on/off switch
+        is configuration.
+        """
+        block = generation.response_generation_block(
+            config=identity_data, active_work=active_work)
+        if block:
+            parts.append("\n" + block)
 
     @staticmethod
     def _append_language_section(parts: List[str], language: Dict[str, Any]) -> None:
@@ -675,10 +693,10 @@ class CompanionOrchestrator:
         #     chance to appear, while an unrelated one stays out. Relevance
         #     never decides whether an interpretation is *true*, only whether it
         #     is worth raising. Nothing here resolves anything.
+        active_work = self._active_work(user_input, all_knowledge)
         relevant_questions = self._select_relevant_questions(user_input, all_questions, breadth)
         work_knowledge = self._relevant_work_knowledge(
-            user_input, all_knowledge,
-            active_work=self._active_work(user_input, all_knowledge))
+            user_input, all_knowledge, active_work=active_work)
 
         # 7. Read identity configuration
         identity = _as_dict(identity_data.get("identity"))
@@ -712,6 +730,11 @@ class CompanionOrchestrator:
         self._append_list_section(parts, "CONVERSATIONAL HABITS", speech.get("conversational_habits"))
         self._append_list_section(parts, "PERSONALITY TRAITS", speech.get("personality"))
         self._append_language_section(parts, language)
+        # The generation contract sits with the identity material: it governs
+        # how every state block below is *used*, so it must be read before them.
+        # It names no subsystem value, so it adds a way to behave rather than
+        # another thing to narrate. Config-gated via identity.yaml.
+        self._append_generation(parts, identity_data, active_work)
 
         self._append_clock(parts)
         self._append_relationship_boundaries(parts, boundaries)
@@ -727,6 +750,11 @@ class CompanionOrchestrator:
         self._append_work_knowledge(parts, work_knowledge)
         self._append_temporal(parts, all_questions)
         self._append_impatience(parts, all_questions)
+        # The behavioural modulation reads the affect and temporal state the
+        # blocks above already described and turns them into *how she engages*.
+        # It is the piece that makes sadness and elapsed time act on behaviour
+        # rather than merely being present; it stores nothing and names no value.
+        self._append_modulation(parts, affect_state, all_questions)
         self._append_current_state(parts, current_state)
         self._append_governing(parts, governing, total_governing)
         self._append_adaptations(parts, active_adaptations)
@@ -744,9 +772,9 @@ class CompanionOrchestrator:
         has_facts |= self._append_facts(parts, "Relationship Context:", self._sourced(retrieved_rel))
         if has_facts:
             parts.append(
-                "These are things Roum has told you. Draw on the ones that are "
-                "relevant to what he is asking instead of answering from scratch; "
-                "weave them in naturally rather than reciting the list."
+                "These are things Roum has told you. Let the relevant ones inform "
+                "the reply naturally, as background you already have - do not "
+                "recite the list or announce that you are recalling it."
             )
         else:
             parts.append("No query-relevant background facts were retrieved for this turn.")
@@ -1012,6 +1040,44 @@ class CompanionOrchestrator:
         if block:
             parts.append("\n" + block)
 
+    def _append_modulation(self, parts: List[str], affect_state: Dict[str, Any],
+                           all_questions: List[Dict[str, Any]]) -> None:
+        """Turn the current affect and felt time into behavioural guidance.
+
+        This is the bridge that makes the state act on *how* Astra engages (pace,
+        initiative, brevity, hesitation) instead of only existing. Read-only: it
+        reads the affect accumulator and the derived temporal view and stores
+        nothing, so prompt building stays pure and byte-stable.
+        """
+        store = self.store
+        last_seen = store.last_present() if callable(
+            getattr(store, "last_present", None)) else None
+        live = [q for q in all_questions if inquiry.is_open_question(q)]
+        modulation = behavior.build(
+            affect_state=affect_state, last_seen=last_seen,
+            open_questions=live, works=self._works(),
+        )
+        block = behavior.prompt_block(modulation)
+        if block:
+            parts.append("\n" + block)
+
+    def current_modulation(self) -> Dict[str, Any]:
+        """The current behavioural modulation, for the admin/status view only.
+
+        Read-only and external: this is the same derivation the prompt uses, so
+        the admin screen can show *why* Astra is behaving a certain way without
+        any of it reaching her conversational context as numbers.
+        """
+        all_questions = self._read("self", "all")
+        live = [q for q in all_questions if inquiry.is_open_question(q)]
+        store = self.store
+        last_seen = store.last_present() if callable(
+            getattr(store, "last_present", None)) else None
+        return behavior.build(
+            affect_state=self._affect_state(), last_seen=last_seen,
+            open_questions=live, works=self._works(),
+        )
+
     @staticmethod
     def _recent_experiences(all_self: List[Dict[str, Any]], limit: int = 4) -> List[Dict[str, Any]]:
         """The newest experience records, for Astra's own recent-history block."""
@@ -1026,8 +1092,9 @@ class CompanionOrchestrator:
         parts.append("\n=== ASTRA'S RECENT EXPERIENCES (HER OWN HISTORY) ===")
         parts.append(
             "Things Astra has actually done or encountered. These are her own "
-            "history, not claims about Roum; draw on them only where they are "
-            "relevant. The time is real elapsed time, not decoration."
+            "history, not claims about Roum; let the relevant ones inform how she "
+            "reacts rather than listing them. The time is real elapsed time, not "
+            "decoration."
         )
         for mem in experiences:
             kind = _clean_text(mem.get("experience_kind")) or "experience"
