@@ -42,12 +42,12 @@ filesystem:
 
 proactive:
   # Global mute for unsolicited messages (also toggleable with /proactive).
-  muted: true
+  muted: false
   # Minimum seconds between unprompted interruptions.
   interrupt_cooldown_seconds: 1200
   # Whether a high-priority system event may bypass ordinary suppression. Only
   # ever bypasses cooldown/busy, never "user is active" or an explicit mute.
-  allow_high_priority_bypass: false
+  allow_high_priority_bypass: true
 
 voice:
   # "text" renders as text only; the interface is replaceable independently.
