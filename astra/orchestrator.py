@@ -1080,9 +1080,19 @@ class CompanionOrchestrator:
 
     @staticmethod
     def _recent_experiences(all_self: List[Dict[str, Any]], limit: int = 4) -> List[Dict[str, Any]]:
-        """The newest experience records, for Astra's own recent-history block."""
+        """The experiences that stay most present, felt ones first.
+
+        Ordered by how strongly the moment's own feeling pulls on her
+        (``affect.felt_salience``) and then by recency, so an emotionally
+        charged memory stays in view over a merely recent analytical one. This
+        is read-only and derived: it changes what is *surfaced*, never what is
+        stored, and a colourless experience simply ranks on recency.
+        """
         experiences = [m for m in all_self if m.get("type") == "experience" and m.get("content")]
-        experiences.sort(key=lambda m: str(m.get("timestamp") or ""), reverse=True)
+        experiences.sort(
+            key=lambda m: (affect.felt_salience(m), str(m.get("timestamp") or "")),
+            reverse=True,
+        )
         return experiences[:limit]
 
     def _append_experiences(self, parts: List[str], experiences: List[Dict[str, Any]]) -> None:
@@ -1094,15 +1104,18 @@ class CompanionOrchestrator:
             "Things Astra has actually done or encountered. These are her own "
             "history, not claims about Roum; let the relevant ones inform how she "
             "reacts rather than listing them. The time is real elapsed time, not "
-            "decoration."
+            "decoration. Where a memory names a feeling, that is how the moment "
+            "felt to her - let it colour how she recalls it rather than reciting it."
         )
         for mem in experiences:
             kind = _clean_text(mem.get("experience_kind")) or "experience"
             work = _clean_text(mem.get("work_id"))
             suffix = f" (re: {work})" if work else ""
             when = selfhood.provenance_note(mem)
+            colour = affect.memory_colour(mem)
+            felt = f" (felt {colour})" if colour else ""
             parts.append(
-                f"- [{kind}] {_clean_text(mem.get('content'))}{suffix} [{when}]"
+                f"- [{kind}] {_clean_text(mem.get('content'))}{felt}{suffix} [{when}]"
             )
 
     @staticmethod

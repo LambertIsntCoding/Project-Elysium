@@ -1,1 +1,1 @@
-python main.py
+python main.py echo $DISCORD_BOT_TOKEN

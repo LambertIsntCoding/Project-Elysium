@@ -66,10 +66,18 @@ def _config_section(key: str) -> Dict[str, Any]:
 
 
 def reload_affect_config() -> None:
-    """Force a reload of the affect configuration. For testing."""
-    global _affect_config, _config_loaded
+    """Force a reload of the affect configuration. For testing.
+
+    The derived tables (kind deltas, influence matrix, colour map) are built at
+    import, so they are rebuilt here too - otherwise a reload would report new
+    config while the runtime kept the old tables.
+    """
+    global _affect_config, _config_loaded, _KIND_DELTAS, _EMOTION_INFLUENCE, _COLOURS
     _affect_config = None
     _config_loaded = False
+    _KIND_DELTAS = _build_kind_deltas()
+    _EMOTION_INFLUENCE = _build_emotion_influence()
+    _COLOURS = _build_colour_map()
 
 
 # v1: the initial experiential-affect accumulator.
@@ -183,6 +191,10 @@ def _build_kind_deltas() -> Dict[str, Dict[str, float]]:
 
 
 _KIND_DELTAS: Dict[str, Dict[str, float]] = _build_kind_deltas()
+
+# The strongest base valence delta any kind carries (0.16 today). A memory's
+# felt salience is normalised against it, so the most charged kind scores 1.0.
+_SALIENCE_REFERENCE = 0.16
 
 
 # ---------------------------------------------------------------------------
@@ -484,6 +496,120 @@ def is_neutral(state: Any) -> bool:
                for name in AFFECT_COMPONENTS)
 
 
+# ---------------------------------------------------------------------
+# The emotional colour of a memory
+# ---------------------------------------------------------------------
+# A memory's kind is its emotional colour. ``EXPERIENCE_HAPPY`` is how a moment
+# felt, and ``read``/``discovered``/``completed`` carry their own plain colour.
+# Keeping the map here (rather than as a field on the record) means a colour can
+# be reworded or a new synonym folded in without migrating stored data, and it
+# ties the emotion to the memory at recall time rather than at write time.
+_COLOUR_DEFAULTS: Dict[str, str] = {
+    EXPERIENCE_READ: "absorbed",
+    EXPERIENCE_DISCOVERED: "curious",
+    EXPERIENCE_COMPLETED: "satisfied",
+    EXPERIENCE_REALIZATION: "illuminated",
+    EXPERIENCE_FRUSTRATION: "frustrated",
+    EXPERIENCE_INTERACTION: "engaged",
+    EXPERIENCE_UNEXPECTED: "startled",
+    EXPERIENCE_ATTACHMENT: "attached",
+    EXPERIENCE_HAPPY: "glad",
+    EXPERIENCE_SAD: "sad",
+    EXPERIENCE_ANGRY: "angry",
+    EXPERIENCE_TENDER: "warm",
+    EXPERIENCE_WEARY: "weary",
+    EXPERIENCE_CALM: "calm",
+    LIVE_REPETITION: "restless",
+    # Formative-kind fallbacks, when a strong experience was recorded without a
+    # specific kind. A hard one must still read as hard rather than colourless.
+    "memorable": "memorable",
+    "traumatic": "painful",
+    "formative": "significant",
+}
+
+
+def _build_colour_map() -> Dict[str, str]:
+    """Build the kind -> colour map from config, falling back to defaults."""
+    config_colours = _config_section("memory_colours")
+    merged = dict(_COLOUR_DEFAULTS)
+    for kind, word in config_colours.items():
+        merged[str(kind)] = str(word)
+    return merged
+
+
+_COLOURS: Dict[str, str] = _build_colour_map()
+
+
+def memory_colour(mem: Dict[str, Any]) -> str:
+    """The emotional colour of a memory, or ``""`` when it has none.
+
+    Only ``experience`` records carry a felt colour - they are the moments that
+    moved her. An experience is coloured by its ``experience_kind`` first and
+    falls back to its ``formative_kind`` (a hard experience stays coloured even
+    if its kind was left blank). Ordinary memories have no colour: colouring a
+    preference or a fact would be exactly the invented feeling this system is
+    meant to avoid.
+    """
+    if str(mem.get("type") or "") != "experience":
+        return ""
+    colour = _COLOURS.get(resolve_kind(mem.get("experience_kind")) or "", "")
+    if not colour:
+        colour = _COLOURS.get(
+            str(mem.get("formative_kind") or "").strip().casefold(), "")
+    return colour
+
+
+def felt_components(mem: Dict[str, Any]) -> Dict[str, float]:
+    """The valence components a memory's kind moves, for salience ordering.
+
+    A read-only projection of the same delta table :func:`record_event` applies:
+    it answers "which feelings does this memory carry, and how strongly" without
+    writing anything. The kind is resolved through its alias first, so a record
+    stored as ``joy`` still counts as ``happy``.
+    """
+    resolved = resolve_kind(mem.get("experience_kind"))
+    deltas = _KIND_DELTAS.get(resolved) if resolved else None
+    if not deltas:
+        return {}
+    return {name: float(deltas[name]) for name in EMOTION_COMPONENTS
+            if name in deltas}
+
+
+def felt_salience(mem: Dict[str, Any]) -> float:
+    """How strongly a memory's own feeling pulls on her, as a 0..1 scalar.
+
+    The largest valence delta its kind carries, normalised against the strongest
+    base delta (``_SALIENCE_REFERENCE``) and capped. An emotionally charged
+    experience scores near 1, an analytical one near 0. Used to surface the felt
+    moments among her recent history; it reads, never writes, and an unknown
+    kind scores 0.
+    """
+    components = felt_components(mem)
+    if not components:
+        return 0.0
+    return min(1.0, max(abs(value) for value in components.values()) / _SALIENCE_REFERENCE)
+
+
+def resolve_kind(kind: Any) -> Optional[str]:
+    """The canonical experience kind for a name or alias, or ``None``.
+
+    A single source of truth for "is this a kind the affect system knows". The
+    alias table folds reading/emotional synonyms (``joy`` -> ``happy``) onto the
+    canonical kinds; an unrecognised name resolves to ``None`` so a caller can
+    fall back rather than file a record whose kind nothing can interpret.
+    """
+    name = str(kind or "").strip().casefold()
+    if not name:
+        return None
+    resolved = _KIND_ALIASES.get(name, name)
+    return resolved if resolved in _KIND_DELTAS else None
+
+
+def colour_vocabulary() -> Dict[str, str]:
+    """A copy of the kind -> colour map, for diagnostics."""
+    return dict(_COLOURS)
+
+
 def record_event(state: Any, kind: str, *, intensity: float = 0.5,
                  significance: float = 0.5, text: str = "") -> Dict[str, Any]:
     """Fold one experience into the current affective state.
@@ -498,9 +624,8 @@ def record_event(state: Any, kind: str, *, intensity: float = 0.5,
     """
     state = _coerce_state(state)
     _decay(state)
-    resolved = _KIND_ALIASES.get(str(kind or "").strip().casefold(),
-                                 str(kind or "").strip().casefold())
-    deltas = _KIND_DELTAS.get(resolved)
+    resolved = resolve_kind(kind)
+    deltas = _KIND_DELTAS.get(resolved) if resolved else None
     if deltas is None:
         return state
 
@@ -862,6 +987,11 @@ __all__ = [
     "is_neutral",
     "record_event",
     "evaluate_turn",
+    "resolve_kind",
+    "memory_colour",
+    "felt_components",
+    "felt_salience",
+    "colour_vocabulary",
     "retrieval_breadth",
     "render_summary",
     "prompt_block",
