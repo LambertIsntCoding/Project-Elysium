@@ -291,6 +291,21 @@ Top-level `memory_store.py`, `orchestrator.py`, `elysium.py`, `consolidator.py`,
   read-only and byte-stable. A minimal, non-breaking option if it ever matters:
   add an opt-in read-time aged view (a derived copy, not a write) and/or a
   separate slower rate for the live accumulator; neither is done here.
+- **A memory's emotion is tied to it at recall, not stored on it.** An
+  experience's kind *is* its emotional colour (`affect.memory_colour`: `happy`
+  -> "glad", `read` -> "absorbed", `traumatic` -> "painful"), and the colour map
+  lives in `affect._COLOURS` / `config/affect.yaml`, derived on read. So the
+  feeling a memory carries is visible wherever the memory is shown, and a colour
+  can be reworded without migrating data. Only `experience` records are
+  coloured - colouring a fact or a preference would be the invented feeling this
+  system avoids. `affect.felt_salience` (a read-only projection of the delta
+  table) lets the felt moments rank above merely recent analytical ones in
+  `orchestrator._recent_experiences`; this changes what is *surfaced*, never
+  what is stored, and prompt building stays read-only. `affect.resolve_kind` is
+  the single "is this a kind we know" check (aliases folded in), used by both
+  `record_event` and `reading.reading_experience_kind`, so an unrecognised
+  reaction emotion falls back to the generic reading flags instead of filing a
+  kind the affect system would silently ignore.
 - **Questions and uncertainty are memories, not a parallel store.** Slice 2 adds
   `astra/inquiry.py`, which is a *vocabulary* module only - the records are
   ordinary memories written through `add_memory`, so they inherit evidence,
@@ -404,8 +419,9 @@ negative) covers identity stability, correction adherence, work attribution,
 grounded literary discussion, uncertainty, self-reinforcement, ordinary
 conversation, provenance/authority/read-only, reading-not-autobiography, the
 journal, working memory, and reading concentration/pace. Tests assert behaviour
-and authority boundaries, not prompt strings. Full suite: 475 tests (the live
-affect path adds `tests/test_live_affect.py`, 30 cases).
+and authority boundaries, not prompt strings. Full suite: 603 tests (the live
+affect path adds `tests/test_live_affect.py`, 30 cases; the emotion-memory cases
+add `tests/test_experience_affect.py::TestEmotionColour`).
 
 ### Reading progress is measured in words
 
