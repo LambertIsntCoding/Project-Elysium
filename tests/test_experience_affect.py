@@ -226,5 +226,65 @@ class TestAffectPrompt(_AffectCase):
         self.assertEqual(after, before)
 
 
+# ---------------------------------------------------------------------
+# Emotion tied into memory (colour + salience)
+# ---------------------------------------------------------------------
+class TestEmotionColour(_AffectCase):
+    def test_experience_carries_a_colour_fact_does_not(self):
+        exp = self.store.record_experience("Felt a rush of joy.", kind=affect.EXPERIENCE_HAPPY)
+        self.assertEqual(affect.memory_colour(exp), "glad")
+        self.assertEqual(affect.memory_colour({"type": "explicit_fact", "content": "x"}), "")
+        # A read is coloured too, so an analytical memory is not colourless.
+        read = self.store.record_experience("Read a chapter.", kind=affect.EXPERIENCE_READ)
+        self.assertEqual(affect.memory_colour(read), "absorbed")
+
+    def test_colour_falls_back_to_formative_kind(self):
+        # A strong experience recorded without a specific kind still reads as hard.
+        mem = {"type": "experience", "experience_kind": "", "formative_kind": "traumatic"}
+        self.assertEqual(affect.memory_colour(mem), "painful")
+
+    def test_felt_salience_ranks_valence_above_analysis(self):
+        charged = {"type": "experience", "experience_kind": affect.EXPERIENCE_SAD}
+        plain = {"type": "experience", "experience_kind": affect.EXPERIENCE_READ}
+        self.assertGreater(affect.felt_salience(charged), affect.felt_salience(plain))
+        self.assertEqual(affect.felt_salience(plain), 0.0)
+
+    def test_alias_kind_is_coloured_and_counted(self):
+        # A record stored under a reading alias still resolves to its emotion.
+        mem = {"type": "experience", "experience_kind": "joy"}
+        self.assertEqual(affect.resolve_kind("joy"), affect.EXPERIENCE_HAPPY)
+        self.assertEqual(affect.memory_colour(mem), "glad")
+        self.assertGreater(affect.felt_salience(mem), 0.0)
+
+    def test_a_felt_memory_outranks_a_newer_analytical_one(self):
+        """Emotion ties into memory: a charged moment stays surfaced."""
+        charged = self.store.record_experience(
+            "Felt a wave of warmth at the ending.", kind=affect.EXPERIENCE_TENDER)
+        # Backdate it so every later experience is strictly newer.
+        past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        self.store.update_memory("self", charged["id"], timestamp=past)
+        for i in range(4):
+            self.store.record_experience(f"Read analytical passage {i}.", kind="read")
+        prompt = self.orch.build_prompt("what have you been doing?", [])
+        # The warm memory survives the 4-item cap despite being the oldest.
+        self.assertIn("wave of warmth", prompt)
+        self.assertIn("(felt warm)", prompt)
+
+    def test_formative_block_colours_a_felt_memory(self):
+        self.store.record_experience(
+            "It hurt to finish that book.", kind=affect.EXPERIENCE_SAD,
+            intensity=0.8, significance=0.9)
+        prompt = self.orch.build_prompt("how's it going?", [])
+        self.assertIn("EXPERIENCES THAT STAYED WITH ASTRA", prompt)
+        self.assertIn("(felt sad)", prompt)
+
+    def test_colouring_the_prompt_writes_nothing(self):
+        self.store.record_experience("Felt glad about finishing.", kind=affect.EXPERIENCE_HAPPY,
+                                     intensity=0.8, significance=0.7)
+        before = self.affect_state()
+        self.orch.build_prompt("tell me something", [])
+        self.assertEqual(self.affect_state(), before)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
