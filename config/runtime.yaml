@@ -57,7 +57,7 @@ voice:
 discord:
   enabled: true
   # The token is read from this environment variable, never from this file.
-  bot_token_env: MTU1NTc4MDc3NzA3MjEzNjI4Mg.G-x2mt.iKyBTyTKLfkiQBh4-WAP5rHmnRXPxT6u9H1BAk
+  bot_token_env: DISCORD_BOT_TOKEN
   # Leave empty until configuring a server.
   channel_id: "1555630373747294418"
   bot_user_id: "1555780777072136282"
