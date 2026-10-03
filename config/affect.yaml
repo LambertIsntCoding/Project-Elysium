@@ -172,6 +172,35 @@ live_settings:
   reactivity_min_intensity: 0.35
 
 # ---------------------------------------------------------------------------
+# Memory colours: the plain word for how a remembered moment felt.
+#
+# A memory's emotional colour is derived from its experience kind at recall
+# time (never stored), so a colour can be reworded here without migrating any
+# data. These are descriptive labels, not numbers, and they appear only on
+# Astra's own experience lines - never on a fact or a preference.
+# ---------------------------------------------------------------------------
+memory_colours:
+  read: absorbed
+  discovered: curious
+  completed: satisfied
+  realization: illuminated
+  frustration: frustrated
+  interaction: engaged
+  unexpected: startled
+  attachment: attached
+  happy: glad
+  sad: sad
+  angry: angry
+  tender: warm
+  weary: weary
+  calm: calm
+  live_repetition: restless
+  # Formative-kind fallbacks for a strong experience stored without a kind.
+  memorable: memorable
+  traumatic: painful
+  formative: significant
+
+# ---------------------------------------------------------------------------
 # Decay settings.
 # ---------------------------------------------------------------------------
 decay_settings:
