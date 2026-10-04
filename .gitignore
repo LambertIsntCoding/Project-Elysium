@@ -20,9 +20,7 @@ runtime/
 # The legacy in-repo state location. It is kept only as a one-time seed source
 # for the runtime storage (astra.paths.seed_runtime_storage); new state is never
 # written here.
-storage/*.json
-storage/*.json.bak
-storage/*.jsonl
+
 storage/*.tmp
 test_storage/
 

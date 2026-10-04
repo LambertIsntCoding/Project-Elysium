@@ -1,4 +1,14 @@
+```yaml
 # Affect configuration for Astra's experiential emotion system.
+#
+# Values are signed floats in the range -1.0 to 1.0.
+# Positive values represent the presence/intensification of a component.
+# Negative values represent movement away from that component's neutral state.
+#
+# This system should produce continuity and influence, not dictate Astra's
+# personality. Affect changes how strongly she approaches a conversation,
+# reacts to something, or remains engaged. It does not replace her identity,
+# memories, preferences, or judgment.
 #
 # This file controls:
 #   1. experience_deltas  - how each experience kind moves the affect state
@@ -6,178 +16,236 @@
 #   3. live_settings      - thresholds for the live conversational affect layer
 #   4. decay_settings     - how quickly the affect state relaxes toward neutral
 #
-# All values are floats. Positive weights increase a component, negative
-# weights decrease it. The influence matrix is applied *after* the base
-# experience delta, so a "happy" experience first bumps happy directly, then
-# the influence matrix lets that happiness ripple into calm, tender, etc.
+# All values are floats in the range -1.0 to 1.0. Positive weights increase
+# a component and negative weights decrease it.
 
 # ---------------------------------------------------------------------------
 # Experience deltas: how each experience kind moves the affect state.
-# Keys are experience kind names; values are {component: delta} dicts.
-# These are the *base* deltas before intensity/significance scaling.
+#
+# These are the direct effects of an experience before intensity/significance
+# scaling and before the influence matrix is applied.
+#
+# These values intentionally stay moderate. A single ordinary experience
+# should usually nudge Astra's state rather than completely redefine it.
 # ---------------------------------------------------------------------------
 experience_deltas:
   read:
-    engagement: 0.08
-    concentration: 0.06
+    engagement: 0.07
+    concentration: 0.05
     curiosity: 0.04
+
   completed:
-    engagement: 0.10
-    anticipation: -0.08
-    frustration: -0.15
-    emotional_investment: 0.06
-    happy: 0.08
-    weary: -0.05
+    engagement: 0.08
+    anticipation: -0.10
+    frustration: -0.12
+    emotional_investment: 0.07
+    happy: 0.09
+    weary: -0.04
+
   discovered:
-    curiosity: 0.12
-    engagement: 0.06
-    happy: 0.05
+    curiosity: 0.14
+    engagement: 0.07
+    happy: 0.04
+
   realization:
-    curiosity: 0.08
-    engagement: 0.05
-    concentration: 0.03
-  frustration:
-    frustration: 0.14
-    engagement: -0.05
-    angry: 0.08
-    calm: -0.04
-  interaction:
-    engagement: 0.06
-    emotional_investment: 0.05
-  unexpected:
-    curiosity: 0.10
-    concentration: -0.05
-  attachment:
-    emotional_investment: 0.12
+    curiosity: 0.09
     engagement: 0.04
-    tender: 0.10
-    happy: 0.05
-  happy:
-    happy: 0.16
-    sad: -0.08
-    angry: -0.06
-    calm: 0.04
+    concentration: 0.05
+
+  frustration:
+    frustration: 0.13
+    engagement: -0.04
+    angry: 0.07
+    calm: -0.06
+
+  interaction:
     engagement: 0.05
+    emotional_investment: 0.04
+
+  unexpected:
+    curiosity: 0.09
+    concentration: -0.04
+
+  attachment:
+    emotional_investment: 0.11
+    engagement: 0.03
+    tender: 0.09
+    happy: 0.04
+
+  happy:
+    happy: 0.14
+    sad: -0.07
+    angry: -0.05
+    calm: 0.05
+    engagement: 0.04
+
   sad:
-    sad: 0.16
-    happy: -0.08
+    sad: 0.14
+    happy: -0.07
     tender: 0.05
     emotional_investment: 0.06
+
   angry:
-    angry: 0.16
-    calm: -0.10
-    happy: -0.06
-    frustration: 0.06
+    angry: 0.14
+    calm: -0.08
+    happy: -0.05
+    frustration: 0.07
+
   tender:
-    tender: 0.16
+    tender: 0.14
     calm: 0.05
-    happy: 0.05
+    happy: 0.06
+
   weary:
-    weary: 0.16
-    concentration: -0.12
-    engagement: -0.06
-    calm: -0.03
+    weary: 0.14
+    concentration: -0.10
+    engagement: -0.05
+    calm: -0.02
+
   calm:
-    calm: 0.16
-    angry: -0.08
-    frustration: -0.06
+    calm: 0.14
+    angry: -0.07
+    frustration: -0.05
+
   live_repetition:
     engagement: -0.06
-    curiosity: -0.04
-    concentration: -0.05
+    curiosity: -0.03
+    concentration: -0.04
     weary: 0.05
+
 
 # ---------------------------------------------------------------------------
 # Emotion influence matrix: how emotions change each other.
 #
-# Each key is a *source* emotion (one of the six valence components).
-# Each value maps *target* components to an influence weight.
+# Each key is a *source* component.
+# Each value maps source influence onto target components.
 #
-# When the source emotion's value changes (from an experience or live event),
-# it ripples into the targets: each target receives
-#   source_delta * influence_weight * influence_scale
-# where influence_scale is the source's current absolute value (so a strong
-# emotion has more influence than a faint one).
+# After a base experience changes the source, the influence matrix allows
+# that change to ripple into related components.
 #
-# Positive weights = source emotion increases the target.
-# Negative weights = source emotion decreases the target.
+# Conceptually:
 #
-# The matrix is deliberately sparse: only meaningful relationships are listed.
+#   target_change =
+#       source_delta
+#       * influence_weight
+#       * source_current_absolute_value
+#       * influence_scale
+#
+# The matrix is intentionally weaker than the direct experience deltas.
+# Secondary emotional influence should provide continuity, not overwhelm the
+# original event.
+#
+# Positive weights increase the target.
+# Negative weights decrease the target.
+#
 # Unlisted pairs have zero influence.
+#
+# The matrix is deliberately sparse so unrelated emotions do not constantly
+# interfere with one another.
 # ---------------------------------------------------------------------------
 emotion_influence:
   happy:
-    calm: 0.12
-    tender: 0.08
-    sad: -0.15
-    angry: -0.10
-    weary: -0.06
-    engagement: 0.04
-  sad:
-    happy: -0.12
-    tender: 0.10
-    weary: 0.08
-    engagement: -0.06
-    calm: -0.04
-  angry:
-    calm: -0.15
-    happy: -0.10
-    tender: -0.06
-    frustration: 0.10
-    engagement: -0.04
-  calm:
-    angry: -0.12
-    frustration: -0.08
-    happy: 0.06
-    concentration: 0.05
+    calm: 0.10
+    tender: 0.07
+    sad: -0.11
+    angry: -0.08
     weary: -0.04
+    engagement: 0.04
+
+  sad:
+    happy: -0.09
+    tender: 0.08
+    weary: 0.06
+    engagement: -0.04
+    calm: -0.02
+
+  angry:
+    calm: -0.10
+    happy: -0.08
+    tender: -0.04
+    frustration: 0.08
+    engagement: -0.03
+
+  calm:
+    angry: -0.10
+    frustration: -0.06
+    happy: 0.05
+    concentration: 0.04
+    weary: -0.03
+
   tender:
-    calm: 0.08
-    happy: 0.10
-    angry: -0.06
-    emotional_investment: 0.08
-    sad: -0.04
+    calm: 0.06
+    happy: 0.08
+    angry: -0.05
+    emotional_investment: 0.06
+    sad: -0.03
+
   weary:
-    engagement: -0.10
-    concentration: -0.08
-    happy: -0.06
-    frustration: 0.06
-    calm: -0.04
-    anticipation: -0.05
+    engagement: -0.08
+    concentration: -0.06
+    happy: -0.05
+    frustration: 0.05
+    calm: -0.03
+    anticipation: -0.04
+
 
 # ---------------------------------------------------------------------------
 # Live conversational settings.
+#
+# These govern affect generated from the current conversation rather than
+# remembered experiences.
+#
+# Live affect should be noticeable without becoming hypersensitive. Astra
+# should not swing emotional state dramatically because of one ordinary
+# sentence, and repeated wording should not be mistaken for emotional
+# significance too quickly.
 # ---------------------------------------------------------------------------
 live_settings:
-  # Minimum score for a live event to register at all.
-  event_min_score: 0.6
-  # Maximum intensity a live event can reach after modulation.
-  intensity_cap: 0.7
-  # Default significance for positive live events.
+  # Minimum score required before a live event registers.
+  event_min_score: 0.60
+
+  # Hard upper bound on the intensity of a live conversational event.
+  intensity_cap: 0.70
+
+  # Default significance applied to positive live events.
   significance: 0.45
-  # Default significance for negative live events.
-  negative_significance: 0.5
-  # Repetition detection: how many echoing turns before it registers.
+
+  # Negative events are given slightly more weight because irritation,
+  # discomfort, and loss of engagement should not disappear immediately.
+  negative_significance: 0.50
+
+  # Number of sufficiently similar turns required before repetition becomes
+  # an affective event.
   repetition_min: 3
-  # Token overlap threshold for repetition detection.
-  repetition_similarity: 0.7
-  # Intensity of the repetition event.
-  repetition_intensity: 0.6
-  # Significance of the repetition event.
-  repetition_significance: 0.4
-  # Reactivity bounds: how much current state can amplify/dampen an event.
-  reactivity_floor: 0.75
-  reactivity_ceil: 1.3
-  # A real event always lands with at least this much intensity.
+
+  # Similarity required for turns to count as genuine repetition.
+  repetition_similarity: 0.70
+
+  # Repetition should create noticeable restlessness without dominating the
+  # entire affect state.
+  repetition_intensity: 0.55
+
+  # Repetition is meaningful, but not highly significant by itself.
+  repetition_significance: 0.35
+
+  # Current affect can make an event somewhat stronger or weaker, but should
+  # remain inside a restrained range.
+  reactivity_floor: 0.80
+  reactivity_ceil: 1.20
+
+  # A genuine live event should still register even when current affect would
+  # otherwise dampen it considerably.
   reactivity_min_intensity: 0.35
+
 
 # ---------------------------------------------------------------------------
 # Memory colours: the plain word for how a remembered moment felt.
 #
 # A memory's emotional colour is derived from its experience kind at recall
-# time (never stored), so a colour can be reworded here without migrating any
-# data. These are descriptive labels, not numbers, and they appear only on
-# Astra's own experience lines - never on a fact or a preference.
+# time and is never stored as mutable emotional metadata.
+#
+# These labels are descriptive language only. They are not scores and should
+# not be treated as facts about what a memory objectively "means."
 # ---------------------------------------------------------------------------
 memory_colours:
   read: absorbed
@@ -195,20 +263,33 @@ memory_colours:
   weary: weary
   calm: calm
   live_repetition: restless
+
   # Formative-kind fallbacks for a strong experience stored without a kind.
   memorable: memorable
   traumatic: painful
   formative: significant
 
+
 # ---------------------------------------------------------------------------
 # Decay settings.
+#
+# Affect should fade gradually rather than reset. Meaningful experiences can
+# influence Astra for a while, while temporary conversational moods should
+# eventually relax toward neutral.
 # ---------------------------------------------------------------------------
 decay_settings:
-  # Neutral baseline all components decay toward.
+  # Neutral baseline toward which all components relax.
   baseline: 0.0
-  # How much each component decays per day (0.15 = full decay in ~6.7 days).
+
+  # Daily relaxation rate toward baseline.
+  # 0.15 preserves noticeable short-term continuity while allowing ordinary
+  # conversational states to settle over time.
   per_day: 0.15
-  # Minimum time between decay applications (days).
+
+  # Prevents repeated decay operations from occurring too frequently.
   min_interval_days: 0.5
-  # Below this value, a component is treated as "no particular condition".
+
+  # Components this close to zero are treated as having no particular active
+  # condition rather than being surfaced as meaningful emotional states.
   neutral_epsilon: 0.02
+```

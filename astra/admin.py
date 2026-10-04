@@ -41,14 +41,14 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tupl
 
 # How many rows one page of any listing shows. Change this one value and every
 # paginated command follows.
-PAGE_SIZE = 25
+PAGE_SIZE = 12
 
 # How many previous screen states a live screen keeps. Deliberately tiny: this
 # is a rolling diagnostic buffer, never an unbounded log.
 SNAPSHOT_HISTORY = 4
 
 # How often a live screen re-renders while it is open.
-LIVE_REFRESH_SECONDS = 1.0
+LIVE_REFRESH_SECONDS = 0.2
 
 # How many snapshots are persisted to disk (a subset of the rolling buffer, so a
 # captured state survives the process and can be shown to someone later).
