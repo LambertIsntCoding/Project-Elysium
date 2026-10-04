@@ -514,5 +514,49 @@ class TestReadingConcentration(_SuiteCase):
         self.assertTrue(experiences)
 
 
+# ---------------------------------------------------------------------
+# 12. Personal state is never reconstructed from the conversation
+# ---------------------------------------------------------------------
+class TestPersonalStateHonesty(_SuiteCase):
+    def setUp(self):
+        super().setUp()
+        self.library = Library(data_dir=self.tmp)
+
+    def _reader(self, library):
+        return type("R", (), {"library": library, "last_reason": None})()
+
+    def test_a_status_question_gets_an_authoritative_block(self):
+        self.orch.reader = self._reader(self.library)
+        prompt = self.prompt("What book are you reading?")
+        self.assertIn("CURRENT PERSONAL STATE", prompt)
+        self.assertIn("no work is recorded as being read", prompt)
+
+    def test_an_ordinary_turn_is_not_a_status_report(self):
+        self.orch.reader = self._reader(self.library)
+        prompt = self.prompt("hey, how's it going?")
+        self.assertNotIn("CURRENT PERSONAL STATE", prompt)
+        self.assertIn("HOW ASTRA ANSWERS ABOUT HERSELF", prompt)
+
+    def test_a_fabricated_current_state_is_not_authoritative(self):
+        mid = self.store.add_memory(
+            "self", "I'm partway through a book I never opened.",
+            "self_belief", "ai_extraction", confidence=0.9)
+        self.assertNotEqual(self.store.get_memory("self", mid)["type"], "self_belief")
+
+    def test_discussing_a_work_does_not_make_it_current(self):
+        self.store.apply_reading_results(
+            work_id="garden", title="The Garden",
+            digest={"observations": ["A brass key lay under the gate."]})
+        self.orch.reader = self._reader(self.library)
+        prompt = self.prompt("What book are you reading?")
+        # A work she only has notes on is not thereby her current read.
+        self.assertIn("no work is recorded as being read", prompt)
+
+    def test_purpose_is_not_regenerated_from_the_subject(self):
+        self.orch.reader = self._reader(self.library)
+        prompt = self.prompt("What is your purpose?")
+        self.assertIn("not regenerated from the current subject", prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

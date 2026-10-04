@@ -31,6 +31,7 @@ HTTP stub, and consolidation tests call the decision layer directly.
 | `astra/affect.py` | Astra's current *experiential* affect (temporary; from experiences and live turns) |
 | `astra/selfhood.py` | self-knowledge: the non-human boundary, the epistemic stance, absent-experience guard, derived self-portrait, formative/traumatic experience classification (pure, no I/O) |
 | `astra/self_memory.py` | self-memory authority: which sources may mint permanent self-knowledge, the implementation/metaphor boundaries, and the pre-save sanity check (pure, no I/O) |
+| `astra/personal_state.py` | personal-state honesty: recognises a question about her own current/recent situation, renders what is actually recorded (and a missing fact *as* missing), the always-on anti-invention contract, and the write-time guard against fabricated current state (pure, no I/O) |
 | `astra/temporal.py` | Astra's sense of elapsed time: session gaps, long-open questions, long projects, and the impatience pull of stalled things (pure render, never stored) |
 | `astra/orchestrator.py` | prompt assembly and retrieval |
 | `astra/generation.py` | the response-generation contract: how internal state is *used* (as cause, not topic) |
@@ -149,6 +150,33 @@ Top-level `memory_store.py`, `orchestrator.py`, `elysium.py`, `consolidator.py`,
 - **Sourced and unsourced material are separated in the prompt.** Only
   `SOURCED_SOURCES` (`is_sourced`) appear under `FACTUAL CONTEXT`; everything else
   goes under `TENTATIVE INFERENCES (UNVERIFIED - NOT STATED BY ROUM)`.
+- **A missing personal fact is answered as missing, never reconstructed.**
+  `astra/personal_state.py` recognises a question about her own current/recent
+  situation (reading, games, progress, prior statements, preferences, projects,
+  what she was told, purpose) and renders `ASTRA'S CURRENT PERSONAL STATE
+  (AUTHORITATIVE - DO NOT INVENT)` from the library's reading state, its works,
+  and the relevant records - stating a *missing* record as missing. It is
+  rendered only for such a question, so ordinary conversation is not turned into
+  a status report. Talking about a work never makes it her current state, and an
+  opinion/interpretation is labelled and never presented as evidence of progress.
+- **A generated claim of current personal state is not self-knowledge.** In
+  `add_memory`, a durable-classified self-claim that matches
+  `personal_state.claims_current_state` (what she is reading now, how far she is,
+  what she is playing, what she previously said) and is not tied to a real record
+  (`_current_state_is_supported`: a work-scoped experience or the reading-state
+  file) is kept as low-authority history, so a fabricated state cannot become
+  authoritative. The always-on `personal_state.behavior_block()` states the rule
+  every turn (uncertainty is a valid answer; a correction is information first).
+- **Reading status contradictions are detected, not silently resolved.**
+  `detect_contradiction` consults `personal_state.reading_state_conflict`, so
+  "finished reading X" and "currently reading X" contradict even without a
+  polarity reversal; the existing authority model then weakens the lower-
+  authority record rather than replacing the higher one. `personal_state.conflicts`
+  surfaces what remains so she acknowledges the mix-up.
+- **Purpose comes from identity, not the current subject.** A question about her
+  purpose renders the configured `core_concept` (`personal_state.purpose_block` /
+  the purpose arm of `prompt_block`) rather than letting the topic regenerate it:
+  a conversation about books does not make her purpose "understanding narrative".
 - **Astra never sees her own numbers.** `affect.prompt_block`/`render_summary` and
   `relational.prompt_block` describe her state in plain language; the internal
   values that produce it are implementation, not introspection (implementation ->
@@ -476,14 +504,16 @@ read-only prompt construction, compact persistent records, temporal /
 relational / affect separation, reading-position semantics, process-policy
 semantics, Elysium routing, application-level decision authority.
 
-Regression suite: `tests/test_behavioral_regression.py` (47 cases, positive and
+Regression suite: `tests/test_behavioral_regression.py` (52 cases, positive and
 negative) covers identity stability, correction adherence, work attribution,
 grounded literary discussion, uncertainty, self-reinforcement, ordinary
 conversation, provenance/authority/read-only, reading-not-autobiography, the
-journal, working memory, and reading concentration/pace. Tests assert behaviour
-and authority boundaries, not prompt strings. Full suite: 603 tests (the live
-affect path adds `tests/test_live_affect.py`, 30 cases; the emotion-memory cases
-add `tests/test_experience_affect.py::TestEmotionColour`).
+journal, working memory, reading concentration/pace, and personal-state honesty
+(never reconstructing a missing or contradictory fact). The anti-invention rules
+have their own suite, `tests/test_personal_state.py` (17 cases). Tests assert
+behaviour and authority boundaries, not prompt strings. Full suite: 695 tests
+(the live affect path adds `tests/test_live_affect.py`, 30 cases; the
+emotion-memory cases add `tests/test_experience_affect.py::TestEmotionColour`).
 
 ### Reading progress is measured in words
 

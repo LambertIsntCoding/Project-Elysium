@@ -11,6 +11,7 @@ from . import affect
 from . import behavior
 from . import generation
 from . import inquiry
+from . import personal_state
 from . import prepared_context
 from . import reading
 from . import relational
@@ -743,6 +744,10 @@ class CompanionOrchestrator:
         # What Astra is (settled) and what she may be discovering about herself
         # (revisable) are deliberately adjacent but distinct.
         self._append_selfhood_boundary(parts)
+        self._append_personal_state(
+            parts, user_input,
+            everything + all_questions + recent_experiences,
+            identity_concept=_clean_text(identity.get("core_concept")))
         self._append_affect(parts, affect_state)
         self._append_reading(parts, self._reading_state())
         self._append_experiences(parts, recent_experiences)
@@ -1001,6 +1006,30 @@ class CompanionOrchestrator:
         if block:
             parts.append("\n" + block)
 
+    def _append_personal_state(self, parts: List[str], user_input: str,
+                               candidates: List[Dict[str, Any]],
+                               identity_concept: str = "") -> None:
+        """The authoritative answer to a question about her own situation.
+
+        Only rendered when the turn actually asks about her reading, games,
+        progress, prior statements, preferences, projects, purpose, or what she
+        was told, so ordinary conversation is not turned into a status report.
+        The block states what is recorded - and, just as importantly, states a
+        missing record as missing - so "I don't remember" is available instead of
+        an invented answer. Her purpose, when asked, comes from identity rather
+        than from the current subject.
+        """
+        kinds = personal_state.query_kinds(user_input)
+        if not kinds:
+            return
+        relevant = DeterministicLexicalRetriever.retrieve(
+            user_input, candidates, top_k=8)
+        block = personal_state.prompt_block(
+            self._reading_state(), self._works(), relevant, kinds,
+            identity_concept=identity_concept)
+        if block:
+            parts.append(block)
+
     def _works(self) -> List[Dict[str, Any]]:
         """The works Astra has in her library, or ``[]`` when there is none."""
         library = getattr(getattr(self, "reader", None), "library", None)
@@ -1134,6 +1163,10 @@ class CompanionOrchestrator:
         """
         parts.append("\n" + selfhood.boundary_prompt_block())
         parts.append(selfhood.epistemic_prompt_block())
+        # The rule against inventing personal state rides with the boundary: it
+        # is about what she may assert as fact about her own situation, so it is
+        # always present rather than retrieved.
+        parts.append("\n" + personal_state.behavior_block())
 
     def _append_formative(self, parts: List[str], experiences: List[Dict[str, Any]]) -> None:
         """Experiences that stayed with her - including traumatic ones."""

@@ -37,6 +37,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from . import affect
 from . import inquiry
+from . import personal_state
 from . import reading
 from . import relational
 from . import self_memory
@@ -427,6 +428,12 @@ def detect_contradiction(
     pair = _opposing_pair(ta | tb)
     if pair:
         return f"opposite verbs ({pair[0]}/{pair[1]})"
+    # Reading status is a factual state that can be wrong without a polarity
+    # reversal: "finished reading X" and "currently reading X" are about the
+    # same work and assert opposite states.
+    reading = personal_state.reading_state_conflict(a.get("content"), b.get("content"))
+    if reading:
+        return reading
     return None
 
 
@@ -2056,6 +2063,54 @@ class TripleMemoryStore:
             raise ValueError("content must not be empty")
         return text
 
+    def _current_state_is_supported(self, content: str) -> bool:
+        """True when a current-state claim is tied to a real record.
+
+        A generated sentence such as "I'm partway through Book B" is only
+        legitimate if Astra actually has a record of that work: a stored
+        experience scoped to it, or an entry in the reading state. Absent that,
+        the claim is a fabrication and is kept as history rather than knowledge.
+        """
+        text = str(content or "").casefold()
+        # Work-scoped experiences: "Finished reading 'X'", "Read a passage of
+        # 'X'", "Reacting to 'X'", plus the stored work_id.
+        for mem in self.memories.get("self") or []:
+            if str(mem.get("type") or "") != "experience":
+                continue
+            work_id = str(mem.get("work_id") or "")
+            if work_id and work_id.casefold() in text:
+                return True
+            body = str(mem.get("content") or "").casefold()
+            for marker in ("finished reading '", "finished reading \"",
+                           "read a passage of '", "read a passage of \"",
+                           "reacting to '", "while reading '"):
+                if marker in body:
+                    title = body.split(marker, 1)[1].split("'", 1)[0].split('"', 1)[0]
+                    if title and title in text:
+                        return True
+        # The reading state file is the authority on what is live or finished.
+        state = self._reading_state_snapshot()
+        for work_id, work in (state.get("works") or {}).items():
+            if not isinstance(work, dict):
+                continue
+            for key in (work_id, work.get("title")):
+                key = str(key or "").casefold()
+                if key and key in text:
+                    return True
+        return False
+
+    def _reading_state_snapshot(self) -> Dict[str, Any]:
+        """The persisted reading state, or ``{}`` when there is none (read-only)."""
+        try:
+            path = os.path.join(str(self.data_dir or ""), "reading_state.json")
+            if not os.path.isfile(path):
+                return {}
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
     def _is_absent_experience_claim(self, target_model: str, content: str) -> bool:
         """True when a self-claim asserts an experience Astra could not have had.
 
@@ -2184,6 +2239,18 @@ class TripleMemoryStore:
                 return self._store_historical_claim(
                     content, source, keywords, tags, confidence, extra,
                     reason="metaphor, roleplay, or temporary conversational state",
+                )
+            # A generated sentence that asserts her *current* personal state
+            # (what she is reading now, how far she is, what she is playing) is
+            # a claim about the world, not a durable belief. Unless it is tied
+            # to a real record it is kept as an observation to notice, so a
+            # fabricated state can never become authoritative self-knowledge.
+            if (mem_type in SELF_DURABLE_CLASSIFICATIONS
+                    and personal_state.claims_current_state(content)
+                    and not self._current_state_is_supported(content)):
+                return self._store_historical_claim(
+                    content, source, keywords, tags, confidence, extra,
+                    reason="generated claim of current personal state, not self-knowledge",
                 )
 
         with self._lock:
