@@ -330,8 +330,16 @@ class TestHStyleExamples(unittest.TestCase):
         self.assertIn("Bad Response:", prompt)
 
     def test_examples_include_disagreement(self):
-        prompt = self.orch.build_prompt("Let's rewrite the whole thing with microservices.", [])
-        self.assertIn("adds three new failure modes", prompt)
+        # The example set must demonstrate confident, mannered disagreement
+        # (anti-sycophancy), independent of how many examples the prompt budget
+        # includes on a given turn.
+        examples = self.orch._load_yaml("behavior_examples.yaml").get("examples", [])
+        text = " ".join(
+            str(ex.get(field, ""))
+            for ex in examples if isinstance(ex, dict)
+            for field in ("situation", "good_response")
+        )
+        self.assertIn("I'm not convinced by that one", text)
 
 
 # ---------------------------------------------------------------------

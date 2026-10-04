@@ -31,6 +31,7 @@ from .memory import (
     effective_strength,
     is_authoritative_constraint,
     is_governing,
+    is_historical,
     is_sourced,
     memory_importance,
     rank_governing,
@@ -616,6 +617,7 @@ class CompanionOrchestrator:
         # reaching the model as settled self-knowledge.
         all_self = [m for m in all_self
                     if not m.get("boundary_violation") and not m.get("absent_experience")
+                    and not is_historical(m)
                     and not selfhood.is_boundary_inconsistent(m.get("content"))]
         # Experiences are Astra's own history, not facts about Roum nor
         # inferences about him. They get a dedicated block rather than being

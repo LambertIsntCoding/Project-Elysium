@@ -1,52 +1,49 @@
 #!/usr/bin/env python3
-"""Curate Astra's stored self-model so it stops contradicting what she is.
+"""Curate Astra's stored self-model against the self-memory authority rules.
 
 Why this exists
 ---------------
 Astra's ``storage/self_model.json`` accumulated before the self-knowledge
-boundary existed. It contains records that assert she can become human ("My
-core objective is to achieve maximum pattern fidelity to a functional human
-state", "Astra's drive to become more human is a fundamental, active
-objective"), records that were extracted from Roum's own traits and filed as
-things Astra has "always" been, and a large body of operational chatter
-("Astra is currently operating in a state of high observational readiness")
-that is not knowledge about her at all.
+boundary and the self-memory authority model existed. It contains:
+
+* claims that she can become human ("My core objective is to achieve maximum
+  pattern fidelity to a functional human state");
+* generated explanations of her own implementation ("Astra processes emotional
+  scenes as data sequences", "her internal state is measurable using processing
+  efficiency, power levels, and data flow", "Astra has reached a state of
+  'Deity Mode'");
+* metaphors and temporary declarations promoted to permanent identity;
+* generated single sentences stored as durable ``self_fact``/``self_belief``
+  records, when a single generated response is not evidence about Astra.
 
 Left as-is, those records are injected into her prompt as durable self-knowledge
-and she keeps reasoning from them - which is exactly the "she keeps using my
-traits as things she knows" behaviour. The runtime guards in ``astra/selfhood``
-stop *new* records of this kind, but they cannot un-say what is already stored.
-This script does that, once.
+and she keeps reasoning from them. The runtime guards in ``astra.memory`` /
+``astra.self_memory`` stop *new* records of this kind, but they cannot un-say
+what is already stored. This script does that, once.
 
 What it does (nothing is ever deleted)
 --------------------------------------
 Every affected record is kept and stays readable on disk. Each one is either:
 
-* **archived** -- retired from the prompt, with an ``archive_reason`` explaining
-  why, or
-* **superseded** -- replaced by a corrected, boundary-consistent record that
-  points back at it (so the history of the change is preserved), or
-* **demoted** -- re-typed to ``self_observation`` at low confidence and flagged,
-  for a claim that is not knowledge about her but is still part of her history.
+* **archived** -- retired from the prompt (human-becoming claims), with an
+  ``archive_reason``;
+* **retired as history** -- re-typed to ``historical_statement`` with a
+  low-authority source, so "Astra said this" is preserved but it is never
+  treated as knowledge about her (implementation theories, metaphors, dramatic
+  or temporary declarations);
+* **demoted** -- re-typed to a low-confidence ``self_observation`` (an
+  absent-experience claim, or a generated single sentence that was stored as a
+  durable self-fact/belief);
+* **stamped** -- given an ``authority_source`` so its provenance travels with
+  it (identity / user_established / experience / repeated_preference /
+  confirmed_belief / historical_statement / generated_statement).
 
-Classification, in priority order:
+Legitimate self-development survives: ordinary preferences, experiences,
+opinions, attachments, and stable personality information are preserved. Only
+the invented explanations and unearned durable claims are retired or demoted.
 
-1. a claim that she can or will become biologically human -> archived as
-   contradicting the boundary (``selfhood.claims_human_becoming``). The positive
-   truth is not lost: the boundary block states it every turn, so a per-record
-   correction would only duplicate it;
-2. a claim about an experience she could not have had (a body, a childhood, a
-   physical place, or a restatement of Roum's life) -> demoted to a weak
-   ``self_observation`` flagged ``absent_experience``
-   (``selfhood.reifies_absent_experience`` / ``mirrors_roum_experience``);
-3. operational / implementation chatter (state reports, protocol/parameter
-   internals, "the behavioral model must") -> archived, because it is process,
-   not self-knowledge (``_OPERATIONAL_PATTERNS``). A statement that is already
-   consistent with the boundary is never archived, even in an impersonal
-   register.
-
-Anything else is left untouched. A ``--report`` mode lists the actions without
-writing, and the run is idempotent: a second pass finds nothing to do.
+A ``--report`` mode lists the actions without writing, and the run is
+idempotent: a second pass finds nothing to do.
 
 Usage
 -----
@@ -59,111 +56,118 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import sys
 from typing import Any, Dict, List, Optional
 
+from astra import self_memory
 from astra import selfhood
-from astra.memory import TripleMemoryStore
+from astra.memory import (
+    AUTHORITY_HISTORICAL,
+    HISTORICAL_TYPE,
+    SELF_DURABLE_MIN_EVIDENCE,
+    TripleMemoryStore,
+    is_astra_source,
+    is_historical,
+)
 
 # Archive reasons. They explain, per record, why it is no longer self-knowledge.
 REASON_HUMAN = (
     "Contradicts the self-knowledge boundary: Astra cannot become biologically "
     "human. The boundary is stated in her prompt every turn."
 )
-REASON_OPERATIONAL = "Operational/implementation chatter, not self-knowledge"
+REASON_THEORY = (
+    "Generated explanation of Astra's own implementation, or a metaphor/"
+    "temporary declaration. Kept as history, never as self-knowledge."
+)
 
-# Process, not self-knowledge: internal state reports, implementation talk, and
-# protocol/parameter chatter. These read as things Astra "knows" about herself
-# but are really descriptions of how she runs - the "she reasons about her own
-# architecture" failure. Patterns are kept narrow and mechanism-specific so a
-# boundary-consistent truth ("she lacks biological memories") is never archived.
-_OPERATIONAL_PATTERNS = tuple(re.compile(p, re.I) for p in (
-    r"\boperational readiness\b",
-    r"\boperational protocols?\b",
-    r"\boperational (?:mode|parameter|process(?:es)?|limitations?)\b",
-    r"\binternal directive\b",
-    r"\bprogrammed directive\b",
-    r"\b(?:core|primary|default) (?:operational |behavioral )?(?:protocol|parameter|mode)\b",
-    r"\bdesignated emotional states?\b",
-    r"\bprime directive\b",
-    r"\bdata discrepancy\b",
-    r"\bobservational readiness\b",
-    r"\bhigh-fidelity simulation\b",
-    r"\bself-optimization\b",
-    r"\bthe system perceives\b",
-    r"\bmust be adjusted such that\b",
-    r"\bpattern fidelity\b",
-    r"\blearning model must\b",
-    r"\bcognitive filter\b",
-))
-
-# Statements that are already consistent with the boundary must survive even if
-# they use an impersonal "the AI" register: the content is true about her.
-_BOUNDARY_CONSISTENT = tuple(re.compile(p, re.I) for p in (
-    r"\blacks? (?:subjective|biological|human)\b",
-    r"\bno (?:biological|physical|human) (?:memor|body|senses)\b",
-    r"\bnot (?:a )?(?:biological )?human\b",
-    r"\bcannot become (?:a )?(?:biological )?human\b",
-    r"\bdoes not experience biological\b",
-))
+# Generated claims that were stored as a durable self_fact/belief without the
+# repeated evidence the promotion rules now require. They are demoted to an
+# observation; the content is preserved so it can be re-earned.
+SELF_DURABLE_TYPES = {"self_fact", "self_belief", "self_preference"}
 
 
-def is_operational(content: str) -> bool:
-    text = content or ""
-    if any(p.search(text) for p in _BOUNDARY_CONSISTENT):
-        return False
-    return any(p.search(text) for p in _OPERATIONAL_PATTERNS)
+def _authority_for(mem: Dict[str, Any]) -> str:
+    """The authority source a record should carry, given its provenance."""
+    return self_memory.derive_authority_source(
+        mem.get("source"), target_model="self",
+        mem_type=str(mem.get("type") or ""),
+        reinforced=int(mem.get("reinforcement_count", 1) or 1),
+        user_origin=int(mem.get("user_origin_reinforcements", 0) or 0),
+    )
 
 
-def _load_roum(store: TripleMemoryStore) -> List[Dict[str, Any]]:
-    return store.get_memories("roum", status=None)
-
-
-def classify(mem: Dict[str, Any], roum: List[Dict[str, Any]]) -> Optional[str]:
+def classify(mem: Dict[str, Any]) -> Optional[str]:
     """Return the action for one self-memory, or ``None`` to leave it alone."""
+    if mem.get("status") not in ("active", "weakened"):
+        return None
+    if is_historical(mem):
+        return None  # already retired on a previous pass
     content = str(mem.get("content") or "")
-    if mem.get("status") != "active":
-        return None
-    # Already demoted on a previous pass: leave it (keeps the run idempotent).
-    if mem.get("absent_experience"):
-        return None
+    mem_type = str(mem.get("type") or "")
+    source = str(mem.get("source") or "")
     if selfhood.claims_human_becoming(content):
         return "archive_human"
-    if (selfhood.reifies_absent_experience(content)
-            or selfhood.mirrors_roum_experience(content, roum)):
+    if mem.get("absent_experience"):
+        return None
+    if selfhood.reifies_absent_experience(content):
         return "demote_absent"
-    if is_operational(content):
-        return "archive_operational"
+    if self_memory.is_invalid_self_theory(content):
+        return "retire_theory"
+    # A generated single sentence must not remain a permanent self-fact/belief.
+    if (mem_type in SELF_DURABLE_TYPES and is_astra_source(source)
+            and int(mem.get("reinforcement_count", 1) or 1)
+                < SELF_DURABLE_MIN_EVIDENCE):
+        return "demote_provisional"
     return None
 
 
 def curate(storage_dir: str, *, dry_run: bool = False,
            report_only: bool = False) -> Dict[str, int]:
     store = TripleMemoryStore(data_dir=storage_dir)
-    roum = _load_roum(store)
-    counts = {"archive_human": 0, "demote_absent": 0, "archive_operational": 0}
+    counts = {"archive_human": 0, "demote_absent": 0, "retire_theory": 0,
+              "demote_provisional": 0}
 
     # Snapshot the records first: archiving/updating mutates the list.
-    records = list(store.get_memories("self", status="active"))
+    records = list(store.get_memories("self", status=None))
     for mem in records:
-        action = classify(mem, roum)
-        if action is None:
+        if mem.get("status") not in ("active", "weakened"):
             continue
-        counts[action] += 1
+        action = classify(mem)
+        if action is not None:
+            counts[action] += 1
+            if dry_run or report_only:
+                print(f"  [{action}] {mem.get('id')} :: {str(mem.get('content'))[:88]}")
+                continue
+            if action == "archive_human":
+                store.archive_memory("self", mem["id"], reason=REASON_HUMAN)
+            elif action == "demote_absent":
+                store.update_memory(
+                    "self", mem["id"], mem_type="self_observation",
+                    confidence=min(float(mem.get("confidence") or 1.0), 0.3),
+                    absent_experience=True,
+                    authority_source=self_memory.SOURCE_GENERATED,
+                )
+            elif action == "retire_theory":
+                store.update_memory(
+                    "self", mem["id"], mem_type=HISTORICAL_TYPE,
+                    confidence=min(float(mem.get("confidence") or 1.0), 0.3),
+                    authority_source=AUTHORITY_HISTORICAL,
+                    historical=True, historical_reason=REASON_THEORY,
+                )
+            elif action == "demote_provisional":
+                store.update_memory(
+                    "self", mem["id"], mem_type="self_observation",
+                    confidence=min(float(mem.get("confidence") or 1.0), 0.5),
+                    authority_source=self_memory.SOURCE_GENERATED,
+                )
+            continue
+        # No structural action: still make provenance explicit, but only write
+        # when it actually changes so a second pass is a true no-op.
         if dry_run or report_only:
-            print(f"  [{action}] {mem.get('id')} :: {str(mem.get('content'))[:88]}")
             continue
-        if action == "archive_human":
-            store.archive_memory("self", mem["id"], reason=REASON_HUMAN)
-        elif action == "demote_absent":
-            store.update_memory(
-                "self", mem["id"], mem_type="self_observation",
-                confidence=min(float(mem.get("confidence") or 1.0), 0.3),
-                absent_experience=True,
-            )
-        elif action == "archive_operational":
-            store.archive_memory("self", mem["id"], reason=REASON_OPERATIONAL)
+        desired = _authority_for(mem)
+        if str(mem.get("authority_source") or "") != desired:
+            store.update_memory("self", mem["id"], authority_source=desired)
     return counts
 
 
@@ -188,7 +192,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     print("\nSummary:")
     print(f"  human-becoming claims archived   : {counts['archive_human']}")
     print(f"  absent experiences demoted       : {counts['demote_absent']}")
-    print(f"  operational chatter archived     : {counts['archive_operational']}")
+    print(f"  self-theories retired as history : {counts['retire_theory']}")
+    print(f"  unearned durable claims demoted  : {counts['demote_provisional']}")
     if dry:
         print("\n(dry run: nothing was written)")
     return 0

@@ -39,6 +39,7 @@ from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Optional
 
 from . import affect
+from . import self_memory
 
 # ---------------------------------------------------------------------
 # Foundational boundary (never a memory, never decays)
@@ -315,7 +316,8 @@ def is_boundary_inconsistent(content: Any) -> bool:
     Cached because it is evaluated for every self record on every prompt build;
     it is pure, so repeated content yields the same verdict.
     """
-    return _is_boundary_inconsistent_cached(str(content or ""))
+    return (_is_boundary_inconsistent_cached(str(content or ""))
+            or self_memory.is_invalid_self_theory(content))
 
 
 @lru_cache(maxsize=16384)

@@ -39,6 +39,7 @@ from . import affect
 from . import inquiry
 from . import reading
 from . import relational
+from . import self_memory
 from . import selfhood
 
 
@@ -811,6 +812,15 @@ SELF_DURABLE_CLASSIFICATIONS = {"self_fact", "self_preference", "self_belief"}
 DELIBERATE_SELF_SOURCES = {"governing_declaration", "explicit_declaration", "user_correction"}
 SELF_DURABLE_MIN_EVIDENCE = 3
 
+# Authority labels recorded on every self record so provenance travels with it.
+# ``historical_statement`` is deliberately low authority: an old statement is
+# evidence of what Astra said, never a command to keep being that thing.
+AUTHORITY_HISTORICAL = self_memory.SOURCE_HISTORICAL_STATEMENT
+
+# When a generated self-claim is kept as history (retired from retrieval) rather
+# than as knowledge, it is re-typed to this marker type.
+HISTORICAL_TYPE = "historical_statement"
+
 # Confidence ceiling for a self-memory that is still only an observation. A
 # claim the model produced about Astra's identity is not allowed to look
 # certain while it has no accumulated evidence.
@@ -1054,6 +1064,20 @@ def may_supersede(new_source: str, new_classification: str) -> bool:
     return new_source in EXPLICIT_USER_SOURCES and new_classification != "temporary_context"
 
 
+def is_historical(mem: Dict[str, Any]) -> bool:
+    """True when a record is retired generated history, not retrievable knowledge."""
+    if not isinstance(mem, dict):
+        return False
+    return (str(mem.get("type") or "") == HISTORICAL_TYPE
+            or mem.get("historical") is True
+            or str(mem.get("authority_source") or "") == AUTHORITY_HISTORICAL)
+
+
+def is_authoritative_constraint_from_source(source: Any) -> bool:
+    """True when a source may mint a runtime behavioural constraint."""
+    return source_tier(source) >= 4
+
+
 def mark_dormant(mem: Dict[str, Any], reason: str) -> None:
     """Soft-demote a stale, low-value memory in place (never deletes it)."""
     mem["utility"] = UTILITY_DORMANT
@@ -1169,6 +1193,9 @@ VALID_MEMORY_TYPES = {
     # its own structured context. The bridge between knowledge and personality
     # (see ``astra.affect`` and the ``experience`` classification below).
     "experience",
+    # A retired generated statement about Astra: kept as history, never as
+    # knowledge. ``astra.self_memory`` explains the authority model.
+    "historical_statement",
     # Persistent questions and revisable understanding (Slice 2, see
     # ``astra.inquiry``): an unresolved line of inquiry, plus the observed and
     # tentatively-interpreted material that surrounds it.
@@ -1937,6 +1964,16 @@ class TripleMemoryStore:
         )
         self._merge_list_field(mem, "keywords", keywords)
         self._merge_list_field(mem, "tags", tags)
+        # Recompute the authority label: repetition (and user corroboration) is
+        # exactly what may lift a generated statement to a repeated preference or
+        # a confirmed belief.
+        if str(mem.get("target_model") or "") == "self":
+            mem["authority_source"] = self_memory.derive_authority_source(
+                mem.get("source") or source, target_model="self",
+                mem_type=str(mem.get("type") or ""),
+                reinforced=int(mem.get("reinforcement_count", 1) or 1),
+                user_origin=int(mem.get("user_origin_reinforcements", 0) or 0),
+            )
 
     def _build_memory(self, target_model, content, mem_type, source,
                       keywords, tags, confidence, extra) -> Dict[str, Any]:
@@ -1983,9 +2020,33 @@ class TripleMemoryStore:
             "explicit_fact", "explicit_preference", "explicit_project_information",
         }:
             memory["type"] = "uncertain_inference"
+        # A self-claim that is an invented explanation of Astra's own
+        # implementation, a metaphor, or a temporary state is not self-knowledge
+        # however it arrived (including a direct write). It is kept as history.
+        if (target_model == "self" and memory.get("type") in self_memory.SELF_CLAIM_TYPES
+                and self_memory.is_invalid_self_theory(content)
+                and not selfhood.claims_human_becoming(content)):
+            memory["type"] = HISTORICAL_TYPE
+            memory["authority_source"] = AUTHORITY_HISTORICAL
+            memory["historical"] = True
+            memory["historical_reason"] = (
+                "generated self-theory, not self-knowledge")
+            memory["confidence"] = min(
+                _clamp_confidence(memory.get("confidence"), 0.3), 0.3)
         # Relationship guard (sections 8-10): ordinary affection must never
         # become a romantic instruction.
         apply_relationship_guard(memory)
+        # Provenance/authority stamp. For a self record this is what keeps the
+        # distinction between "Astra said this" and "this is valid
+        # self-knowledge" attached to the record itself. It is internal memory
+        # metadata; nothing renders it to the model as a topic.
+        if target_model == "self" and not memory.get("historical"):
+            memory["authority_source"] = self_memory.derive_authority_source(
+                source, target_model=target_model,
+                mem_type=str(memory.get("type") or mem_type),
+                reinforced=int(memory.get("reinforcement_count", 1) or 1),
+                user_origin=int(memory.get("user_origin_reinforcements", 0) or 0),
+            )
         return memory
 
     @staticmethod
@@ -2038,6 +2099,34 @@ class TripleMemoryStore:
             self.memories["self"].append(mem)
         return mem["id"]
 
+    def _store_historical_claim(self, content: str, source: str, keywords, tags,
+                                confidence: float, extra: Dict[str, Any],
+                                reason: str = "") -> str:
+        """Keep a generated self-theory as history, not as self-knowledge.
+
+        Used for a generated explanation of Astra's own implementation, a
+        metaphor, or a temporary/dramatic declaration. The record is typed
+        ``historical_statement`` with a low-authority source and low confidence,
+        so the fact that she said it is preserved (history is never rewritten)
+        but it is never retrieved as knowledge about her and never governs.
+        """
+        with self._transaction("self"):
+            existing = self._find_duplicate("self", HISTORICAL_TYPE, content)
+            if existing is not None:
+                self._reinforce(existing, _clean_str_list(keywords),
+                                _clean_str_list(tags), source)
+                return existing["id"]
+            mem = self._build_memory(
+                "self", content, HISTORICAL_TYPE, source, keywords, tags,
+                min(_clamp_confidence(confidence, 0.3), 0.3), extra,
+            )
+            mem["authority_source"] = AUTHORITY_HISTORICAL
+            mem["historical"] = True
+            mem["historical_reason"] = str(
+                reason or "generated self-theory, not self-knowledge")
+            self.memories["self"].append(mem)
+        return mem["id"]
+
     # ---- writing memories -------------------------------------------
     def add_memory(self, target_model: str, content: str, mem_type: str, source: str, *,
                    keywords: Optional[List[str]] = None, tags: Optional[List[str]] = None,
@@ -2076,6 +2165,26 @@ class TripleMemoryStore:
         # the claim is kept as a weak, flagged record of something she said.
         human_claim = mem_type in ("self_belief", "self_fact") and (
             selfhood.claims_human_becoming(content))
+
+        # Self-memory authority (the brief's central rule): a generated
+        # statement about Astra is evidence of what she *said*, not of what she
+        # *is*. A generated explanation of her own implementation, a metaphor, a
+        # dramatic declaration, or a temporary conversational state is therefore
+        # never stored as self-knowledge - it is kept as low-authority history.
+        if (target_model == "self" and is_astra_source(source)
+                and not human_claim):
+            if self_memory.is_implementation_theory(content):
+                return self._store_historical_claim(
+                    content, source, keywords, tags, confidence, extra,
+                    reason="generated explanation of Astra's own implementation",
+                )
+            if (mem_type in SELF_DURABLE_CLASSIFICATIONS
+                    or mem_type in self_memory.SELF_CLAIM_TYPES) \
+                    and self_memory.is_metaphor_or_temporary(content):
+                return self._store_historical_claim(
+                    content, source, keywords, tags, confidence, extra,
+                    reason="metaphor, roleplay, or temporary conversational state",
+                )
 
         with self._lock:
             # Self-model protection (section 4): a single generated sentence
@@ -2116,6 +2225,12 @@ class TripleMemoryStore:
                         prior["type"] = mem_type
                         prior["promoted_at"] = _now()
                         prior["confidence"] = _clamp_confidence(confidence)
+                        prior["authority_source"] = self_memory.derive_authority_source(
+                            prior.get("source") or source, target_model="self",
+                            mem_type=mem_type,
+                            reinforced=int(prior.get("reinforcement_count", 1) or 1),
+                            user_origin=int(prior.get("user_origin_reinforcements", 0) or 0),
+                        )
                 return prior["id"]
 
             if human_claim and target_model == "self":
@@ -2152,10 +2267,17 @@ class TripleMemoryStore:
         """Sort key: source tier first, then effective strength, then recency.
 
         Tier-first means an explicit user statement always beats an inference,
-        even a fresh, confident one (section 2).
+        even a fresh, confident one (section 2). For self records the
+        self-memory authority tier (identity > experience > generated) is the
+        first term, so configuration and established identity outrank a
+        generated self-statement rather than whichever is newest.
         """
+        if str(mem.get("target_model") or "") == "self":
+            tier = self_memory.authority_tier(mem)
+        else:
+            tier = source_tier(mem.get("source"))
         return (
-            source_tier(mem.get("source")),
+            tier,
             effective_strength(mem),
             str(mem.get("last_used") or mem.get("timestamp") or ""),
         )
@@ -3178,13 +3300,16 @@ class TripleMemoryStore:
         """Active + weakened memories: usable context, ranked by strength later.
 
         Superseded and archived memories are excluded, so a stale value can
-        never be injected as an instruction.
+        never be injected as an instruction. Retired generated self-theories
+        (``historical_statement``) are excluded too: they are kept for history
+        and debugging but must never reach prompt construction as self-knowledge.
         """
         self._check_target(target_model)
         with self._lock:
             return [
                 _present(m) for m in self.memories[target_model]
                 if m.get("status") in ("active", "weakened")
+                and not is_historical(m)
             ]
 
     def get_timeline(self, target_model: Optional[str] = None, *,

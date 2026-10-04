@@ -30,6 +30,7 @@ HTTP stub, and consolidation tests call the decision layer directly.
 | `astra/relational.py` | Astra's Roum-specific command-fulfillment preference (accumulated state) |
 | `astra/affect.py` | Astra's current *experiential* affect (temporary; from experiences and live turns) |
 | `astra/selfhood.py` | self-knowledge: the non-human boundary, the epistemic stance, absent-experience guard, derived self-portrait, formative/traumatic experience classification (pure, no I/O) |
+| `astra/self_memory.py` | self-memory authority: which sources may mint permanent self-knowledge, the implementation/metaphor boundaries, and the pre-save sanity check (pure, no I/O) |
 | `astra/temporal.py` | Astra's sense of elapsed time: session gaps, long-open questions, long projects, and the impatience pull of stalled things (pure render, never stored) |
 | `astra/orchestrator.py` | prompt assembly and retrieval |
 | `astra/generation.py` | the response-generation contract: how internal state is *used* (as cause, not topic) |
@@ -56,7 +57,7 @@ HTTP stub, and consolidation tests call the decision layer directly.
 
 | Script | Role |
 |---|---|
-| `curate_self_model.py` | One-off: retires stored self-records that contradict the boundary or are operational chatter, and demotes absent-experience claims. Nothing is deleted; idempotent (`--report` to preview). |
+| `curate_self_model.py` | One-off: retires stored self-records that contradict the boundary or are operational chatter, and demotes absent-experience claims. Nothing is deleted; idempotent (`--report` to preview). Also retires generated self-theories as low-authority `historical_statement` history and demotes generated single sentences that were stored as durable self-facts/beliefs. |
 | `repair_null_fields.py` | One-off: strips no-op `null` placeholder fields from the store. |
 
 Top-level `memory_store.py`, `orchestrator.py`, `elysium.py`, `consolidator.py`,
@@ -104,6 +105,34 @@ Top-level `memory_store.py`, `orchestrator.py`, `elysium.py`, `consolidator.py`,
   `self_observation` (confidence capped at `SELF_OBSERVATION_CONFIDENCE_CEILING`)
   and only repeated evidence promotes it. Do not relax this to let the model
   narrate an identity into existence.
+- **A generated statement is evidence of what Astra said, not of what she is.**
+  `astra/self_memory.py` is the authority model. Every self-record carries an
+  `authority_source` (`identity` > `user_established`/`confirmed_belief`/
+  `repeated_preference` > `experience` > `historical_statement`/
+  `generated_statement`). Only the top sources may mint permanent
+  self-knowledge; a single generated sentence starts at `generated_statement`
+  and rises only through independent repetition/confirmation
+  (`is_durable_self_memory`). `_authority_key` sorts self records by authority
+  tier first, so configuration/identity outranks a newer generated claim rather
+  than whichever was written last.
+- **Generated explanations of her own workings never become self-knowledge.**
+  A generated self-claim that describes Astra's implementation, architecture,
+  model, training, inference, processing, prompts, context window, reward
+  functions, classifiers, power levels, data flow, or any internal mechanism -
+  or that is a metaphor, dramatic declaration, roleplay, or temporary state
+  ("Deity Mode", "chaos mode", "I'm a narrator now") - is retired at write time
+  to a low-confidence `historical_statement` (source `historical_statement`),
+  never stored as a `self_fact`/`self_belief`. History preserves the fact that
+  she said it; it is excluded from retrieval (`is_historical`) and from the
+  prompt, so an old statement cannot make an old identity reappear. She may
+  know that she is an AI as an identity fact, but not use "being an AI" as a
+  causal explanation for how she thinks or feels.
+- **A preference needs no theory; an opinion may change.** `self_memory.sanity_check`
+  is the last gate before a claim becomes permanent: is it an actual
+  experience/preference/opinion, or an invented explanation? A stored
+  preference is never inflated into a psychological explanation ("likes this
+  *because* ..."), and an old belief is history, not a command - a later change
+  of mind supersedes it through authority, not by deletion.
 - **The self-portrait is derived, never stored.** `selfhood.derive_dispositions`
   reads Astra's own `experience` records and returns patterns with their
   evidence; the orchestrator renders it as an explicitly fallible block. It is

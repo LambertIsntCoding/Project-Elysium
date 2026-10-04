@@ -6,6 +6,7 @@ numeric telemetry reaches Astra's prompt or writes state.
 """
 
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -176,8 +177,13 @@ class TestAffectTelemetryDisplay(_Fixture):
         lines = screens.affect_render(_fake_session(self.orch))
         text = "\n".join(lines)
         self.assertIn("AFFECT (LIVE)", text)
-        # The displayed values are integers on a 0-100 scale, never 0.xyz.
-        self.assertNotIn("0.", text)
+        # The displayed values are integers on a 0-100 scale, never 0.xyz. Only
+        # the "Label: N (descriptor)" value lines are checked: the ISO timestamp
+        # in the footer legitimately contains a fractional-seconds "0.".
+        value_lines = [ln for ln in lines
+                       if re.match(r"^\s*[A-Za-z][A-Za-z ]*:\s*\d+\s*(?:\(|$)", ln)]
+        self.assertTrue(value_lines)
+        self.assertNotIn("0.", "\n".join(value_lines))
         self.assertIn("Happiness:", text)
 
     def test_prompt_never_contains_affect_numbers(self):
