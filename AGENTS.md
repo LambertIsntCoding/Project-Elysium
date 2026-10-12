@@ -32,6 +32,7 @@ HTTP stub, and consolidation tests call the decision layer directly.
 | `astra/selfhood.py` | self-knowledge: the non-human boundary, the epistemic stance, absent-experience guard, derived self-portrait, formative/traumatic experience classification (pure, no I/O) |
 | `astra/self_memory.py` | self-memory authority: which sources may mint permanent self-knowledge, the implementation/metaphor boundaries, and the pre-save sanity check (pure, no I/O) |
 | `astra/personal_state.py` | personal-state honesty: recognises a question about her own current/recent situation, renders what is actually recorded (and a missing fact *as* missing), the always-on anti-invention contract, and the write-time guard against fabricated current state (pure, no I/O) |
+| `astra/intentions.py` | Astra's own plans as intentions: recognises a question about her plans/activity, turns the existing task/planner/ledger records into a first-person account (commitments, selected, active, postponed, considering, recent), and frames it with her real state (pure, read-only, no I/O) |
 | `astra/temporal.py` | Astra's sense of elapsed time: session gaps, long-open questions, long projects, and the impatience pull of stalled things (pure render, never stored) |
 | `astra/orchestrator.py` | prompt assembly and retrieval |
 | `astra/generation.py` | the response-generation contract: how internal state is *used* (as cause, not topic) |
@@ -252,6 +253,24 @@ Top-level `memory_store.py`, `orchestrator.py`, `elysium.py`, `consolidator.py`,
   file) is kept as low-authority history, so a fabricated state cannot become
   authoritative. The always-on `personal_state.behavior_block()` states the rule
   every turn (uncertainty is a valid answer; a correction is information first).
+- **Her plans are her own intentions, not a system report, and talking about
+  them changes nothing.** `astra/intentions.py` recognises a question about her
+  plans/intentions/current activity (narrow patterns, like `personal_state`) and
+  renders `ASTRA'S OWN PLANS (HER INTENTIONS - NOT A SYSTEM REPORT)` from the
+  existing task store, planner candidates and attempt ledger. It is a *view*:
+  `build_snapshot` calls only read accessors (`all`/`candidates`/`entries`) and
+  mutates no task, so asking about a plan cannot start, finish or reorder it -
+  every transition stays in the task/activity lifecycle (asserted in
+  `tests/test_intentions.py`). The categories stay distinct - a scheduled
+  commitment is not a possibility (`considering`, a planner candidate), a running
+  task (`active`) is not a finished one - and an idle plan is rendered as idle
+  rather than filled. Its framing is the *same* `behavior.activity_bias` the
+  planner uses to decide what she takes on, so affect colours how she talks about
+  a plan consistently with what she actually does; a neutral state adds nothing.
+  It is attached read-only to the orchestrator (`set_intentions_source`) by
+  `build_session` from `RuntimeController.snapshot_intentions`, so what she says
+  and what the systems record share one source of truth. Do not let it write to
+  a task or reach into the memory models.
 - **Reading status contradictions are detected, not silently resolved.**
   `detect_contradiction` consults `personal_state.reading_state_conflict`, so
   "finished reading X" and "currently reading X" contradict even without a
@@ -596,12 +615,13 @@ conversation, provenance/authority/read-only, reading-not-autobiography, the
 journal, working memory, reading concentration/pace, and personal-state honesty
 (never reconstructing a missing or contradictory fact). The anti-invention rules
 have their own suite, `tests/test_personal_state.py` (17 cases). Tests assert
-behaviour and authority boundaries, not prompt strings. Full suite: 910 tests
+behaviour and authority boundaries, not prompt strings. Full suite: 935 tests
 (the live affect path adds `tests/test_live_affect.py`, 30 cases; the
 emotion-memory cases add `tests/test_experience_affect.py::TestEmotionColour`;
 the grounded-outreach wiring adds `tests/test_outreach.py`, 22 cases; the
 non-response adaptation, effective affect decay and honest reading outcomes add
-`tests/test_engagement.py`, 30 cases).
+`tests/test_engagement.py`, 30 cases; the plans-as-intentions view adds
+`tests/test_intentions.py`, 25 cases).
 
 ### Reading progress is measured in words
 

@@ -1974,6 +1974,11 @@ def build_session(
     # controller updates it while asleep.
     if hasattr(orchestrator, "set_prepared_context"):
         orchestrator.set_prepared_context(controller.prepared)
+    # Astra's own plans (intentions): the orchestrator reads a read-only snapshot
+    # of the runtime's real task/planner/ledger records when she is asked about
+    # her plans, so her self-expression and the systems cannot drift.
+    if hasattr(orchestrator, "set_intentions_source"):
+        orchestrator.set_intentions_source(controller.snapshot_intentions)
 
     voice = _build_voice(runtime_config)
     router = ApplicationRouter(session, controller, voice=voice)

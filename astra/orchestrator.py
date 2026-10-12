@@ -11,6 +11,7 @@ from . import affect
 from . import behavior
 from . import generation
 from . import inquiry
+from . import intentions
 from . import personal_state
 from . import prepared_context
 from . import reading
@@ -280,6 +281,12 @@ class CompanionOrchestrator:
         # likewise only *read* here, and only when its file exists. When nothing
         # is attached, the prompt is byte-for-byte unchanged.
         self.prepared_context: Any = None
+        # Astra's own plans (intentions) are read from the runtime's task/planner
+        # records through this injected, read-only source. It is attached by the
+        # application once the controller exists; when nothing is attached, an
+        # intentions question simply renders no block, and the prompt is
+        # otherwise unchanged.
+        self.intentions_source: Any = None
         # Conversational working memory: the middle layer between the current
         # turn and durable memory. It is updated on the live turn path (by the
         # session) and only *read* here. When no session is present, the
@@ -809,6 +816,9 @@ class CompanionOrchestrator:
             parts, user_input,
             everything + all_questions + recent_experiences,
             identity_concept=_clean_text(identity.get("core_concept")))
+        # Her own plans, as intentions - rendered only when the turn asks about
+        # them, and never a mutation of the tasks it reads.
+        self._append_intentions(parts, user_input)
         self._append_affect(parts, affect_state)
         self._append_reading(parts, self._reading_state())
         self._append_experiences(parts, recent_experiences)
@@ -886,6 +896,15 @@ class CompanionOrchestrator:
     def set_prepared_context(self, prepared: Any) -> None:
         """Attach the sleep-time prepared context (read-only at prompt time)."""
         self.prepared_context = prepared
+
+    def set_intentions_source(self, source: Any) -> None:
+        """Attach the read-only source of Astra's own plans (intentions).
+
+        ``source`` is a zero-argument callable returning a snapshot dict (see
+        :func:`astra.intentions.build_snapshot`). Prompt building only *reads*
+        it; it is never written to and it mutates no task.
+        """
+        self.intentions_source = source
 
     # ---- memory section builders ---------------------------------------
     def _load_memories(self, target_model: str) -> List[Dict[str, Any]]:
@@ -1098,6 +1117,28 @@ class CompanionOrchestrator:
         block = personal_state.prompt_block(
             self._reading_state(), self._works(), relevant, kinds,
             identity_concept=identity_concept)
+        if block:
+            parts.append(block)
+
+    def _append_intentions(self, parts: List[str], user_input: str) -> None:
+        """Astra's own plans, as intentions, only when the turn asks about them.
+
+        Read-only: it renders the runtime's real task/planner/ledger records
+        through a first-person lens and frames them with her actual state. It
+        never starts, finishes or reorders work, so talking about a plan cannot
+        change its state. When no source is attached (or the turn is ordinary),
+        no block is added and the prompt is unchanged.
+        """
+        source = self.intentions_source
+        if source is None or not intentions.asks_intentions(user_input):
+            return
+        try:
+            snapshot = source() if callable(source) else source
+        except Exception:
+            return
+        if not isinstance(snapshot, dict):
+            return
+        block = intentions.prompt_block(snapshot, affect_state=self._affect_state())
         if block:
             parts.append(block)
 

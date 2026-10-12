@@ -246,6 +246,33 @@ All of it is derived, read-only, and stores nothing new; a neutral state changes
 nothing. Nothing numeric leaks into the prompt (asserted by the behavioural
 suite).
 
+### How she talks about her plans
+
+Astra's own plans are expressed from the same records the systems already write,
+so what she says and what is recorded cannot drift. `astra/intentions.py` is a
+pure, read-only view over the task store, the planner's evidence-backed
+candidates and the attempt ledger. When a turn asks about her plans
+("what are you planning?", "what are you working on?"), the orchestrator renders
+`ASTRA'S OWN PLANS (HER INTENTIONS - NOT A SYSTEM REPORT)`, in the first person,
+keeping the categories distinct:
+
+- **committed** - scheduled/recurring work (a standing intention, not a request);
+- **chosen for herself** - work selected by the bounded planner;
+- **occupied with** - the task actually running right now;
+- **postponed / blocked / waiting** and **meant to retry**;
+- **only considering** - candidates she has evidence for but has *not* decided
+  (never presented as a decision);
+- **recently** - what she finished or set aside, from the ledger.
+
+Her affect colours the framing through the *same* `behavior.activity_bias` the
+planner uses to choose work, so a low state sounds reserved and leans to lighter
+plans, a warm one forward - and a neutral state adds nothing. The view is
+attached read-only in `build_session` (`set_intentions_source` ->
+`RuntimeController.snapshot_intentions`). Asking about a plan never starts,
+finishes or reorders it: `build_snapshot` calls only read accessors, and every
+state transition stays in the task/activity lifecycle. When nothing is planned
+she says so plainly rather than inventing an activity.
+
 ## 9. Verify the system
 
 ```bash
@@ -256,6 +283,7 @@ python -m unittest tests.test_activity -v        # bounded planning
 python -m unittest tests.test_autonomy -v        # wake + proactive lifecycle
 python -m unittest tests.test_notifications -v   # limits/quiet hours/dedupe
 python -m unittest tests.test_reply_policy -v    # reply/ping convention
+python -m unittest tests.test_intentions -v      # plans-as-intentions view
 python -m unittest tests.test_discord_adapter -v # transport + delivery bookkeeping
 python -m unittest tests.test_machine -v         # real machine awareness + suspend
 python -m unittest tests.test_affect_propagation -v # emotions cause work/reading

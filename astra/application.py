@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from . import (activity, autonomy, engagement as engagement_mod,
-               file_organizer, filesystem, machine as machine_mod,
+               file_organizer, filesystem, intentions, machine as machine_mod,
                model_use, notifications as notify_mod, prepared_context, proactive,
                proactive_compose, proposals as proposal_mod,
                reading, runtime_state, schedules as sched, tasks as task_mod)
@@ -847,6 +847,20 @@ class RuntimeController:
                 lines.append(f"  last suspend: ~{int(snap['suspended_seconds'])}s "
                              "(slept alongside the computer)")
         return "\n".join(lines)
+
+    def snapshot_intentions(self) -> Dict[str, Any]:
+        """Astra's own plans, derived read-only from the real records.
+
+        This is the single bridge between the runtime's task/planner/ledger state
+        and her conversational self-expression: the orchestrator renders this
+        snapshot when asked about her plans, so what she says and what the
+        systems record cannot drift. It reads only; nothing here mutates a task.
+        """
+        return intentions.build_snapshot(
+            self.task_store, planner=self.planner, ledger=self.ledger,
+            paused=self.autonomy.paused,
+            notifications_paused=bool(self.notifications.snapshot().get("paused")),
+        )
 
     def autonomy_report(self) -> str:
         """A truthful, runtime-and-record-based autonomous-status view."""
