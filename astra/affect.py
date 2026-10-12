@@ -472,8 +472,13 @@ def _bump(state: Dict[str, Any], component: str, delta: float) -> None:
 def _decay(state: Dict[str, Any], now: Optional[datetime] = None) -> None:
     """Relax the current condition toward neutral as time passes.
 
-    Applied lazily on the next experience, so state that is never touched again
-    simply stays put on disk, and anything read back is aged when next used.
+    Applied (in place) on the next experience, so state that is never touched
+    again simply stays put on disk, and anything read back is aged when next
+    used. The *read* side never calls this on the stored record - it uses
+    :func:`effective_state`, which decays a copy - so a prompt build cannot
+    compound decay. Because the stored value is only ever decayed from its own
+    ``last_updated``, the next real event applies the elapsed interval exactly
+    once (never twice).
     """
     last = _parse_ts(state.get("last_updated"))
     now = now or datetime.now(timezone.utc)
@@ -489,9 +494,38 @@ def _decay(state: Dict[str, Any], now: Optional[datetime] = None) -> None:
         state[name] = round(AFFECT_BASELINE + (current - AFFECT_BASELINE) * factor, 4)
 
 
+def effective_state(state: Any, *, now: Optional[datetime] = None) -> Dict[str, Any]:
+    """The condition as it stands *now*, with elapsed-time decay applied.
+
+    This is the read-time view the prompt and the decision layers use. It is
+    **pure**: the stored state is copied and decayed, never mutated, so building
+    a prompt or inspecting state cannot change what is on disk or compound
+    decay. A missing or unparsable timestamp, or a ``now`` earlier than the last
+    update (a clock anomaly), is handled conservatively - the stored values are
+    returned unchanged rather than fabricating or double-applying decay.
+    """
+    stored = _coerce_state(state)
+    view = dict(stored)
+    view["event_counts"] = dict(stored.get("event_counts") or {})
+    last = _parse_ts(stored.get("last_updated"))
+    if last is None:
+        return view  # nothing to age; a blank/one-off state is its own truth
+    now = now or datetime.now(timezone.utc)
+    if now <= last:
+        return view  # clock went backwards, or no time passed: do not age
+    _decay(view, now=now)
+    # _decay may stamp a new timestamp; keep the view faithful to the record.
+    view["last_updated"] = stored.get("last_updated", "")
+    return view
+
+
 def is_neutral(state: Any) -> bool:
-    """True when there is no particular current condition worth surfacing."""
-    state = _coerce_state(state)
+    """True when there is no particular current condition worth surfacing.
+
+    Uses the *effective* (aged) view, so a state that has decayed to nothing
+    reads as neutral without being written back.
+    """
+    state = effective_state(state)
     return all(_clamp(state.get(name)) < AFFECT_NEUTRAL_EPSILON
                for name in AFFECT_COMPONENTS)
 
@@ -848,9 +882,11 @@ def render_summary(state: Any) -> Optional[str]:
     """A short, non-numeric description of the current condition.
 
     Returns ``None`` when neutral. Deliberately avoids any quantity: Astra is
-    told how she seems to be doing, not what her values are.
+    told how she seems to be doing, not what her values are. Reads the
+    *effective* (aged) state, so a stale persisted value is reported as it is
+    now rather than as it was when it was last written.
     """
-    state = _coerce_state(state)
+    state = effective_state(state)
     if is_neutral(state):
         return None
     salient = sorted(AFFECT_COMPONENTS, key=lambda n: _clamp(state.get(n)), reverse=True)
@@ -937,7 +973,7 @@ def diagnostics(state: Any) -> Dict[str, Any]:
     Includes the emotion influence matrix and configuration source so
     developers can verify the system is wired correctly.
     """
-    state = _coerce_state(state)
+    state = effective_state(state)
     out = {name: round(_clamp(state.get(name)), 4) for name in AFFECT_COMPONENTS}
     out.update({
         "neutral": is_neutral(state),
@@ -985,6 +1021,7 @@ __all__ = [
     "LIVE_REPETITION",
     "LIVE_EVENT_MIN_SCORE",
     "is_neutral",
+    "effective_state",
     "record_event",
     "evaluate_turn",
     "resolve_kind",

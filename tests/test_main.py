@@ -5,6 +5,7 @@ TripleMemoryStore/CommandStore on disk, so no component is mocked.
 """
 
 import json
+import os
 import shutil
 import tempfile
 import threading
@@ -370,8 +371,21 @@ class TestBuildSession(unittest.TestCase):
             session = build_session(config_dir=tmp, storage_dir=tmp)
             self.assertIsInstance(session, ChatSession)
             self.assertIsNotNone(session.recorder)
-            # The background reader is attached and started by default, and it
-            # is off the critical path.
+            # The background reader is the one model-invoking feature that would
+            # run while Roum is away, so model_use gates it OFF by default: her
+            # voice should not be running just because the program is on. The
+            # deterministic library is still built for /library and /reading.
+            self.assertIsNone(session.reader)
+            self.assertFalse(session.model_use.enabled("reading"))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_build_session_reader_on_when_model_use_enables_it(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(tmp, "runtime.yaml"), "w", encoding="utf-8") as fh:
+                fh.write("model_use:\n  reading: true\n")
+            session = build_session(config_dir=tmp, storage_dir=tmp)
             self.assertIsNotNone(session.reader)
             self.assertTrue(session.reader.running)
             session.reader.stop()

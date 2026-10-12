@@ -2670,8 +2670,15 @@ class TripleMemoryStore:
         return experiences
 
     def current_affect(self) -> Dict[str, Any]:
-        """The stored experiential-affect state, or a blank state if none yet."""
-        return affect.load_state_from_memories(self.get_memories("self", status=None))
+        """The stored experiential-affect state, as it stands *now*.
+
+        Returns the *effective* view: the persisted state with elapsed-time
+        decay applied to a copy (see ``affect.effective_state``). Reading never
+        mutates the store, so a stale persisted value is reported as it is now
+        without writing anything back, and repeated reads cannot compound decay.
+        """
+        stored = affect.load_state_from_memories(self.get_memories("self", status=None))
+        return affect.effective_state(stored)
 
     # ---- persistent questions & revisable understanding (Slice 2) ------
     # These are thin conveniences over ``add_memory``/``update_memory``: the

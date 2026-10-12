@@ -171,7 +171,15 @@ class FsPolicy:
         if not str(path or "").strip():
             return "empty path"
         if operation in DESTRUCTIVE_OPERATIONS:
-            return None  # delete safety checked separately (needs authorization)
+            # A delete is still a mutation of the user's files: it must stay
+            # inside an allowed root (so cleanup can never reach a location the
+            # user never offered) and it must never target Astra's own runtime.
+            # Authorization is a separate gate, checked by ``execute``.
+            if not self.in_allowed_root(path):
+                return "outside allowed roots"
+            if self.is_protected(path):
+                return "protected path (Astra runtime)"
+            return None
         if not self.in_allowed_root(path):
             return "outside allowed roots"
         if self.is_protected(path):
@@ -424,6 +432,14 @@ class FileOps:
                                       detail="destructive op requires authorization")
                 self._record(rec)
                 return rec
+            # Roots and protected paths apply to a delete exactly as they do to
+            # any other mutation: cleanup stays inside what the user offered.
+            block = self.policy.check(plan.path, operation=op)
+            if block:
+                rec = OperationRecord(op, OUTCOME_BLOCKED, path=plan.path,
+                                      detail=block)
+                self._record(rec)
+                return rec
             if dry_run:
                 rec = OperationRecord(op, OUTCOME_DRY_RUN, path=plan.path,
                                       detail="would move to trash", dry_run=True,
@@ -431,11 +447,6 @@ class FileOps:
                 self._record(rec)
                 return rec
             # Trash first (reversible); never a permanent unlink.
-            if self.policy.is_protected(plan.path):
-                rec = OperationRecord(op, OUTCOME_BLOCKED, path=plan.path,
-                                      detail="protected path")
-                self._record(rec)
-                return rec
             result = self.trash.to_trash(plan.path)
             if plan.path and not os.path.exists(plan.path) and not result.get("ok"):
                 result = {"ok": False, "error": "path does not exist"}

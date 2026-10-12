@@ -95,6 +95,25 @@ class TestExecutor(unittest.TestCase):
         self.assertEqual(rec.outcome, fs.OUTCOME_BLOCKED)
         self.assertTrue(os.path.exists(src))
 
+    def test_delete_outside_allowed_root_is_blocked(self):
+        """Regression: an authorized delete could leave the allowed roots.
+
+        ``check`` explicitly exempted destructive ops from the root check, so a
+        delete only had to clear the protected-path gate. Cleanup must never
+        reach a location the user did not offer.
+        """
+        outside = os.path.join(self.tmp, "outside")
+        os.makedirs(outside)
+        victim = os.path.join(outside, "important.txt")
+        with open(victim, "w", encoding="utf-8") as handle:
+            handle.write("data")
+        policy = fs.FsPolicy(roots=[self.root], allow_delete=True)
+        ops = fs.FileOps(policy, data_dir=self.tmp, trash=self.trash,
+                         external_tools={})
+        rec = ops.execute(fs.FilePlan(fs.OP_DELETE, victim), authorized=True)
+        self.assertEqual(rec.outcome, fs.OUTCOME_BLOCKED)
+        self.assertTrue(os.path.exists(victim))  # not trashed, not deleted
+
     def test_dry_run_does_not_move(self):
         src = self._file("a.txt")
         dest = os.path.join(self.root, "sub", "a.txt")
@@ -187,6 +206,75 @@ class TestOrganizer(unittest.TestCase):
     def test_inspect_is_read_only_and_reports_honestly(self):
         block = self.organizer._decide  # ensure attribute exists
         self.assertTrue(callable(block))
+
+    def test_approved_archive_decision_actually_archives(self):
+        """Regression: approving an 'archive' decision used to always fail.
+
+        The decision carried no destination, so ``resolve`` executed a move with
+        no destination and reported ``failed``/``no destination`` even though the
+        user had approved it. It must now move the file to the concrete archive
+        path recorded when the decision was created.
+        """
+        cache = os.path.join(self.root, "cache")
+        os.makedirs(cache)
+        path = os.path.join(cache, "old.txt")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("x")
+        os.utime(path, (100, 100))  # ancient -> archive disposition
+        self.organizer.run_cycle()
+        decision = self.decisions.open()[0]
+        self.assertEqual(decision.disposition, fo.DISPOSITION_ARCHIVE)
+        self.assertTrue(decision.evidence.get("destination_file"))
+        out = self.organizer.resolve(decision.id, approve=True)
+        self.assertEqual(out["status"], fo.D_COMPLETED)
+        self.assertEqual(out["outcome"], fs.OUTCOME_OK)
+        self.assertTrue(os.path.exists(os.path.join(cache, "Archive", "old.txt")))
+        self.assertFalse(os.path.exists(path))
+
+    def test_approved_keep_decision_is_a_completed_no_op(self):
+        """Regression: a 'keep' decision used to fail as 'not executable'."""
+        path = self._file("keepme.txt")
+        from astra.file_organizer import FileDecision
+        decision = self.decisions.add(FileDecision(
+            path=path, proposed_action="keep", reasoning="routine",
+            confidence=0.8, importance=0.5, disposition=fo.DISPOSITION_KEEP))
+        out = self.organizer.resolve(decision.id, approve=True)
+        self.assertEqual(out["status"], fo.D_COMPLETED)
+        self.assertEqual(out["outcome"], "ok")
+        self.assertTrue(os.path.exists(path))  # keep changes nothing
+
+    def test_repeated_failed_autonomous_action_is_bounded(self):
+        """Regression: a permanently-failing autonomous op retried every cycle.
+
+        Force an autonomous archive whose destination collides while overwrite
+        is disabled, so every attempt fails. The organizer must stop re-attempting
+        and park the file as a decision instead of logging failures forever.
+        """
+        from astra.file_organizer import Assessment, DISPOSITION_ARCHIVE
+
+        class _ForceArchive(fo.FileAssessor):
+            def assess(self, path, **kwargs):
+                return Assessment(importance=0.4, confidence=0.9,
+                                  disposition=DISPOSITION_ARCHIVE,
+                                  reason="forced", evidence={})
+
+        cache = os.path.join(self.root, "cache")
+        archive = os.path.join(cache, "Archive")
+        os.makedirs(os.path.join(archive, "old.txt"))  # persistent collision: a dir
+        path = os.path.join(cache, "old.txt")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("x")
+
+        organizer = fo.FileOrganizer(
+            self.policy, self.ops, self.decisions, assessor=_ForceArchive(self.policy),
+            user_roots=[self.root], max_action_attempts=2)
+        for _ in range(6):
+            organizer.run_cycle()
+        fails = [e for e in self.ops.history()
+                 if e.get("path") == path and e.get("outcome") == fs.OUTCOME_FAILED]
+        self.assertLessEqual(len(fails), 2)  # bounded, not once per cycle
+        parked = [d for d in self.decisions.all() if d.path == path]
+        self.assertTrue(parked)  # parked for the user instead of retried silently
 
 
 if __name__ == "__main__":

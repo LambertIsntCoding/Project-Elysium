@@ -49,6 +49,8 @@ HTTP stub, and consolidation tests call the decision layer directly.
 | `astra/behavior.py` | state -> behaviour modulation (energy, initiative, pace, ...); stores nothing |
 | `astra/screens.py` | live relationship/status/affect admin screens |
 | `astra/menus.py` | numbered admin menu + command routes |
+| `astra/model_use.py` | when the language model may be invoked (pure config read; the model is her voice, not her) |
+| `astra/engagement.py` | adaptation to repeated non-response: a bounded threshold raise (never a mute, never a memory) |
 | `deploy.py` | non-destructive deployment: test, restart gracefully, verify version |
 | `main.py` | CLI/admin console, routing, slash commands, supervisor/status flags |
 | `config/*.yaml` | identity, relationship boundaries, style examples |
@@ -150,6 +152,89 @@ Top-level `memory_store.py`, `orchestrator.py`, `elysium.py`, `consolidator.py`,
 - **Sourced and unsourced material are separated in the prompt.** Only
   `SOURCED_SOURCES` (`is_sourced`) appear under `FACTUAL CONTEXT`; everything else
   goes under `TENTATIVE INFERENCES (UNVERIFIED - NOT STATED BY ROUM)`.
+- **The model is Astra's voice, not Astra.** `astra/model_use.py` is the single,
+  config-driven answer to *when the language model may be invoked*
+  (`config/runtime.yaml` `model_use`). There are five real call sites:
+  `conversation` (the live reply), `consolidation` (per-turn memory extraction),
+  `elysium` (structuring an explicitly-requested command), `proactive_compose`
+  (phrasing an *already-permitted* proactive message in her voice), and `reading`
+  (the *background* reader summarising a book). The first four only ever run
+  during or as a consequence of an interaction, so they are on by default.
+  `reading` is the only job that runs the model while Roum is away. It is **OFF
+  in code defaults** - her voice should not be running just because the program
+  is on - but the **release config enables it** (`config/runtime.yaml`
+  `model_use.reading: true`), now that the honest-outcome mapping and the
+  idle/game/load gate have been verified; it runs only when a book is queued and
+  Roum is idle. An explicit `/read` still works either way and the deterministic
+  `Library` is always built. Turning a feature off stops only the model call -
+  scheduling, retrieval, memory governance, file maintenance, notifications,
+  prepared context and the admin console are all unaffected. Do not add a model
+  call that bypasses this gate, and do not make a disabled feature silently
+  claim it did the work the model would have done.
+- **A grounded reason may reach her voice, but her voice never decides to
+  speak.** `autonomy.AutonomyDriver` runs two paths through the *one*
+  `NotificationPolicy`: task outcomes (the ledger) and grounded non-task reasons
+  (`proactive.candidate_outcome` maps `inquiry.conversation_candidates` -
+  unresolved questions, realisations, recorded conflicts - into the same outcome
+  shape). Candidate weights are a 0..1 *relevance* and are **discounted**
+  (`_CANDIDATE_IMPORTANCE_SCALE`) before meeting the notification thresholds, so
+  an ordinary open question is a digest item, not an interruption; do not
+  conflate weight with task importance. Candidate ids are content/question
+  derived (`candidate_ref`), never the index, so dedupe is stable across
+  reorderings. `proactive.outreach_relevance` folds her *existing* affect
+  (`anticipation`, the forward pull toward an expected outcome - not
+  `activity_bias`, which is task effort) into importance, raising it only and
+  clamped; a flat state changes nothing. The optional composer
+  (`astra/proactive_compose.py`) runs **only after** the policy returned
+  DELIVER: it is handed the recorded reason and supporting context and may
+  choose *wording* only - it cannot originate a reason, change the disposition,
+  or manufacture urgency, and any model failure falls back to the deterministic
+  summary. Deciding to message is deliberately not a `model_use` key because it
+  calls no model; only the phrasing is gated (`proactive_compose`).
+- **Silence raises the bar; it is never a mute, a memory, or a feeling.**
+  `astra/engagement.py` is a small, content-free bookkeeping layer (counters and
+  timestamps only) that adapts to proactive messages going unanswered. It never
+  replaces the policy: the notification policy still applies every limit, quiet
+  hour, pause and dedupe rule, and engagement can only *raise* the importance
+  threshold (`NotificationPolicy.effective_min_importance`), capped, never relax
+  one. Wiring is one-directional and injected (`NotificationPolicy` does not
+  import engagement; the controller supplies `engagement_provider` and a
+  `note_sent_hook`). A *delivered* message opens an obligation; when a human
+  message actually arrives it is associated only inside the reliable
+  `reply_window_seconds` (a reply must fall within it to count), and the single
+  choke point (`ApplicationRouter.handle` -> `controller.note_human_message`)
+  records it identically for CLI and Discord. A message arriving outside the
+  window is *ambiguous*: one stale obligation is retired and it is neither
+  counted as engagement nor accrued as silence. An unanswered message is *weak*
+  evidence: the count is derived from the pending list (never incremented
+  separately, so it cannot drift), a message only counts once it is older than
+  the window, and the pull decays back toward an unanswered baseline over
+  `decay_days`, so time or a reply always recovers her. `suppressed()` is
+  deliberately always-False: silence never mutes her. Nothing here is a memory,
+  so it can never be retrieved or narrated as a belief about Roum or herself.
+- **A reading hold is reported honestly, never as a completed read.**
+  `_handle_reading` maps the reader's own reason to a task status: a successful
+  read is `COMPLETED`; an unreachable model (`IDLE_MODEL_FAILED`) is `FAILED`
+  (the scheduler retries a bounded number of times, then blocks; the reader holds
+  its position, so no passage is skipped); no model permitted (`IDLE_HELD`) is
+  `BLOCKED` (a decision, not a fault); a courtesy/state hold (Roum active, a
+  game, load, no concentration) is `SKIPPED`; nothing left to read is
+  `COMPLETED` with an explicit "no material". `autonomy._dispatch_outcomes`
+  excludes `SKIPPED` alongside `PENDING` from notifications, so a reading hold
+  cannot fill a digest with a non-event (the ledger still records it). This is
+  what keeps an enabled reader from reporting success it did not have.
+- **A recorded, unresolved conflict between sourced facts is surfaced, not
+  flattened.** Two things Roum said that are on record as contradicting each
+  other (`store.link_conflict`, which writes a *mutual* `contradicts` link and
+  weakens neither side, so `contradiction_count` stays 0) used to render side by
+  side under `FACTUAL CONTEXT` as if both were current, and the model could state
+  one as settled fact. `orchestrator._append_conflicts` now renders such pairs in
+  their own `=== CONFLICTING RECORDS (UNRESOLVED - DO NOT CONFIRM EITHER) ===`
+  block and asks her to ask which holds rather than pick a winner; grouping
+  requires a *mutual* link, so a one-way reference is not a conflict. Diagnostics
+  count a link as contradiction evidence (`deterministic` `contradicted` is
+  `contradiction_count or contradicts`), so a linked conflict is no longer
+  invisible to `/debug`. It decides nothing about which side is true.
 - **A missing personal fact is answered as missing, never reconstructed.**
   `astra/personal_state.py` recognises a question about her own current/recent
   situation (reading, games, progress, prior statements, preferences, projects,
@@ -511,9 +596,12 @@ conversation, provenance/authority/read-only, reading-not-autobiography, the
 journal, working memory, reading concentration/pace, and personal-state honesty
 (never reconstructing a missing or contradictory fact). The anti-invention rules
 have their own suite, `tests/test_personal_state.py` (17 cases). Tests assert
-behaviour and authority boundaries, not prompt strings. Full suite: 695 tests
+behaviour and authority boundaries, not prompt strings. Full suite: 910 tests
 (the live affect path adds `tests/test_live_affect.py`, 30 cases; the
-emotion-memory cases add `tests/test_experience_affect.py::TestEmotionColour`).
+emotion-memory cases add `tests/test_experience_affect.py::TestEmotionColour`;
+the grounded-outreach wiring adds `tests/test_outreach.py`, 22 cases; the
+non-response adaptation, effective affect decay and honest reading outcomes add
+`tests/test_engagement.py`, 30 cases).
 
 ### Reading progress is measured in words
 

@@ -232,3 +232,131 @@ def candidate_strength(candidate: Dict[str, Any], *,
         # Saturating curve: a few weeks is meaningful, months no more so.
         stall = min(0.25, max(0.0, float(unresolved_days)) / 60.0 * 0.25)
     return max(0.0, min(1.0, base + stall + 0.15 * max(0.0, min(1.0, relevance))))
+
+
+# -- candidate -> notification-outcome mapping (the missing wire) -----------
+#
+# A conversation candidate is not a task outcome, so its fields are mapped
+# explicitly rather than passed through as if they were the same thing:
+#
+# * ``reason``/``summary`` - the candidate's own recorded reason (the *retained*
+#   basis). Both keys are populated so either notification path reads it, but
+#   the reported message is always the recorded reason, never an invented one.
+# * ``ref_id`` - derived from the candidate's *persistent* identity (its
+#   question id; else its kind + referenced work + a content hash). The index is
+#   never used, because the same candidate must dedupe across reorderings.
+# * ``importance`` - the candidate's *weight* is a 0..1 *relevance* (how much a
+#   question deserves attention), which is not the same as the importance of a
+#   completed or failed task. Treating it as equivalent would make every ordinary
+#   open question an interruption-worthy event. It is therefore *discounted* by
+#   ``_CANDIDATE_IMPORTANCE_SCALE`` into the notification-importance scale, so a
+#   median question maps below ``min_importance`` (digest only) and only a
+#   genuinely strong reason - or a borderline one lifted by her own anticipation
+#   (Change 2) - clears the delivery threshold.
+
+# A preserved reason is less urgent than a task outcome, so its relevance is
+# discounted before it meets the notification thresholds. Calibrated so a median
+# open question (weight ~0.55) lands below the default ``min_importance`` (0.55)
+# while a strong "wants Roum's view" question (~0.70) clears it.
+_CANDIDATE_IMPORTANCE_SCALE = 0.8
+
+
+def candidate_ref(candidate: Dict[str, Any]) -> Optional[str]:
+    """A stable, content-derived identity for a conversation candidate."""
+    if not isinstance(candidate, dict):
+        return None
+    qid = candidate.get("question_id")
+    if qid:
+        return f"q:{qid}"
+    kind = str(candidate.get("kind") or "cand").strip()
+    work = str(candidate.get("work_id") or "").strip()
+    reason = str(candidate.get("reason") or "").strip()
+    if reason:
+        import hashlib
+        digest = hashlib.sha1(reason.encode("utf-8", "ignore")).hexdigest()[:12]
+        return f"{kind}:{work}:{digest}" if work else f"{kind}:{digest}"
+    return f"{kind}:{work}" if work else None
+
+
+def _candidate_importance(candidate: Dict[str, Any]) -> float:
+    """The 0..1 importance a candidate warrants for the notification decision.
+
+    The input is the candidate's own *weight* (relevance), discounted into the
+    notification-importance scale so the two are not conflated. An explicit
+    ``importance`` (unused today) is honoured verbatim and not discounted twice.
+    """
+    try:
+        explicit = float(candidate.get("importance"))
+        return max(0.0, min(1.0, explicit))
+    except (TypeError, ValueError):
+        pass
+    try:
+        weight = float(candidate.get("weight") or 0.0)
+    except (TypeError, ValueError):
+        weight = 0.0
+    return round(max(0.0, min(1.0, weight * _CANDIDATE_IMPORTANCE_SCALE)), 4)
+
+
+def candidate_outcome(candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Map a conversation candidate to a notification outcome, or ``None``.
+
+    Returns ``None`` when the candidate carries no recorded reason or no stable
+    identity, so nothing without a grounded basis and a dedupe key can ever
+    reach the delivery path.
+    """
+    if not isinstance(candidate, dict):
+        return None
+    reason = str(candidate.get("reason") or "").strip()
+    ref_id = candidate_ref(candidate)
+    if not reason or not ref_id:
+        return None
+    return {
+        "ref_id": ref_id,
+        "kind": str(candidate.get("kind") or "candidate"),
+        "status": "candidate",
+        "problem": False,
+        "reason": reason,
+        "summary": reason,
+        "importance": round(_candidate_importance(candidate), 4),
+        "candidate": dict(candidate),
+    }
+
+
+# -- affect -> outreach relevance (Change 2) --------------------------------
+#
+# Her *current* affective state already influences *what she does* through
+# ``behavior.from_affect`` -> ``activity_bias``. It should also influence
+# whether a grounded reason is worth saying. The semantically appropriate
+# existing signal is ``anticipation``: affect.py documents it as the forward
+# pull toward an *expected outcome*, and a reason to speak (a question awaiting
+# resolution, a work about to finish) is exactly such a forward pull. It is NOT
+# the same as ``activity_bias`` (effort/take-on for a task), which would be the
+# wrong meaning to feed into a communication decision.
+#
+# The projection is scaled small so mood *tilts* the relevance of a candidate
+# rather than making her indiscriminately talkative: a fully-anticipated reason
+# rises by ``_ANTICIPATION_GAIN``, a flat one is unchanged. ``candidate_strength``
+# then applies its own 0.15 relevance weight, keeping the total effect bounded.
+
+_ANTICIPATION_GAIN = 0.3
+
+
+def outreach_relevance(state: Any) -> float:
+    """The 0..1 relevance her current affect adds to an outreach decision.
+
+    A pure read of the existing affect state via ``affect.diagnostics`` - no
+    new store, no second personality simulation. Flat/neutral affect yields
+    ``0.0`` so the decision is unchanged when she has no strong forward pull.
+    """
+    try:
+        from . import affect as affect_mod
+
+        diag = affect_mod.diagnostics(state)
+    except Exception:
+        return 0.0
+    try:
+        anticipation = float(diag.get("anticipation") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    anticipation = max(0.0, min(1.0, anticipation))
+    return round(anticipation * _ANTICIPATION_GAIN, 4)

@@ -155,6 +155,30 @@ Behaviour: an outcome above `high_priority_importance` may bypass the *interval*
 limits but never an explicit pause/mute or quiet hours. Everything else either
 delivers within the limits, is grouped into the scheduled digest, or is dropped.
 
+### Adaptation to non-response
+
+If several proactive messages go unanswered, Astra raises the bar for the next
+ones (she does not stop, and she never treats silence as rejection). This is a
+separate, content-free layer (`astra/engagement.py`; counters and timestamps
+only, never message content) that can only *raise* the importance threshold - it
+never relaxes a limit, quiet hours, or a pause:
+
+```yaml
+engagement:
+  enabled: true
+  reply_window_seconds: 21600   # a reply must arrive within this to count
+  silence_after: 2              # unanswered messages before the bar rises
+  threshold_step: 0.08          # extra threshold per further unanswered message
+  max_threshold_boost: 0.25     # cap on the raise
+  decay_days: 3.0               # old silence fades; time alone recovers her
+```
+
+A delivered message opens an obligation; a human message (from the console or
+Discord) within the window discharges it. A message arriving after the window is
+treated as unrelated and is neither counted as engagement nor accrued as
+silence, so an away period does not penalise her. She always recovers: the pull
+decays with time, and a reply clears it. Inspect it in `/autonomy`.
+
 ## 6. Pause, resume, and inspect (CLI / Discord)
 
 These commands work from the console or Discord and never call the model:
@@ -237,6 +261,7 @@ python -m unittest tests.test_machine -v         # real machine awareness + susp
 python -m unittest tests.test_affect_propagation -v # emotions cause work/reading
 python -m unittest tests.test_power_runtime -v   # power/suspend at runtime
 python -m unittest tests.test_proposals -v       # approval boundary
+python -m unittest tests.test_engagement -v      # non-response adaptation + reading outcomes
 ```
 
 Manual end-to-end check:
@@ -254,7 +279,15 @@ Manual end-to-end check:
 
 - **Model availability.** If Ollama is unreachable, model-dependent work is not
   marked complete; it fails or defers and is retried within bounds. A missed
-  schedule is recorded as missed, never pretended.
+  schedule is recorded as missed, never pretended. In particular the background
+  reader records an unreachable model as a `FAILED` activity (retried a bounded
+  number of times, then blocked) and holds its position so no passage is
+  skipped; a courtesy hold (Roum active, a game, load, low concentration) is
+  recorded as `SKIPPED`, and only a real read is `COMPLETED`.
+- **Background reading is enabled for release.** `config/runtime.yaml`
+  `model_use.reading: true` turns on the one autonomous model call. It runs only
+  when a book is queued and Roum is idle; set it to `false` to stop it (an
+  explicit `/read` still works, and the deterministic `Library` is always built).
 - **Affect decay** is lazy (documented in `AGENTS.md`); it is unrelated to
   scheduling.
 - **REST-only presence.** The adapter uses Discord's REST API; it cannot change

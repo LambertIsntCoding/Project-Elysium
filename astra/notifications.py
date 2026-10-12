@@ -110,6 +110,15 @@ class NotificationPolicy:
         self.digest_at = cfg.get("digest_at")  # local HH:MM
         self._muted = bool(cfg.get("muted", False))
         self._now = now_fn or _utcnow
+        # Optional: a callable returning an extra threshold (0..N) driven by
+        # adaptation to non-response. It can only *raise* the bar; it never
+        # relaxes a limit, quiet hours, or a pause. Injected after construction
+        # so the dependency stays one-way (policy does not import engagement).
+        self.engagement_provider: Optional[Callable[[], float]] = None
+        # Optional: a callable invoked after a *standalone* message is delivered,
+        # so the engagement tracker can open an obligation. It receives the ref
+        # id and a ``now`` keyword. Best-effort; a failure never affects delivery.
+        self.note_sent_hook: Optional[Callable[..., None]] = None
         self._lock = threading.RLock()
         self._state = self._load()
 
@@ -185,6 +194,23 @@ class NotificationPolicy:
             pending = [e.get("ref_id") for e in (self._state.get("pending_digest") or [])]
         return str(ref_id) in ids or str(ref_id) in pending
 
+    def effective_min_importance(self) -> float:
+        """The importance threshold, raised by adaptation to non-response.
+
+        The base threshold is the configured ``min_importance``. When proactive
+        messages have gone unanswered, the injected provider adds a bounded
+        boost (capped at 1.0). This only ever *raises* the bar - no limit, quiet
+        hour, or pause is relaxed by it, and a genuinely high-priority outcome
+        can still bypass ordinary limits exactly as before.
+        """
+        if self.engagement_provider is None:
+            return self.min_importance
+        try:
+            boost = float(self.engagement_provider() or 0.0)
+        except Exception:
+            boost = 0.0
+        return round(min(1.0, self.min_importance + max(0.0, boost)), 4)
+
     # -- the decision ----------------------------------------------------
     def decide(self, outcome: Dict[str, Any], *, now: Optional[datetime] = None) -> Dict[str, Any]:
         """Decide the disposition of one concrete outcome.
@@ -210,7 +236,7 @@ class NotificationPolicy:
             return self._verdict(DIGEST, HOLD_PAUSED, now, importance=importance)
         if self.is_duplicate(ref_id):
             return self._verdict(DROP, HOLD_DUPLICATE, now, importance=importance)
-        if importance < self.min_importance:
+        if importance < self.effective_min_importance():
             # Not worth an interruption; keep it for a digest only if it has
             # some substance.
             return self._verdict(DIGEST, HOLD_LOW_IMPORTANCE, now,
@@ -304,7 +330,13 @@ class NotificationPolicy:
     # -- recording delivery ----------------------------------------------
     def note_delivered(self, ref_id: Optional[str], *, now: Optional[datetime] = None,
                        is_digest: bool = False) -> None:
-        """Record a *successful* delivery. Called only after a real send."""
+        """Record a *successful* delivery. Called only after a real send.
+
+        Also opens an engagement obligation (via the injected tracker, if any):
+        a delivered message counts as unanswered until a reply is reliably
+        associated with it. A digest does not open an obligation - it is a
+        summary, not a message awaiting a reply.
+        """
         now = now or self._now()
         with self._lock:
             stamps = list(self._state.get("delivered") or [])
@@ -317,6 +349,11 @@ class NotificationPolicy:
             if is_digest:
                 self._state["last_digest_at"] = now.isoformat()
             self._persist()
+        if not is_digest and self.note_sent_hook is not None:
+            try:
+                self.note_sent_hook(ref_id, now=now)
+            except Exception:
+                pass
 
     def snapshot(self) -> Dict[str, Any]:
         now = self._now()

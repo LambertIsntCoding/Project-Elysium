@@ -41,6 +41,32 @@ runtime:
     # the least presumptuous behaviour (she stays asleep until spoken to).
     wake_on_resume: false
 
+# Whether the language model may be invoked, and for what. Astra is not the
+# model: the model is her *voice*, and it should only be active when it is
+# actually doing a job - never simply because the program is running.
+#
+#   conversation   live turn: composing the reply to Roum          (default on)
+#   consolidation  extracting governed memories from that turn    (default on)
+#   elysium        structuring an explicitly-requested command     (default on)
+#   reading        the *background* reader summarising a book while Roum is away
+#                  (where she forms her own view on parts of a book) (RELEASE: ON)
+#
+# `reading` is the only one that runs the model while Roum is not interacting.
+# For this release it is ON: autonomous reading has been verified to run only
+# when Roum is idle and the machine is calm (never against a running game, a
+# busy task, or a cold/loaded machine), to respect the existing load/concurrency
+# budgets, to hold its position on a failed model call rather than skipping a
+# passage, and to file what it extracts as governed memories. It runs only when
+# a book is queued, so with an empty library it stays inactive. Set it to false
+# to stop the background model calls entirely; an explicit /read always works and
+# the deterministic Library is always built.
+model_use:
+  conversation: true
+  consolidation: true
+  elysium: true
+  proactive_compose: true
+  reading: true
+
 # Autonomous operation: time-aware schedules, bounded activity planning, and
 # proactive delivery. This is the headless brain; it runs whether or not a
 # console is open.
@@ -114,6 +140,25 @@ notifications:
   # Digest: hold low-priority updates and summarise them.
   digest_enabled: true
   digest_at: "18:00"
+
+# Adaptation to repeated non-response. Astra can initiate grounded messages; if
+# several go unanswered she raises the bar for the next ones and recovers with
+# time or engagement. This only ever *raises* the notification threshold - it
+# never relaxes a limit, quiet hours, or a pause, and it stores no message
+# content, only counters and timestamps.
+engagement:
+  enabled: true
+  # A delivered message stays open to being counted as answered for this long.
+  # A reply after this is treated as unrelated (Roum was away), not engagement.
+  reply_window_seconds: 21600      # 6 hours
+  # Consecutive unanswered messages before adaptation starts to bite.
+  silence_after: 2
+  # Extra threshold per additional unanswered message, and its cap.
+  threshold_step: 0.08
+  max_threshold_boost: 0.25
+  # Days over which the pull decays back toward an unanswered baseline, so old
+  # silence stops holding her back.
+  decay_days: 3.0
 
 filesystem:
   # Only paths under these roots may be organized. Leave empty to keep

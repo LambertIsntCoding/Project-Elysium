@@ -26,8 +26,10 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-from . import (activity, autonomy, file_organizer, filesystem, machine as machine_mod,
-               notifications as notify_mod, prepared_context, proactive, proposals as proposal_mod,
+from . import (activity, autonomy, engagement as engagement_mod,
+               file_organizer, filesystem, machine as machine_mod,
+               model_use, notifications as notify_mod, prepared_context, proactive,
+               proactive_compose, proposals as proposal_mod,
                reading, runtime_state, schedules as sched, tasks as task_mod)
 from . import schedule_runtime
 from .scheduler import Scheduler
@@ -140,6 +142,17 @@ class RuntimeController:
         self.notifications = notify_mod.NotificationPolicy(
             data_dir=data_dir, config=notif_cfg)
 
+        # Adaptation to repeated non-response: a *separate*, content-free
+        # bookkeeping layer. It never replaces the policy; it only raises the
+        # bar when proactive messages have gone unanswered, and recovers on its
+        # own with time or engagement. The threshold provider is injected into
+        # the policy only after construction so the dependency stays one-way.
+        eng_cfg = self.config.get("engagement") if isinstance(self.config.get("engagement"), dict) else {}
+        self.engagement = engagement_mod.EngagementTracker(
+            data_dir=data_dir, config=eng_cfg)
+        self.notifications.engagement_provider = self._engagement_boost
+        self.notifications.note_sent_hook = self._note_proactive_sent
+
         # Filesystem policy. Astra's own paths are protected; hard safety
         # boundaries below cannot be bypassed by config accidentally.
         runtime_paths = file_organizer.default_runtime_paths(
@@ -207,11 +220,16 @@ class RuntimeController:
         # driver (below) is the enqueue authority. Her affect biases *what* and
         # *how much* she takes on, so mood changes real selection, not wording.
         executable = tuple(self.scheduler._handlers.keys())
+        enabled = [k for k in task_mod.TASK_KINDS if k in executable
+                   or auto_cfg.get("allow_unhandled")]
+        # Don't let the planner select reading when its model call is gated off:
+        # a kind that cannot actually run should not be proposed as work.
+        if not model_use.from_config(self.config).enabled(model_use.FEATURE_READING):
+            enabled = [k for k in enabled if k != task_mod.KIND_READING]
         self.planner = activity.ActivityPlanner(
             self.task_store, store=store, library=library, ledger=self.ledger,
             config=auto_cfg,
-            enabled_kinds=[k for k in task_mod.TASK_KINDS if k in executable
-                           or auto_cfg.get("allow_unhandled")],
+            enabled_kinds=enabled,
             affect_provider=(store.current_affect
                              if callable(getattr(store, "current_affect", None)) else None),
         )
@@ -224,6 +242,11 @@ class RuntimeController:
             notifications=self.notifications,
             scheduled_scheduler=self.scheduled_scheduler, ledger=self.ledger,
             notifier=None, config=auto_cfg)
+        # Grounded reasons that are not task outcomes, and the affect-derived
+        # relevance that tilts whether such a reason is worth saying. Both are
+        # read-only views over the *existing* store; neither stores anything.
+        self.autonomy.candidate_provider = self._grounded_candidates
+        self.autonomy.relevance_provider = self._outreach_relevance
         self._notifier: Optional[Callable[..., Dict[str, Any]]] = None
 
         self.poll_seconds = max(1.0, float(poll_seconds))
@@ -303,6 +326,86 @@ class RuntimeController:
             self._notifier = notifier
             self.autonomy.notifier = notifier
 
+    def set_composer(self, composer: Optional[Callable[[Dict[str, Any]], Optional[str]]]) -> None:
+        """Attach the optional voice composer for permitted messages.
+
+        The composer only phrases a message the policy already permitted; it can
+        never change the delivery decision. Passing ``None`` keeps the
+        deterministic summary.
+        """
+        with self._lock:
+            self.autonomy.composer = composer
+
+    # -- grounded reasons for outreach (read-only views) -----------------
+    def _grounded_candidates(self) -> List[Dict[str, Any]]:
+        """Conversation candidates: real, recorded reasons to speak.
+
+        Reads the same source the surfacing path uses, filtered/ranked by the
+        proactive policy. Returns only candidates that carry a concrete reason;
+        an empty list is the honest answer when there is nothing grounded to
+        say.
+        """
+        session = self.session
+        orchestrator = getattr(session, "orchestrator", None) if session else None
+        if orchestrator is None or not callable(
+                getattr(orchestrator, "conversation_candidates", None)):
+            return []
+        try:
+            return list(orchestrator.conversation_candidates(limit=6) or [])
+        except Exception:
+            return []
+
+    def _outreach_relevance(self) -> float:
+        """The affect-derived relevance her current state adds to outreach.
+
+        A pure read of the existing affect state (via ``proactive``); returns
+        ``0.0`` when the store has no affect accessor or she is flat, so a
+        neutral state leaves the decision unchanged.
+        """
+        if self.store is None or not callable(getattr(self.store, "current_affect", None)):
+            return 0.0
+        try:
+            return proactive.outreach_relevance(self.store.current_affect())
+        except Exception:
+            return 0.0
+
+    def _engagement_boost(self) -> float:
+        """The extra importance threshold her unanswered messages add.
+
+        A pure read of the separate engagement tracker; ``0.0`` when disabled or
+        when she has not been speaking into silence. Raising the bar is its only
+        effect - it never touches the notification limits or quiet hours.
+        """
+        try:
+            return float(self.engagement.effective_threshold_boost() or 0.0)
+        except Exception:
+            return 0.0
+
+    def _note_proactive_sent(self, ref_id: Any, *, now: Optional[datetime] = None) -> None:
+        """Open an engagement obligation for a delivered standalone message.
+
+        Injected into the notification policy so a *successful send* (never the
+        mere decision to send) is what starts the unanswered count. Best-effort:
+        a tracker failure never affects delivery.
+        """
+        try:
+            self.engagement.note_sent(ref_id, now=now)
+        except Exception:
+            pass
+
+    def note_human_message(self) -> None:
+        """Record that a human message actually arrived, on any transport.
+
+        Called from the single message-handling choke point
+        (``ApplicationRouter.handle``), so a CLI turn and a Discord turn are
+        treated identically. This is what lets her recover from silence: a reply
+        within the reliable window discharges the unanswered chain.
+        """
+        try:
+            self.engagement.note_reply()
+        except Exception:
+            pass
+
     # -- handlers --------------------------------------------------------
     def _register_handlers(self) -> None:
         self.scheduler.register(KIND_READING, self._handle_reading)
@@ -322,12 +425,37 @@ class RuntimeController:
     def _handle_reading(self, task: BackgroundTask) -> Dict[str, Any]:
         reader = self.reader
         if reader is None:
-            return {"status": task_mod.COMPLETED, "detail": "no reader"}
+            # The background reader is gated off (astra/model_use): there is no
+            # model call permitted for reading, so this is *not* a completed read.
+            # Report it honestly and let the planner stop selecting it.
+            return {"status": task_mod.BLOCKED,
+                    "detail": "background reader disabled (model_use.reading)"}
         report = reader.run_once()
-        return {"status": task_mod.COMPLETED,
-                "detail": f"read={report.get('read')} reason={report.get('reason')}",
-                "result": {"summary": report.get("reason"),
-                           "count": report.get("chunks")}}
+        read = bool(report.get("read"))
+        reason = str(report.get("reason") or "")
+        detail = (f"read={read} reason={reason} "
+                  f"words={report.get('words')} chunks={report.get('chunks')}")
+        summary = str(report.get("reason") or "").strip() or "reading cycle"
+        result = {"summary": summary, "count": report.get("chunks")}
+        if read:
+            return {"status": task_mod.COMPLETED, "detail": detail, "result": result}
+        # Nothing was read. Report *why*, honestly, so a genuine failure is not
+        # recorded as a completed read and the bounded retry policy can act:
+        #   * model unreachable -> FAILED (the scheduler retries a bounded number
+        #     of times, then blocks; the passage is not skipped, the offset held)
+        #   * no model permitted -> BLOCKED (a decision, not a fault, not work)
+        #   * held by courtesy/state (Roum active, a game, load, no concentration)
+        #     -> SKIPPED (deferred, not failed; a recurring occurrence re-arms)
+        #   * nothing left to read -> COMPLETED with an explicit "no material"
+        # A skipped/failed read never fabricates a discovery and never advances
+        # the position, because the reader itself does not advance on a hold.
+        if reason == reading.IDLE_MODEL_FAILED:
+            return {"status": task_mod.FAILED, "detail": detail, "result": result}
+        if reason == reading.IDLE_HELD:
+            return {"status": task_mod.BLOCKED, "detail": detail, "result": result}
+        if reason in (reading.IDLE_NO_WORK, reading.IDLE_WORK_FINISHED):
+            return {"status": task_mod.COMPLETED, "detail": detail, "result": result}
+        return {"status": task_mod.SKIPPED, "detail": detail, "result": result}
 
     def _handle_files(self, task: BackgroundTask) -> Dict[str, Any]:
         report = self.organizer.run_cycle(library=self.library)
@@ -699,6 +827,9 @@ class RuntimeController:
                      f" (approved {pcounts.get(proposal_mod.P_APPROVED, 0)})")
         if self.proactive.muted:
             lines.append("Proactive messages: muted")
+        gate = model_use.from_config(self.config)
+        lines.append("Model use: " + ", ".join(gate.enabled_features)
+                     + f" (reading={'on' if gate.enabled(model_use.FEATURE_READING) else 'off'})")
         report = self.scheduler.last_report or {}
         if report:
             lines.append(f"Last cycle: {self.scheduler.last_reason} "
@@ -733,6 +864,14 @@ class RuntimeController:
         if notif.get("in_quiet_hours"):
             lines.append("  (quiet hours: active)")
         lines.append(f"  pending digest entries: {notif['pending_digest']}")
+        eng = self.engagement.snapshot()
+        if eng.get("enabled"):
+            unanswered = eng.get("consecutive_unanswered", 0)
+            boost = eng.get("threshold_boost", 0.0)
+            lines.append(
+                f"  engagement: {unanswered} unanswered proactive message(s)"
+                + (f", threshold +{boost:.2f}" if boost else "")
+                + f", last reply: {eng.get('last_reply_at') or 'never'}")
         scheduled = self.task_store.scheduled()
         if scheduled:
             lines.append("Scheduled activities:")
@@ -853,6 +992,14 @@ class ApplicationRouter:
         text = str(text or "").strip()
         if not text:
             return {"text": "", "handled": True, "source": source}
+
+        # A human message actually arrived: this is the *only* signal that a
+        # proactive message was engaged with (delivery alone never is). Slash
+        # commands count - the person is present - so every transport and every
+        # input kind recovers the unanswered chain identically.
+        if self.controller is not None and callable(
+                getattr(self.controller, "note_human_message", None)):
+            self.controller.note_human_message()
 
         # Any human message is a human-caused wake event.
         if not text.startswith("/") and self.controller.sleeping():

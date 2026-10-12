@@ -152,7 +152,7 @@ class DeterministicLexicalRetriever:
                 "lexical": raw,
                 "relevance": round(raw / (raw + 3.0), 4) if raw else 0.0,
                 "score": cls.score_memory(query, query_tokens, mem),
-                "contradicted": bool(mem.get("contradiction_count")),
+                "contradicted": bool(mem.get("contradiction_count")) or bool(mem.get("contradicts")),
                 "superseded_by": mem.get("superseded_by"),
                 "governing": is_governing(mem),
                 "retrievable": cls.is_retrievable(mem),
@@ -354,6 +354,67 @@ class CompanionOrchestrator:
     @staticmethod
     def _unsourced(memories: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return [m for m in memories if not is_sourced(m)]
+
+    @staticmethod
+    def _conflict_groups(memories: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+        """Group sourced memories that are recorded as conflicting with each other.
+
+        A conflict is the ``contradicts`` link ``link_conflict`` writes (two
+        records each pointing at the other) *when that link is mutual*, so an
+        ordinary one-way "this supports/relates to that" pointer never reads as
+        a conflict. ``contradiction_count`` is deliberately not required: the
+        unresolved-conflict path records the link but weakens neither side and
+        does not bump the count, and that is exactly the case a grounded reply
+        must not silently pick a winner for.
+        """
+        by_id = {m.get("id"): m for m in memories if m.get("id")}
+        seen: Set[str] = set()
+        groups: List[List[Dict[str, Any]]] = []
+        for mem in memories:
+            mid = mem.get("id")
+            if not mid or mid in seen:
+                continue
+            linked = [by_id.get(x) for x in (mem.get("contradicts") or [])]
+            # Mutual links only: keeps a genuine unresolved conflict, drops a
+            # stray one-way reference.
+            mutual = [o for o in linked
+                      if o is not None and mid in (o.get("contradicts") or [])]
+            if not mutual:
+                continue
+            group = [mem] + mutual
+            for m in group:
+                seen.add(m.get("id"))
+            groups.append(group)
+        return groups
+
+    def _append_conflicts(self, parts: List[str], memories: List[Dict[str, Any]]) -> bool:
+        """Render recorded, unresolved contradictions between sourced facts.
+
+        Without this, two contradictory things Roum said render side by side
+        under ``FACTUAL CONTEXT`` as though both were current, and the model can
+        state one as settled fact. This states the conflict as the evidence
+        actually records it and asks her to treat it as unresolved rather than
+        inventing a resolution. It decides nothing about which is true.
+        """
+        groups = self._conflict_groups(self._sourced(memories))
+        if not groups:
+            return False
+        parts.append("\n=== CONFLICTING RECORDS (UNRESOLVED - DO NOT CONFIRM EITHER) ===")
+        parts.append(
+            "These are things Roum told you that are on record as contradicting "
+            "each other. The evidence does not settle which is current, so treat "
+            "it as unresolved: do not present either as settled fact, do not "
+            "merge them into a single claim, and if it matters, ask him which "
+            "holds. Stating one confidently would invent a resolution you do not "
+            "have."
+        )
+        for group in groups:
+            for m in group:
+                text = _clean_text(m.get("content"))
+                if text:
+                    parts.append(f"  ? {text}")
+            parts.append("  (the above are in conflict with each other)")
+        return True
 
     @staticmethod
     def _append_unsourced_context(parts: List[str], memories: List[Dict[str, Any]]) -> None:
@@ -777,6 +838,8 @@ class CompanionOrchestrator:
         has_facts |= self._append_facts(parts, "User Facts:", self._sourced(retrieved_roum))
         has_facts |= self._append_facts(parts, "Self Facts & Observations:", self._sourced(retrieved_self))
         has_facts |= self._append_facts(parts, "Relationship Context:", self._sourced(retrieved_rel))
+        has_conflicts = self._append_conflicts(
+            parts, retrieved_roum + retrieved_self + retrieved_rel)
         if has_facts:
             parts.append(
                 "These are things Roum has told you. Let the relevant ones inform "
@@ -785,6 +848,14 @@ class CompanionOrchestrator:
             )
         else:
             parts.append("No query-relevant background facts were retrieved for this turn.")
+        if has_conflicts:
+            # Restated after the "background you already have" note so the
+            # unresolved-conflict handling is not read as a casual aside.
+            parts.append(
+                "Where two of these facts are marked as conflicting, treat them "
+                "as unresolved: do not state either as settled and do not merge "
+                "them; ask which holds if it matters."
+            )
 
         unsourced = (self._unsourced(retrieved_roum)
                      + self._unsourced(retrieved_self)

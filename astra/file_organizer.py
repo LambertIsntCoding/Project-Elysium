@@ -404,7 +404,7 @@ class FileOrganizer:
     def __init__(self, policy: filesystem.FsPolicy, ops: filesystem.FileOps,
                  decisions: DecisionStore, *, assessor: Optional[FileAssessor] = None,
                  user_roots: Iterable[str] = (), max_files_per_cycle: int = 40,
-                 dry_run: bool = False) -> None:
+                 dry_run: bool = False, max_action_attempts: int = 3) -> None:
         self.policy = policy
         self.ops = ops
         self.decisions = decisions
@@ -412,6 +412,9 @@ class FileOrganizer:
         self.user_roots = tuple(user_roots)
         self.max_files_per_cycle = max(1, int(max_files_per_cycle))
         self.dry_run = bool(dry_run)
+        # How many failed autonomous attempts a file gets before it is parked as
+        # a decision rather than retried silently on every cycle.
+        self.max_action_attempts = max(1, int(max_action_attempts))
 
     def recover(self) -> int:
         """On startup, resolve decisions left mid-flight (crash-safe).
@@ -474,16 +477,48 @@ class FileOrganizer:
         }
 
     def _handled_paths(self) -> set:
-        """Paths already acted on or holding an open decision."""
+        """Paths already acted on, awaiting a decision, or attempted too often.
+
+        A file whose autonomous operation *succeeded* is done; a file holding an
+        open decision is the user's to resolve. A file whose autonomous operation
+        *failed* is not put into a silent retry loop: once it has failed
+        ``max_action_attempts`` times, continuing to log the same failure every
+        cycle is ineffective work, so it is parked as a decision instead (the user
+        can then act or reject it). This distinguishes "not yet handled" from
+        "repeatedly failing", which the previous history-only check could not.
+        """
         paths = set()
+        fails: Dict[str, int] = {}
         for entry in self.ops.history():
+            path = entry.get("path")
+            if not path:
+                continue
             if entry.get("outcome") in (filesystem.OUTCOME_OK,
-                                        filesystem.OUTCOME_DRY_RUN) and entry.get("path"):
-                paths.add(entry["path"])
+                                        filesystem.OUTCOME_DRY_RUN):
+                paths.add(path)
+            elif entry.get("outcome") == filesystem.OUTCOME_FAILED:
+                fails[path] = fails.get(path, 0) + 1
+        for path, count in fails.items():
+            if count >= self.max_action_attempts and path not in paths:
+                self._park_failed(path)
+                paths.add(path)
         for decision in self.decisions.all():
             if decision.path:
                 paths.add(decision.path)
         return paths
+
+    def _park_failed(self, path: str) -> None:
+        """Park a repeatedly-failing file so it is not retried silently forever."""
+        self.decisions.add(FileDecision(
+            path=path,
+            proposed_action=DISPOSITION_INSPECT,
+            reasoning=(f"autonomous action failed {self.max_action_attempts}+ "
+                       "times; needs a decision"),
+            confidence=0.0,
+            importance=0.5,
+            disposition=DISPOSITION_INSPECT,
+            evidence={"repeated_failure": True},
+        ))
 
     def _decide(self, path: str, assessment: Assessment) -> Dict[str, Any]:
         disposition = assessment.disposition
@@ -506,12 +541,43 @@ class FileOrganizer:
             confidence=assessment.confidence,
             importance=assessment.importance,
             disposition=disposition,
-            evidence=assessment.evidence,
+            evidence=self._decision_evidence(path, disposition, assessment),
             sensitive=assessment.sensitive,
         )
         stored = self.decisions.add(decision)
         return {"action": "asked", "path": path,
                 "decision_id": (stored or decision).id}
+
+    def _decision_evidence(self, path: str, disposition: str,
+                           assessment: Assessment) -> Dict[str, Any]:
+        """Evidence for a parked decision, including any computed destination.
+
+        A non-destructive disposition always targets a *fixed* destination, so
+        the decision records it at creation and a later approval moves the file
+        where the user was actually shown rather than failing for lack of one.
+        """
+        evidence = dict(assessment.evidence)
+        if disposition in (DISPOSITION_ARCHIVE, DISPOSITION_ORGANIZE):
+            evidence["proposed_destination"] = self._archive_root(path)
+            evidence["destination_file"] = os.path.join(
+                self._archive_root(path), os.path.basename(path))
+        return evidence
+
+    def _archive_destination(self, decision: FileDecision) -> Optional[str]:
+        """The file path a disposition should move to (never a bare directory).
+
+        Recomputed when the stored evidence is missing or holds a directory, so
+        a decision created by an older build (or one whose destination was never
+        recorded) still resolves to a concrete file destination.
+        """
+        candidate = decision.evidence.get("destination_file") or \
+            decision.evidence.get("proposed_destination")
+        if candidate and not os.path.isdir(candidate):
+            return candidate
+        if decision.disposition in (DISPOSITION_ARCHIVE, DISPOSITION_ORGANIZE):
+            return os.path.join(self._archive_root(decision.path),
+                                os.path.basename(decision.path))
+        return None
 
     def _act(self, path: str, disposition: str,
              assessment: Assessment) -> filesystem.OperationRecord:
@@ -554,20 +620,40 @@ class FileOrganizer:
             self.decisions.set_status(decision_id, D_REJECTED)
             return {"ok": True, "status": D_REJECTED, "id": decision_id}
 
-        self.decisions.set_status(decision_id, D_EXECUTING)
         dry = self.dry_run if dry_run is None else bool(dry_run)
+
+        # Honour the disposition that was actually shown, instead of assuming a
+        # move: keep and inspect are no-ops (completed, not silently failed),
+        # archive/organize move to a concrete file destination, and trash is the
+        # destructive path.
+        disposition = decision.disposition
+        if disposition in (DISPOSITION_KEEP, DISPOSITION_INSPECT):
+            self.decisions.set_status(
+                decision_id, D_COMPLETED,
+                result={"summary": f"{disposition} (no change)", "outcome": "ok",
+                        "operation": filesystem.OP_ORGANIZE})
+            return {"ok": True, "status": D_COMPLETED, "id": decision_id,
+                    "outcome": "ok", "detail": f"{disposition} (no change)"}
+
+        is_delete = disposition == DISPOSITION_TRASH
+        if is_delete:
+            operation = filesystem.OP_DELETE
+            destination = None
+        else:
+            operation = filesystem.OP_ARCHIVE
+            destination = self._archive_destination(decision)
+
         plan = filesystem.FilePlan(
-            decision.proposed_action if decision.proposed_action in filesystem.OPERATION_KINDS
-            else filesystem.OP_MOVE,
+            operation,
             decision.path,
-            destination=decision.evidence.get("proposed_destination"),
+            destination=destination,
             reason=decision.reasoning,
             confidence=decision.confidence,
             importance=decision.importance,
         )
-        # A destructive proposed action needs the human authorization that the
-        # approval itself represents, plus the policy flag.
-        is_delete = decision.disposition == DISPOSITION_TRASH
+        # The approval is the human authorization a destructive op needs, plus
+        # the policy flag. It is never applied on a dry run.
+        self.decisions.set_status(decision_id, D_EXECUTING)
         record = self.ops.execute(
             plan, dry_run=dry,
             authorized=bool(authorized or is_delete) and not dry,

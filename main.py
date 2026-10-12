@@ -34,6 +34,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from astra.elysium import ElysiumCommandHandler, ElysiumCommandRecorder, is_elysium_invocation
 from astra import paths
+from astra import model_use as model_use_mod
 from astra.memory import (
     CommandStore,
     TIMELINE_GRANULARITIES,
@@ -241,6 +242,7 @@ class ChatSession:
         consolidator: Optional[Callable[..., None]] = None,
         conversation_id: Optional[str] = None,
         reader: Any = None,
+        model_use: Optional[Any] = None,
         background_consolidation: bool = False,
         checkpoint_every: int = 2,
         input_fn: Callable[[str], str] = input,
@@ -249,6 +251,9 @@ class ChatSession:
         self.orchestrator = orchestrator
         self.cmd_store = cmd_store
         self.elysium = elysium
+        # The single gate on when the model may be invoked (see astra/model_use).
+        # None means the conservative defaults.
+        self.model_use = model_use if model_use is not None else model_use_mod.ModelUse({})
         # The background reader is optional and low-priority: the session tells
         # it when Roum is interacting so it yields, but it runs on its own
         # thread and never blocks a turn.
@@ -657,7 +662,10 @@ class ChatSession:
         self.history.append({"role": "user", "content": user_input})
         self.history.append({"role": "assistant", "content": response})
         self._mark_present()
-        if consolidate and self.consolidator is not None:
+        # The model is only allowed to run when configured to (astra/model_use):
+        # extraction of memories from a turn is a model call, so it is gated.
+        if (consolidate and self.consolidator is not None
+                and self.model_use.enabled(model_use_mod.FEATURE_CONSOLIDATION)):
             job = (user_input, response, self.orchestrator.store,
                    self.conversation_id, self.turn_counter)
             if self._consolidate_in_background:
@@ -1895,42 +1903,57 @@ def build_session(
 
         elysium = ElysiumOrchestrator(config_dir=config_dir)
 
-    recorder = None
-    if enable_command_extraction:
-        from astra.elysium import CommandExtractor
-
-        recorder = ElysiumCommandRecorder(cmd_store, CommandExtractor())
-
     orchestrator = CompanionOrchestrator(
         store, config_dir=config_dir, elysium=elysium, cmd_store=cmd_store,
     )
 
-    # The background reader is optional and off the critical path: it shares the
-    # same store, reuses the orchestrator's model call, and only ever reads when
-    # Roum is idle and no game is running.
+    # The single gate on when the model may be invoked (astra/model_use). The
+    # background reader is the one feature that would keep the model busy while
+    # Roum is away, so it is off by default: her voice should not be running just
+    # because the program is on.
+    runtime_config = orchestrator._load_yaml("runtime.yaml") if hasattr(
+        orchestrator, "_load_yaml") else {}
+    model_use = model_use_mod.from_config(runtime_config)
+
+    # -- Elysium command extraction (a model call) --------------------------
+    recorder = None
+    if enable_command_extraction and model_use.enabled(model_use_mod.FEATURE_ELYSIUM):
+        from astra.elysium import CommandExtractor
+
+        recorder = ElysiumCommandRecorder(cmd_store, CommandExtractor())
+
+    # The library (reading position/works) is deterministic and always built, so
+    # /library, /reading and personal-state stay accurate. The *reader daemon* is
+    # the model-invoking part: it reuses the orchestrator's model call and only
+    # ever reads when Roum is idle and no game is running. It is the one feature
+    # that runs the model while Roum is away, so model_use gates it off by
+    # default; an explicit /read command still works even when the daemon is off.
     reader = None
     library = None
     if enable_reader:
         from astra.library import Library
-        from astra.reader import BackgroundReader
 
-        # One shared process policy: which tasks mean "busy", which to ignore,
-        # which to always ignore. Built from config so future background tasks
-        # consult the same answer instead of each inventing their own.
-        policy = reading.ProcessPolicy.from_config(
-            orchestrator._load_yaml("relationship.yaml").get("background_processes")
-            if hasattr(orchestrator, "_load_yaml") else None
-        )
         library = Library(data_dir=storage_dir)
-        reader = BackgroundReader(
-            library, store, orchestrator.query_gemma, process_policy=policy,
-        )
-        reader.start()
+        if model_use.enabled(model_use_mod.FEATURE_READING):
+            from astra.reader import BackgroundReader
+
+            # One shared process policy: which tasks mean "busy", which to
+            # ignore, which to always ignore. Built from config so future
+            # background tasks consult the same answer instead of each inventing
+            # their own.
+            policy = reading.ProcessPolicy.from_config(
+                orchestrator._load_yaml("relationship.yaml").get("background_processes")
+                if hasattr(orchestrator, "_load_yaml") else None
+            )
+            reader = BackgroundReader(
+                library, store, orchestrator.query_gemma, process_policy=policy,
+            )
+            reader.start()
 
     session = ChatSession(
         orchestrator, cmd_store, elysium=elysium, recorder=recorder,
         consolidator=_default_consolidator, reader=reader,
-        background_consolidation=True,
+        model_use=model_use, background_consolidation=True,
     )
     session.think_only = bool(think_only)
 
@@ -1970,6 +1993,17 @@ def build_session(
             lambda text, ref_id, outcome: session.discord.send_proactive(
                 text, ref_id=ref_id,
                 importance=float((outcome or {}).get("importance") or 0.0)))
+    # Optional: phrase a *permitted* message in Astra's own voice. Gated by
+    # model_use, and only ever handed an outcome the policy already decided to
+    # deliver - so it can change the wording, never the decision. With the gate
+    # off (or a model error) the deterministic summary is used unchanged.
+    from astra import proactive_compose
+
+    if model_use.enabled(model_use_mod.FEATURE_PROACTIVE_COMPOSE):
+        controller.set_composer(
+            lambda outcome: proactive_compose.compose(outcome, orchestrator.query_gemma))
+    else:
+        controller.set_composer(None)
     return session
 
 

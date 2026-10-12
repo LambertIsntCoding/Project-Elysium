@@ -32,6 +32,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from . import notifications as notify_mod
+from . import proactive as proactive_mod
 from . import tasks as task_mod
 
 # Default importance of a completed activity kind, when the handler does not
@@ -107,6 +108,13 @@ class AutonomyDriver:
         self.last_wake_at: Optional[str] = None
         self._last_outcome_seen: Optional[datetime] = None
         self.last_report: Dict[str, Any] = {}
+        # Optional injectable readers (same pattern as the controller's
+        # affect_provider): grounded reasons that are not task outcomes, and a
+        # composer that may phrase an already-permitted message. Neither can
+        # change *whether* a message is sent - the notification policy owns that.
+        self.candidate_provider: Optional[Callable[[], List[Dict[str, Any]]]] = None
+        self.relevance_provider: Optional[Callable[[], float]] = None
+        self.composer: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None
 
     # -- pause/unpause (independent of notifications) --------------------
     @property
@@ -157,6 +165,10 @@ class AutonomyDriver:
 
             # 4. Outcomes -> notifications.
             report["notifications"] = self._dispatch_outcomes(now, user_active=user_active)
+
+            # 4b. Grounded non-task reasons -> the *same* notification policy.
+            report["candidate_notifications"] = self._dispatch_candidates(
+                now, user_active=user_active)
 
             # 5. Digest.
             report["digest"] = self._maybe_digest(now, user_active=user_active)
@@ -209,8 +221,11 @@ class AutonomyDriver:
                 continue
             if since is not None and stamp <= since:
                 continue
-            if entry.get("status") == task_mod.PENDING:
-                continue  # a selection note, not an outcome
+            if entry.get("status") in (task_mod.PENDING, task_mod.SKIPPED):
+                # A selection note, or a deferred/non-event (a reading hold, a
+                # window that passed). Neither is something to report; the
+                # ledger still records it for inspection.
+                continue
             considered += 1
             outcome = self._outcome_from_entry(entry)
             if outcome is None:
@@ -242,6 +257,64 @@ class AutonomyDriver:
                 self._last_outcome_seen = newest
         return {"considered": considered, "delivered": delivered, "queued": queued}
 
+    def _dispatch_candidates(self, now: datetime,
+                             *, user_active: bool) -> Dict[str, Any]:
+        """Grounded non-task reasons -> the same notification policy as outcomes.
+
+        Conversation candidates (unresolved questions, realisations, recorded
+        conflicts, discoveries) are mapped to notification outcomes and run
+        through the *existing* policy, so rate limits, quiet hours, dedupe and
+        message-counting are shared with the task-outcome path. A candidate
+        whose weight does not clear ``min_importance`` is not delivered - it is
+        at most queued for a digest, exactly like a low-importance outcome.
+        """
+        if self.candidate_provider is None or self.notifier is None:
+            return {"considered": 0, "delivered": 0, "queued": 0}
+        try:
+            candidates = self.candidate_provider() or []
+        except Exception as exc:
+            return {"considered": 0, "delivered": 0, "queued": 0,
+                    "error": str(exc)}
+        relevance = 0.0
+        if self.relevance_provider is not None:
+            try:
+                relevance = float(self.relevance_provider() or 0.0)
+            except Exception:
+                relevance = 0.0
+
+        considered = delivered = queued = 0
+        for candidate in candidates:
+            outcome = proactive_mod.candidate_outcome(candidate)
+            if outcome is None:
+                continue
+            # Fold her affect-derived relevance in *before* the decision, so a
+            # forward pull can lift a borderline grounded reason over the bar.
+            # It can only raise importance and is clamped - it never invents a
+            # reason and never lifts an arbitrary candidate into a message.
+            outcome = self._effective_outcome(outcome, relevance)
+            considered += 1
+            # A candidate that would be an *interruption* when a human is present
+            # is still, in reality, not an interruption: they are here. Route it
+            # to the digest rather than speaking over them.
+            if user_active:
+                decision = self.notifications.decide(outcome, now=now)
+                if decision["disposition"] != notify_mod.DROP:
+                    self.notifications.queue_digest(outcome)
+                    queued += 1
+                continue
+            decision = self.notifications.decide(outcome, now=now)
+            disp = decision["disposition"]
+            if disp == notify_mod.DELIVER:
+                if self._deliver(outcome, now):
+                    delivered += 1
+                else:
+                    self.notifications.queue_digest(outcome)
+                    queued += 1
+            elif disp == notify_mod.DIGEST:
+                self.notifications.queue_digest(outcome)
+                queued += 1
+        return {"considered": considered, "delivered": delivered, "queued": queued}
+
     def _outcome_from_entry(self, entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         status = str(entry.get("status") or "")
         kind = str(entry.get("kind") or "")
@@ -267,20 +340,57 @@ class AutonomyDriver:
             "kind": kind,
             "status": status,
             "problem": problem,
+            "reason": f"{summary}",
             "summary": f"{summary}",
             "importance": importance,
             "at": entry.get("at"),
         }
 
-    def _deliver(self, outcome: Dict[str, Any], now: datetime) -> bool:
+    def _effective_outcome(self, outcome: Dict[str, Any], relevance: float) -> Dict[str, Any]:
+        """Fold affect-derived relevance into an outcome's importance (copy).
+
+        ``relevance`` is a 0..1 boost from the *candidate's* forward pull (her
+        anticipation). It can only *raise* importance, is clamped to 1.0, and
+        never lowers it, so a real reason is never suppressed by mood and an
+        unimportant one cannot be inflated into an interruption.
+        """
+        if not relevance:
+            return outcome
+        folded = dict(outcome)
+        try:
+            base = float(folded.get("importance") or 0.0)
+        except (TypeError, ValueError):
+            base = 0.0
+        folded["importance"] = round(max(0.0, min(1.0, base + float(relevance))), 4)
+        return folded
+
+    def _compose(self, outcome: Dict[str, Any]) -> Optional[str]:
+        """Optionally phrase a permitted outcome in Astra's voice, or ``None``.
+
+        Runs only after the policy has already decided to deliver, so it can
+        never originate a reason or change the disposition. Any failure returns
+        ``None`` and the deterministic summary is used instead.
+        """
+        if self.composer is None:
+            return None
+        try:
+            text = self.composer(outcome)
+        except Exception:
+            return None
+        text = str(text or "").strip()
+        return text or None
+
+    def _deliver(self, outcome: Dict[str, Any], now: datetime,
+                 *, relevance: float = 0.0) -> bool:
         if self.notifier is None:
             return False
+        outcome = self._effective_outcome(outcome, relevance)
         decision = self.notifications.decide(outcome, now=now)
         if decision["disposition"] != notify_mod.DELIVER:
             return False
+        message = self._compose(outcome) or outcome.get("summary") or ""
         try:
-            result = self.notifier(outcome.get("summary") or "", outcome.get("ref_id"),
-                                   outcome)
+            result = self.notifier(message, outcome.get("ref_id"), outcome)
         except Exception as exc:
             result = {"ok": False, "error": str(exc)}
         if result and result.get("ok"):
