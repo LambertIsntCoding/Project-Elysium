@@ -22,6 +22,98 @@ runtime:
     task_budget_seconds: 3.0
   # How often the background worker wakes while asleep. Must stay >= 1s.
   poll_seconds: 5.0
+  # Headless idle policy: with no console and no interaction for this long, the
+  # runtime moves itself to SLEEP so the sleep-only opportunistic work gets a
+  # turn. A human message always wakes her. 0 disables the policy.
+  idle_sleep_seconds: 30.0
+  # Power and resources: measured, numeric awareness of the machine (see
+  # astra/machine.py). Nothing here is a guess; an unmeasurable value simply
+  # changes no decision.
+  power:
+    # Run conservatively at startup (only light work) until the machine has been
+    # up long enough and is measurably calm. This is the energy-efficient boot
+    # mode, not a personality setting.
+    startup_efficiency: true
+    # If the machine suspends, Astra sleeps alongside it rather than treating the
+    # gap as active time (the gap is detected from the machine's own uptime).
+    sleep_with_computer: true
+    # Opt-in only: on resume, wake to ACTIVE automatically. Default false keeps
+    # the least presumptuous behaviour (she stays asleep until spoken to).
+    wake_on_resume: false
+
+# Autonomous operation: time-aware schedules, bounded activity planning, and
+# proactive delivery. This is the headless brain; it runs whether or not a
+# console is open.
+autonomy:
+  enabled: true
+  # How often the autonomy driver runs one bounded wake.
+  wake_interval_seconds: 30.0
+  # Planning: Astra may select bounded activities from her own state.
+  planning_enabled: true
+  max_new_per_pass: 2
+  max_live_tasks: 24
+  per_kind_limit: 2
+  # Budgets for scheduled work (it may run while a human is engaged).
+  max_scheduled_per_wake: 2
+  cycle_budget_seconds: 30.0
+  task_budget_seconds: 20.0
+  test_timeout_seconds: 300
+  # Configured schedules. Each names a task `kind` and a `dedupe_key`.
+  # Modes: daily (at HH:MM), interval (every_seconds/minutes/hours), once.
+  # `timezone` is an IANA name (DST-correct). `start`/`end` bound a window;
+  # `deadline`/`expires` bound lateness; `catch_up` is run|skip|coalesce.
+  # Conservative defaults below: a nightly self-review, a morning digest
+  # preparation, and a periodic memory-quality review.
+  schedules:
+    - mode: daily
+      at: "03:30"
+      timezone: "America/New_York"
+      kind: self_review
+      dedupe_key: "nightly-self-review"
+      priority: 42
+      catch_up: skip
+      start: "02:00"
+      end: "05:00"
+      description: "Nightly behaviour review for recurring failures."
+    - mode: daily
+      at: "08:00"
+      timezone: "America/New_York"
+      kind: context_preparation
+      dedupe_key: "morning-context"
+      priority: 50
+      catch_up: run
+      description: "Prepare context for the day."
+    - mode: interval
+      every_hours: 6
+      timezone: "America/New_York"
+      kind: memory_review
+      dedupe_key: "memory-quality"
+      priority: 54
+      catch_up: coalesce
+      description: "Periodic memory-quality review."
+
+# Proactive notification limits. All configurable; defaults are conservative.
+notifications:
+  muted: false
+  paused: false
+  timezone: "America/New_York"
+  # At most one unsolicited standalone message per interval, and the minimum
+  # gap between them.
+  interval_seconds: 28800        # 8 hours
+  max_per_interval: 1
+  min_gap_seconds: 28800         # 8 hours
+  max_per_day: 2                 # per local calendar day; a digest counts
+  # Importance/relevance thresholds (0..1).
+  min_importance: 0.55
+  high_priority_importance: 0.85
+  allow_high_priority_bypass: true
+  # Quiet hours (local): no proactive messages. Wraps midnight.
+  quiet_hours:
+    start: "22:30"
+    end: "07:30"
+  # Digest: hold low-priority updates and summarise them.
+  digest_enabled: true
+  digest_at: "18:00"
 
 filesystem:
   # Only paths under these roots may be organized. Leave empty to keep
@@ -62,3 +154,11 @@ discord:
   channel_id: "1555630373747294418"
   bot_user_id: "1555780777072136282"
   poll_seconds: 2.0
+  # Inbound debounce: wait this long after the last message before answering, so
+  # a thought sent in several lines is read as one turn (not answered line by
+  # line). `max_batch` answers early if that many messages arrive.
+  batch_seconds: 3.0
+  max_batch: 8
+  # Optional: restrict who may be answered (Discord user ids). Empty = any
+  # non-bot author in the channel.
+  allowed_author_ids: []

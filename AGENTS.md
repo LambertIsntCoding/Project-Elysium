@@ -695,3 +695,122 @@ The invariants:
 
 New tests: `tests/test_infrastructure.py` (12) and `tests/test_behavior_admin.py`
 (23). Full suite: 630 tests.
+
+
+## Autonomous operation, scheduling, and proactive Discord
+
+Astra can run headless, attempt scheduled and self-selected work, persist its
+state across restarts, and initiate appropriately limited Discord messages. The
+operator guide is `docs/autonomous_operation.md`. Structural invariants:
+
+- **The runtime and the console are independent.** `python main.py --headless`
+  (or `--supervise`) keeps the runtime alive with no interactive console; closing
+  a CLI/conversation window never stops it. `--stop`/`--restart` request a
+  control action; the single-instance lock (`runtime/runtime.lock`) prevents two
+  runtimes from running the same schedules or double-sending.
+- **The Discord failure was not a missing scheduler.** Originally the adapter had
+  no outbound path at all: `_maybe_surface_proactive` in `main.py` only *printed*
+  a "[Astra has been thinking about: ...]" hint on the console the next time
+  Roum typed, and behind an early `self.controller.sleeping(): return`. Nothing
+  ever called `transport.send_message` unprompted, so proactive messaging could
+  not occur. The fix is a real outbound send path
+  (`DiscordAdapter.send_proactive`) wired from the notification policy through
+  the autonomy driver, not a personality instruction.
+- **Sending is transport plus bookkeeping, decision is elsewhere.**
+  `astra/discord_adapter.py` holds no scheduling, memory or personality. Inbound
+  messages go to the same `ApplicationRouter` the CLI uses; outbound proactive
+  messages are a decision another layer already made.
+- **A delivery is recorded separately from the decision to send.**
+  `DiscordDeliveryStore` records `decided` / `delivered` / `failed` distinctly,
+  suppresses duplicates by a stable `ref_id` (surviving restarts), bounds retries
+  (`PROACTIVE_MAX_ATTEMPTS`), and never reports a failed send as received. A
+  401/403 is a standing permission condition surfaced via `diagnostics`, not
+  retried against the recipient. Destinations are restricted to the configured
+  channel; mentions are limited to a single authorised user via
+  `allowed_mentions` (never `@everyone`/roles).
+- **Time arithmetic is pure and DST-correct.** `astra/schedules.py` owns
+  recurrence, windows, quiet periods, deadlines, expiry and catch-up policy;
+  `zoneinfo` resolves IANA zones (fixed-offset fallback, honestly). Nothing
+  polls at high frequency: a schedule computes its next due instant and the
+  runtime wakes on a bounded cadence to ask "is anything due?".
+- **The schedule driver is idempotent and honest.** `astra/schedule_runtime.py`
+  materialises one live task per `(kind, dedupe_key)`, so re-running across
+  restarts never doubles the queue; a missed window is recorded `missed` (never
+  run or pretended) and then re-armed; expiry is terminal; a `once` whose
+  instant has passed (or whose `last_run` is at/after it) is exhausted and never
+  re-armed. `rearm_after_run` returns the next due instant.
+- **Autonomy is bounded.** `astra/autonomy.AutonomyDriver.wake` does one small,
+  fixed amount of work: advance schedules, run scheduled work (with
+  `require_sleep=False`, so configured activities run even while a human is
+  engaged), plan at most `max_new_per_pass` new activities, consider new ledger
+  outcomes, deliver a digest when due. `astra/activity.ActivityPlanner` proposes
+  only *evidence-backed* work from real state and may legitimately decide
+  **idle**; it must never manufacture a task to look busy. A planner that can
+  generate work forever would be a loop, not autonomy.
+- **Activity pause and notification pause are independent.** Autonomy owns its
+  own `_activity_paused`; the notification policy owns its `paused`/`muted`.
+  Pausing work never silences messaging and vice versa (asserted in
+  `tests/test_autonomy.py` and `tests/test_application.py`). Do not re-merge
+  them.
+- **A generated reflection is not proof of learning.** Autonomous sessions use
+  the *existing* memory authority and personal-state systems; they never bypass
+  validation or promote a generated theory about Astra's implementation,
+  architecture, emotions or identity into authoritative self-knowledge. A
+  completed activity is recorded as an activity, never as an achieved
+  capability. Identity/boundary/credential/code changes remain proposals needing
+  approval; no weight-training mechanism exists and none is claimed.
+- **Notification limits are configurable, not scattered.** `config/runtime.yaml`
+  `notifications:` holds the interval/daily caps, min gap, quiet hours,
+  importance thresholds and digest settings. Conservative defaults: <=1
+  unsolicited standalone message per 8h and <=2 proactive messages per local day
+  (a digest counts toward the daily cap). Only a genuinely high-priority
+  (`high_priority_importance`) outcome may bypass the interval limits, and never
+  a pause/mute or quiet hours. Do not hardcode these in the implementation.
+- **Replies are not attached by default.** `astra/reply_policy.py` is the single
+  code-owned decision: only a response that begins with `EMPHASIS_MARKER`
+  (`↪ `) reply-attaches, and exactly then does the adapter also ping the
+  message's author (adding `<@id>` and an `allowed_mentions.users` entry). The
+  generation contract (`astra/generation.py`, `_REPLY_EMPHASIS`) tells the model
+  when to use the marker. This replaced the old "always reply" behaviour.
+- **Inbound batching.** The adapter debounces a burst of messages
+  (`batch_seconds`/`max_batch`) so a thought sent in several lines is read as one
+  turn and answered once, rather than answered line by line.
+- **Emotions are a cause of behaviour, not a report.** `astra/behavior.py`
+  derives a modulation from the current affect; that modulation feeds *what
+  actually happens*: the scheduler's injected `intensity` provider admits only
+  light kinds below `LOW_ENERGY_THRESHOLD` (`REASON_LOW_ENERGY`), the
+  `ActivityPlanner` biases selection through the same modulation (a deep low
+  mood takes on no new work and honestly reports idle), and the reader gate folds
+  `behavior.reading_modifiers` into `reading.should_read` so sadness can stand
+  reading down. All derived and read-only; a neutral state changes nothing, and
+  nothing numeric reaches the prompt (asserted in `test_behavior_admin`).
+- **Machine awareness is measured, and absence invents nothing.** `astra/machine.py`
+  samples real CPU/memory/uptime/idle (stdlib-first, `psutil` optional); an
+  unmeasurable value is `None` and changes no decision. Heavy work is admitted
+  only when the machine is warm and *sustainably* calm (a momentary spike resets
+  the window → efficiency mode, `REASON_MACHINE_COLD`). A suspend is detected
+  from the machine's own uptime versus the process clock; on suspend Astra SLEEPs
+  (`REASON_POWER`) so the gap is not treated as active time, and `wake_on_resume`
+  is opt-in (default false). Do not decay or sample inside `build_prompt`;
+  machine sampling is a live-loop concern.
+- **A durable proposal gates the changes that need approval.** `astra/proposals.py`
+  records improvement proposals with a scope; protected scopes (identity,
+  boundaries, credentials, permissions, source code) are flagged
+  `requires_approval`. `/proposals` lets Roum acknowledge/approve/decline, but
+  approving only flips a recorded status - it never applies a change. The
+  self-improvement handler records evidence-backed proposals durably instead of a
+  transient ledger line. Never let an "approved" proposal auto-apply.
+- **Autonomous actions need no one else; higher-impact changes need a human yes.**
+  Routine, reversible maintenance proceeds on its own; identity/boundary/
+  credential/permission/code changes are proposals only. Both properties are
+  required: the runtime advances without input, *and* the protected changes
+  remain gated on explicit acknowledgement.
+
+New tests: `tests/test_schedules.py`, `tests/test_schedule_runtime.py`,
+`tests/test_activity.py`, `tests/test_autonomy.py`, `tests/test_notifications.py`,
+`tests/test_reply_policy.py`, `tests/test_machine.py`,
+`tests/test_affect_propagation.py`, `tests/test_power_runtime.py`,
+`tests/test_proposals.py`, plus the new outbound-lifecycle, batching and
+reply/ping cases in `tests/test_discord_adapter.py` and the visibility/control
+cases in `tests/test_application.py`. `python -m unittest discover -s tests -t .`
+now runs 838 tests, all passing (plus the script-style suites via `python -m tests`).

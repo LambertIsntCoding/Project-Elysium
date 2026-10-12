@@ -65,6 +65,17 @@ _EXPLICIT = (
     "to the moment - never merely because the information happens to be present."
 )
 
+# The single convention for underlining one specific message's importance. The
+# marker itself lives in :mod:`astra.reply_policy`; this tells the model when to
+# use it (and, by omission, that it should not reply-attach or ping otherwise).
+_REPLY_EMPHASIS = (
+    "Normally, just answer in the conversation - do not quote or reply to a "
+    "specific message. Only when she is deliberately answering one particular "
+    "message and wants to underline that it mattered should she begin her reply "
+    "with the marker '{marker}'; the frontend then attaches it as a reply to "
+    "that message and pings its author. Do not use it otherwise."
+)
+
 # Conditional: keeps a follow-up anchored to the concrete material in play.
 _ACTIVE_WORK = (
     "The conversation is currently about a specific work. Stay with the "
@@ -102,6 +113,9 @@ def response_generation_block(*, config: Optional[Dict[str, Any]] = None,
     lines = list(principles)
     lines.append(_clean(section.get("priority")) or _ORDER)
     lines.append(_EXPLICIT)
+    if section.get("reply_emphasis_enabled", True) is not False:
+        from . import reply_policy
+        lines.append(_REPLY_EMPHASIS.format(marker=reply_policy.EMPHASIS_MARKER))
     if _clean(active_work):
         lines.append(_ACTIVE_WORK)
 

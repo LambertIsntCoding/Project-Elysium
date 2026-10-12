@@ -291,6 +291,19 @@ class BackgroundReader:
             except Exception:
                 cpu_load = None
         affect = self._affect_snapshot()
+        # Fold the behavioural modulation into the gate inputs as well as the
+        # pace, so a sad/weary state can genuinely *stand the reader down* (not
+        # merely slow it): the modulation's reading modifiers report a lowered
+        # concentration and a raised weary for exactly that reason. A neutral
+        # state leaves the raw affect untouched.
+        mod = behavior.from_affect(affect)
+        if behavior.is_neutral(mod):
+            concentration = affect.get("concentration")
+            weary = affect.get("weary")
+        else:
+            mods = behavior.reading_modifiers(mod)
+            concentration = mods.get("concentration")
+            weary = mods.get("weary")
         return {
             "enabled": self.enabled,
             "seconds_since_input": self._seconds_since_input(),
@@ -298,9 +311,10 @@ class BackgroundReader:
             "gpu_busy": gpu_busy,
             "machine_busy_flag": busy_signalled or busy_scanned,
             "cpu_load": cpu_load,
-            # Reading requires concentration: the gate reads her current state.
-            "concentration": affect.get("concentration"),
-            "weary": affect.get("weary"),
+            # Reading requires concentration: the gate reads her current state,
+            # including the modulation's view of it.
+            "concentration": concentration,
+            "weary": weary,
             "frustration": affect.get("frustration"),
         }
 

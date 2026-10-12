@@ -26,13 +26,17 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-from . import (file_organizer, filesystem, prepared_context, proactive,
-               reading, runtime_state, tasks as task_mod)
+from . import (activity, autonomy, file_organizer, filesystem, machine as machine_mod,
+               notifications as notify_mod, prepared_context, proactive, proposals as proposal_mod,
+               reading, runtime_state, schedules as sched, tasks as task_mod)
+from . import schedule_runtime
 from .scheduler import Scheduler
 from .tasks import (BackgroundTask, KIND_APP_MAINTENANCE,
-                    KIND_CONTEXT_PREPARATION, KIND_FILE_INSPECTION,
-                    KIND_MEMORY_MAINTENANCE, KIND_QUESTION_REVIEW,
-                    KIND_READING)
+                    KIND_CONTEXT_PREPARATION, KIND_EXPERIENCE_REVIEW,
+                    KIND_FILE_INSPECTION, KIND_KNOWLEDGE_GAP,
+                    KIND_MEMORY_MAINTENANCE, KIND_MEMORY_REVIEW,
+                    KIND_QUESTION_REVIEW, KIND_READING, KIND_SELF_IMPROVEMENT,
+                    KIND_SELF_REVIEW, KIND_TEST_RUN, KIND_WORK_REVIEW)
 
 DEFAULT_POLL_SECONDS = 5.0
 
@@ -70,7 +74,9 @@ class RuntimeController:
         library: Any = None,
         process_names_fn: Optional[Callable[[], Optional[List[str]]]] = None,
         cpu_load_fn: Optional[Callable[[], Optional[float]]] = None,
+        machine: Optional[Any] = None,
         poll_seconds: float = DEFAULT_POLL_SECONDS,
+        think_only: bool = False,
     ) -> None:
         self.session = session
         self.store = store
@@ -79,16 +85,46 @@ class RuntimeController:
         self.config = config if isinstance(config, dict) else {}
         self.reader = reader
         self.library = library
+        # Headless "think-only" mode: the runtime runs fully but never presents
+        # an interactive prompt, and asks an idle policy to sleep so the
+        # sleep-only opportunistic work still gets its turn.
+        self.think_only = bool(think_only)
 
         runtime_cfg = self.config.get("runtime") if isinstance(self.config.get("runtime"), dict) else {}
         sched_cfg = runtime_cfg.get("scheduler") if isinstance(runtime_cfg.get("scheduler"), dict) else {}
+        power_cfg = runtime_cfg.get("power") if isinstance(runtime_cfg.get("power"), dict) else {}
         fs_cfg = self.config.get("filesystem") if isinstance(self.config.get("filesystem"), dict) else {}
+        auto_cfg = self.config.get("autonomy") if isinstance(self.config.get("autonomy"), dict) else {}
+        notif_cfg = self.config.get("notifications") if isinstance(self.config.get("notifications"), dict) else {}
+
+        # Real machine awareness: measured CPU/memory/uptime/idle, so startup can
+        # be resource-efficient and a machine suspend can be recognised. It is a
+        # pure sampler plus pure decisions; ``None`` (unmeasurable) changes
+        # nothing. ``cpu_load_fn`` (if given) still feeds the scheduler/reader;
+        # this object is the richer, numeric source for power decisions.
+        self.machine = machine if machine is not None else machine_mod.build_default()
+        # If no explicit CPU provider was supplied, use the machine's own
+        # numeric reading so the scheduler stands heavy work down on real load.
+        # (The reader is built earlier with its own optional provider; passing
+        # the machine here keeps the scheduler's answer measured, not guessed.)
+        if cpu_load_fn is None and hasattr(self.machine, "cpu_reading"):
+            cpu_load_fn = self.machine.cpu_reading
+        self.power_cfg = {
+            "startup_efficiency": bool(power_cfg.get("startup_efficiency", True)),
+            "sleep_with_computer": bool(power_cfg.get("sleep_with_computer", True)),
+            "wake_on_resume": bool(power_cfg.get("wake_on_resume", False)),
+        }
+        self._last_suspend_seconds: Optional[float] = None
 
         # Persistent application state (each with its own serialization).
         self.state = runtime_state.RuntimeStateStore(data_dir=data_dir)
         self.task_store = task_mod.TaskStore(data_dir=data_dir)
         self.ledger = task_mod.TaskLedger(data_dir=data_dir)
         self.decisions = file_organizer.DecisionStore(data_dir=data_dir)
+        # Durable improvement proposals: changes to identity, boundaries,
+        # credentials, permissions or source code are recorded here and require
+        # Roum's acknowledgement/approval; nothing here applies a change.
+        self.proposals = proposal_mod.ProposalStore(data_dir=data_dir)
         self.prepared = prepared_context.PreparedContext(data_dir=data_dir)
         self.proactive = proactive.ProactivePolicy(
             data_dir=data_dir,
@@ -98,6 +134,11 @@ class RuntimeController:
             muted=bool(self.config.get("proactive", {}).get("muted", False)
                        if isinstance(self.config.get("proactive"), dict) else False),
         )
+        # The notification policy: configurable limits, quiet hours, digest and
+        # pause. It is a separate layer from the proactive candidate policy and
+        # from the transport.
+        self.notifications = notify_mod.NotificationPolicy(
+            data_dir=data_dir, config=notif_cfg)
 
         # Filesystem policy. Astra's own paths are protected; hard safety
         # boundaries below cannot be bypassed by config accidentally.
@@ -122,7 +163,8 @@ class RuntimeController:
         # Crash recovery: no interrupted operation is ever reported as success.
         self.organizer.recover()
 
-        # The scheduler, with one handler per task kind.
+        # The scheduler, with one handler per task kind. This is the sleep-only
+        # opportunistic scheduler: it may only run while SLEEP.
         self.scheduler = Scheduler(
             task_store=self.task_store, ledger=self.ledger,
             runtime_state=self.state,
@@ -133,15 +175,133 @@ class RuntimeController:
             max_tasks_per_cycle=int(sched_cfg.get("max_tasks_per_cycle", 3)),
             cycle_budget_seconds=float(sched_cfg.get("cycle_budget_seconds", 5.0)),
             task_budget_seconds=float(sched_cfg.get("task_budget_seconds", 3.0)),
+            intensity_provider=self._intensity,
+            machine_ready_provider=self._machine_ready_for_work,
         )
         self._register_handlers()
 
+        # Time-aware schedules: a driver that keeps due instants current, and a
+        # second scheduler that runs *scheduled* work regardless of SLEEP/ACTIVE
+        # (configured activities must run even while a human is engaged). It runs
+        # the same registered handlers and re-arms recurring occurrences.
+        self.schedule_driver = schedule_runtime.ScheduleDriver(
+            self.task_store, ledger=self.ledger)
+        self.scheduled_scheduler = Scheduler(
+            task_store=self.task_store, ledger=self.ledger,
+            runtime_state=self.state,
+            process_policy=getattr(reader, "process_policy", None) or reading.ProcessPolicy(),
+            process_names_fn=process_names_fn,
+            cpu_load_fn=cpu_load_fn,
+            enabled=bool(auto_cfg.get("enabled", True)),
+            require_sleep=False,
+            max_tasks_per_cycle=int(auto_cfg.get("max_scheduled_per_wake", 2)),
+            cycle_budget_seconds=float(auto_cfg.get("cycle_budget_seconds", 30.0)),
+            task_budget_seconds=float(auto_cfg.get("task_budget_seconds", 20.0)),
+            completion_hook=self._after_scheduled_run,
+            machine_ready_provider=self._machine_ready_for_work,
+        )
+        for kind, handler in self.scheduler._handlers.items():
+            self.scheduled_scheduler.register(kind, handler)
+
+        # Bounded activity planner: proposes work from real state; the autonomy
+        # driver (below) is the enqueue authority. Her affect biases *what* and
+        # *how much* she takes on, so mood changes real selection, not wording.
+        executable = tuple(self.scheduler._handlers.keys())
+        self.planner = activity.ActivityPlanner(
+            self.task_store, store=store, library=library, ledger=self.ledger,
+            config=auto_cfg,
+            enabled_kinds=[k for k in task_mod.TASK_KINDS if k in executable
+                           or auto_cfg.get("allow_unhandled")],
+            affect_provider=(store.current_affect
+                             if callable(getattr(store, "current_affect", None)) else None),
+        )
+
+        # The autonomy driver coordinates schedules + planning + notifications on
+        # one bounded cadence. The notifier is injected once a Discord transport
+        # exists; until then it delivers nothing (and says so honestly).
+        self.autonomy = autonomy.AutonomyDriver(
+            schedule_driver=self.schedule_driver, planner=self.planner,
+            notifications=self.notifications,
+            scheduled_scheduler=self.scheduled_scheduler, ledger=self.ledger,
+            notifier=None, config=auto_cfg)
+        self._notifier: Optional[Callable[..., Dict[str, Any]]] = None
+
         self.poll_seconds = max(1.0, float(poll_seconds))
+        self._auto_wake_seconds = max(5.0, float(auto_cfg.get(
+            "wake_interval_seconds", 30.0)))
+        self.idle_sleep_seconds = max(0.0, float(runtime_cfg.get(
+            "idle_sleep_seconds", 30.0)))
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.RLock()
         # In-memory marker of the last human interaction (see ``touch``).
         self.last_interaction: Optional[str] = None
+        self._last_auto_wake: Optional[datetime] = None
+
+    # -- scheduled-work hook --------------------------------------------
+    def _intensity(self) -> Optional[float]:
+        """How much Astra can bring to work right now (0..1), or ``None``.
+
+        A pure read of the behaviour modulation's ``effort`` derived from her
+        current affect. The scheduler uses it to admit only light work when she
+        is flat or sad, so her state changes what actually runs. Read-only: it
+        never writes affect, memory or the store.
+        """
+        try:
+            from . import behavior
+            state = None
+            if callable(getattr(self.store, "current_affect", None)):
+                state = self.store.current_affect()
+            mod = behavior.from_affect(state) if state else behavior.from_affect({})
+            return float(behavior.activity_bias(mod).get("effort", 0.5))
+        except Exception:
+            return None
+
+    def machine_snapshot(self) -> Dict[str, Any]:
+        """A bounded, numeric view of the machine (for status/log, never memory)."""
+        try:
+            return self.machine.snapshot()
+        except Exception:
+            return {}
+
+    def _machine_ready_for_work(self) -> bool:
+        """Whether the computer is warm and calm enough to do heavy work.
+
+        Conservative at startup (see :mod:`astra.machine`): a machine that just
+        booted, or one that is loaded, keeps her in efficiency mode. ``None`` /
+        unmeasurable is treated by the scheduler as "no gate".
+        """
+        if not self.power_cfg.get("startup_efficiency", True):
+            return True
+        try:
+            sample = self.machine.sample()
+            return bool(self.machine.ready_for_work(sample))
+        except Exception:
+            return True
+
+    def _after_scheduled_run(self, task: BackgroundTask, status: str) -> None:
+        """Re-arm a recurring scheduled occurrence after it has run.
+
+        Only a completed/cancelled occurrence advances the schedule; a failure
+        keeps its due instant so the bounded retry policy (not the schedule)
+        decides, and a blocked/missed/expired task is left as-is.
+        """
+        if not task.schedule:
+            return
+        if status not in (task_mod.COMPLETED, task_mod.CANCELLED,
+                          task_mod.SKIPPED):
+            return
+        self.schedule_driver.rearm_after_run(task.id)
+
+    def set_notifier(self, notifier: Callable[..., Dict[str, Any]]) -> None:
+        """Attach the outbound delivery path (the Discord adapter, usually).
+
+        The autonomy driver only *reads* this; wiring it here keeps the
+        application layer free of transport knowledge.
+        """
+        with self._lock:
+            self._notifier = notifier
+            self.autonomy.notifier = notifier
 
     # -- handlers --------------------------------------------------------
     def _register_handlers(self) -> None:
@@ -151,6 +311,13 @@ class RuntimeController:
         self.scheduler.register(KIND_QUESTION_REVIEW, self._handle_questions)
         self.scheduler.register(KIND_CONTEXT_PREPARATION, self._handle_prepare)
         self.scheduler.register(KIND_APP_MAINTENANCE, self._handle_maintenance)
+        self.scheduler.register(KIND_WORK_REVIEW, self._handle_work_review)
+        self.scheduler.register(KIND_MEMORY_REVIEW, self._handle_memory_review)
+        self.scheduler.register(KIND_EXPERIENCE_REVIEW, self._handle_experience_review)
+        self.scheduler.register(KIND_SELF_REVIEW, self._handle_self_review)
+        self.scheduler.register(KIND_KNOWLEDGE_GAP, self._handle_knowledge_gap)
+        self.scheduler.register(KIND_TEST_RUN, self._handle_test_run)
+        self.scheduler.register(KIND_SELF_IMPROVEMENT, self._handle_self_improvement)
 
     def _handle_reading(self, task: BackgroundTask) -> Dict[str, Any]:
         reader = self.reader
@@ -203,6 +370,149 @@ class RuntimeController:
         removed = self.task_store.clear_terminal()
         return {"status": task_mod.COMPLETED, "detail": f"cleared={removed}"}
 
+    # -- autonomous review/self-improvement handlers ---------------------
+    # These are read-only reviews over Astra's real state. They record findings
+    # as *outcomes/questions*, never as durable self-knowledge, and they never
+    # promote a generated theory about her own implementation into authority.
+    def _handle_work_review(self, task: BackgroundTask) -> Dict[str, Any]:
+        work_id = str(task.payload.get("work_id") or "").strip() or None
+        if self.store is None:
+            return {"status": task_mod.COMPLETED, "detail": "no store"}
+        try:
+            records = self.store.get_work_context(work_id) if work_id else []
+        except Exception as exc:
+            return {"status": task_mod.FAILED, "detail": f"work review failed: {exc}"}
+        return {"status": task_mod.COMPLETED,
+                "detail": f"reviewed work {work_id or '(none)'}: {len(records)} record(s)",
+                "result": {"count": len(records), "work_id": work_id}}
+
+    def _handle_memory_review(self, task: BackgroundTask) -> Dict[str, Any]:
+        if self.store is None:
+            return {"status": task_mod.COMPLETED, "detail": "no store"}
+        try:
+            questions = self.store.get_questions(status="active")
+            contradictions = 0
+            for model in ("self", "roum"):
+                for mem in self.store.get_active_memories(model):
+                    if mem.get("contradiction_id") or mem.get("conflict"):
+                        contradictions += 1
+        except Exception as exc:
+            return {"status": task_mod.FAILED, "detail": f"memory review failed: {exc}"}
+        detail = f"{len(questions)} open question(s), {contradictions} flagged conflict(s)"
+        return {"status": task_mod.COMPLETED, "detail": detail,
+                "result": {"count": len(questions)},
+                "importance": 0.45 if contradictions else 0.35}
+
+    def _handle_experience_review(self, task: BackgroundTask) -> Dict[str, Any]:
+        if self.store is None or not callable(getattr(self.store, "get_experiences", None)):
+            return {"status": task_mod.COMPLETED, "detail": "no store"}
+        try:
+            experiences = self.store.get_experiences()
+        except Exception as exc:
+            return {"status": task_mod.FAILED, "detail": f"experience review failed: {exc}"}
+        # Report the count as an observation, never as proof of learning.
+        return {"status": task_mod.COMPLETED,
+                "detail": f"reviewed {len(experiences)} recorded experience(s)",
+                "result": {"count": len(experiences)},
+                "importance": 0.4}
+
+    def _handle_self_review(self, task: BackgroundTask) -> Dict[str, Any]:
+        # Review recent behaviour for recurring failures using the kill-safe
+        # ledger (not conversational guesses). Read-only; proposes nothing.
+        recent = self.ledger.entries(limit=40) if self.ledger else []
+        failures = [e for e in recent if e.get("status") in
+                    (task_mod.FAILED, task_mod.BLOCKED, task_mod.MISSED)]
+        return {"status": task_mod.COMPLETED,
+                "detail": f"{len(failures)} recent failure(s) in the last {len(recent)} outcome(s)",
+                "result": {"count": len(failures)},
+                "importance": 0.5 if len(failures) >= 3 else 0.4}
+
+    def _handle_knowledge_gap(self, task: BackgroundTask) -> Dict[str, Any]:
+        # Identify gaps from real state: unresolved questions and unfinished
+        # works. It never invents a knowledge source or fetches the network.
+        gaps = []
+        try:
+            if self.store is not None:
+                gaps = list(self.store.get_questions(status="active") or [])
+        except Exception:
+            gaps = []
+        try:
+            works = self.library.list_works() if self.library is not None else []
+        except Exception:
+            works = []
+        unfinished = [w for w in works if isinstance(w, dict) and not w.get("finished")]
+        detail = f"{len(gaps)} open question(s), {len(unfinished)} unfinished work(s)"
+        return {"status": task_mod.COMPLETED, "detail": detail,
+                "result": {"count": len(gaps)},
+                "importance": 0.5 if gaps else 0.35}
+
+    def _handle_test_run(self, task: BackgroundTask) -> Dict[str, Any]:
+        """Run the project's own test suite as a bounded, sandboxed evaluation.
+
+        This is an *evaluation* activity, not a change: it runs the code's own
+        checks read-only and reports the result. It never modifies source and
+        never claims improvement from a passing run.
+        """
+        import subprocess
+        import sys
+        from . import paths
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-m", "tests"], cwd=paths.source_root(),
+                capture_output=True, text=True,
+                timeout=float(self.config.get("autonomy", {}).get("test_timeout_seconds", 300))
+                if isinstance(self.config.get("autonomy"), dict) else 300.0)
+        except Exception as exc:
+            return {"status": task_mod.FAILED, "detail": f"test run failed: {exc}"}
+        ok = proc.returncode == 0
+        tail = (proc.stdout or proc.stderr or "").strip().splitlines()[-1:] or [""]
+        return {"status": task_mod.COMPLETED if ok else task_mod.FAILED,
+                "detail": f"tests {'passed' if ok else 'FAILED'}: {tail[0][:120]}",
+                "result": {"summary": "tests passed" if ok else "tests failed"},
+                "importance": 0.7 if not ok else 0.4}
+
+    def _handle_self_improvement(self, task: BackgroundTask) -> Dict[str, Any]:
+        """Draft an improvement *proposal* for human approval; change nothing.
+
+        The proposal is recorded durably (so it can be acknowledged or approved
+        later) and as an outcome (and, if warranted, a message), never applied.
+        Core identity, boundaries, credentials, permissions and source code are
+        explicitly out of scope for autonomous change; a proposal that would
+        touch them is recorded in a protected scope and flagged as requiring
+        approval, so it can never proceed on its own.
+        """
+        proposals = []
+        try:
+            entries = self.ledger.entries(limit=40) if self.ledger else []
+        except Exception:
+            entries = []
+        failures = [e for e in entries if e.get("status") in
+                    (task_mod.FAILED, task_mod.BLOCKED)]
+        if failures:
+            proposals.append(f"Review {len(failures)} recurring background failure(s)")
+
+        recorded = []
+        for title in proposals:
+            proposal = proposal_mod.ImprovementProposal(
+                title=title,
+                scope=proposal_mod.SCOPE_ROUTINE,
+                evidence=f"{len(failures)} failed/blocked outcome(s) in the recent ledger",
+                proposed_change="Surface the recurring failures for review; no code "
+                                "or configuration is changed automatically.",
+                source_task_id=task.id,
+            )
+            stored = self.proposals.add(proposal) if self.proposals else None
+            if stored is not None:
+                recorded.append(stored.id)
+
+        summary = ("; ".join(proposals) if proposals
+                   else "No improvement proposals at this time (nothing evidenced).")
+        return {"status": task_mod.COMPLETED,
+                "detail": summary,
+                "result": {"summary": summary, "count": len(recorded),
+                           "importance": 0.55 if proposals else 0.3},
+                "importance": 0.55 if proposals else 0.3}
+
     # -- seeding recurring work -----------------------------------------
     def seed(self) -> None:
         """Enqueue the routine background work, deduped by the store.
@@ -237,8 +547,21 @@ class RuntimeController:
 
     def _loop(self) -> None:
         self.seed()
+        # Materialize configured schedules once at startup so a schedule that
+        # came due while the runtime was down is handled on return, honestly.
+        self._materialize_schedules()
+        # Sample the machine once so startup reads real numbers, not a guess.
+        self._sample_machine()
         while not self._stop.is_set():
             try:
+                # Recognise a machine suspend (or an imminent one) before doing
+                # anything: sleeping alongside the computer is the honest
+                # behaviour, and a resume must not be treated as active time.
+                self._handle_power()
+                # Autonomous cadence: schedules, planned work and (optionally)
+                # proactive messages. This is independent of whether a console
+                # is open and of the SLEEP/ACTIVE state.
+                self._maybe_autonomous_wake()
                 if self.state.is_sleeping():
                     # Re-seed so a drained queue refills while asleep. Cheap: the
                     # task store's dedupe means only genuinely missing kinds are
@@ -249,10 +572,94 @@ class RuntimeController:
                 pass  # a worker must never take down the runtime
             self._stop.wait(self.poll_seconds)
 
+    def _sample_machine(self) -> None:
+        """Sample the machine once (bounded, read-only)."""
+        try:
+            self.machine.sample()
+        except Exception:
+            pass
+
+    def _handle_power(self) -> None:
+        """Sleep alongside the machine and re-orient on resume.
+
+        Detects a suspend from the machine's own uptime vs. the process clock
+        (see :mod:`astra.machine`): on a detected suspend Astra SLEEPs, so the
+        gap is not mistaken for active time and she does not run scheduled work
+        through a period the computer was off. On resume, work stays
+        conservative until the machine is measured warm and calm again.
+        """
+        sample = None
+        try:
+            sample = self.machine.sample()
+        except Exception:
+            return
+        if not self.power_cfg.get("sleep_with_computer", True):
+            return
+        suspended = getattr(sample, "suspended_seconds", None)
+        if suspended:
+            self._last_suspend_seconds = float(suspended)
+            try:
+                self.ledger.record(
+                    task_id="power:suspend", kind="power",
+                    status=task_mod.COMPLETED,
+                    detail=f"machine suspended ~{int(suspended)}s; Astra slept alongside it")
+            except Exception:
+                pass
+            if not self.state.is_sleeping():
+                self.state.set_state(runtime_state.SLEEP,
+                                     reason=runtime_state.REASON_POWER)
+            if self.power_cfg.get("wake_on_resume", False):
+                # Opt-in: re-arm as ACTIVE on resume. Default is to stay asleep
+                # until a human speaks, which is the least presumptuous choice.
+                self.wake(reason=runtime_state.REASON_LIFECYCLE)
+
+    def _materialize_schedules(self) -> None:
+        configured = []
+        auto_cfg = self.config.get("autonomy")
+        if isinstance(auto_cfg, dict):
+            configured = auto_cfg.get("schedules") or []
+        try:
+            self.schedule_driver.materialize(configured)
+        except Exception:
+            pass
+
+    def _maybe_autonomous_wake(self) -> None:
+        """Run the autonomy driver on its cadence (bounded, never blocking)."""
+        now = datetime.now(timezone.utc)
+        last = self._last_auto_wake
+        if last is not None and (now - last).total_seconds() < self._auto_wake_seconds:
+            return
+        self._last_auto_wake = now
+        user_active = self._user_present(now)
+        try:
+            self.autonomy.wake(user_active=user_active, now=now)
+        except Exception:
+            pass
+        # Headless idle policy: with no console and no recent interaction, a
+        # *policy* (not background work) may put her to sleep so the sleep-only
+        # opportunistic work still gets a turn. A user message always wakes her.
+        if self.think_only and self.idle_sleep_seconds > 0 and not user_active:
+            if not self.state.is_sleeping():
+                self.state.set_state(runtime_state.SLEEP,
+                                     reason=runtime_state.REASON_IDLE_POLICY)
+
+    def _user_present(self, now: datetime) -> bool:
+        """Whether a human has interacted recently (in-memory marker only)."""
+        if not self.last_interaction:
+            return False
+        try:
+            stamp = datetime.fromisoformat(self.last_interaction)
+        except (TypeError, ValueError):
+            return False
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        return (now - stamp).total_seconds() < max(10.0, self.idle_sleep_seconds)
+
     def stop(self, timeout: float = 2.0) -> None:
         """Stop the worker cleanly and flush. Safe to call repeatedly."""
         self._stop.set()
         self.scheduler.stop()
+        self.scheduled_scheduler.stop()
         thread = self._thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=timeout)
@@ -286,16 +693,114 @@ class RuntimeController:
         lines.append(f"Background tasks: " + ", ".join(
             f"{k}={v}" for k, v in sorted(counts.items()) if v) or "none")
         lines.append(f"File decisions waiting: {open_decisions}")
+        pcounts = self.proposals.counts()
+        lines.append(f"Improvement proposals open: "
+                     f"{pcounts.get(proposal_mod.P_OPEN, 0)}"
+                     f" (approved {pcounts.get(proposal_mod.P_APPROVED, 0)})")
         if self.proactive.muted:
             lines.append("Proactive messages: muted")
         report = self.scheduler.last_report or {}
         if report:
             lines.append(f"Last cycle: {self.scheduler.last_reason} "
                          f"({report.get('tasks', 0)} tasks)")
+        snap = self.machine_snapshot()
+        if snap:
+            cpu = snap.get("cpu_load")
+            mem = snap.get("memory_pressure")
+            lines.append(
+                "Machine: "
+                f"cpu={'?' if cpu is None else f'{cpu * 100:.0f}%'} "
+                f"mem={'?' if mem is None else f'{mem * 100:.0f}%'} "
+                f"{'efficiency-mode' if snap.get('efficiency_mode') else 'ready'}")
+            if snap.get("suspended_seconds"):
+                lines.append(f"  last suspend: ~{int(snap['suspended_seconds'])}s "
+                             "(slept alongside the computer)")
         return "\n".join(lines)
+
+    def autonomy_report(self) -> str:
+        """A truthful, runtime-and-record-based autonomous-status view."""
+        lines = ["Autonomy:"]
+        snap = self.autonomy.snapshot()
+        lines.append(f"  activity: {'paused' if snap['paused'] else 'running'}"
+                     f" (enabled={snap['enabled']}, planning={snap['planning_enabled']})")
+        lines.append(f"  last wake: {snap.get('last_wake_at') or 'never'}")
+        notif = self.notifications.snapshot()
+        lines.append(
+            "  notifications: "
+            f"{'muted' if notif['muted'] else ('paused' if notif['paused'] else 'on')}"
+            f", sent {notif['delivered_today']}/{notif['max_per_day']} today"
+            f", {notif['delivered_in_interval']}/{notif['max_per_interval']} this interval")
+        if notif.get("in_quiet_hours"):
+            lines.append("  (quiet hours: active)")
+        lines.append(f"  pending digest entries: {notif['pending_digest']}")
+        scheduled = self.task_store.scheduled()
+        if scheduled:
+            lines.append("Scheduled activities:")
+            for task in scheduled[:8]:
+                lines.append(f"  [{task.id}] {task.kind} due {task.due_at or task.next_due_at} "
+                             f"({sched.describe(task.schedule or {})})")
+        else:
+            lines.append("Scheduled activities: none")
+        last = self._last_completed()
+        lines.append(f"Last completed activity: {last or 'none recorded'}")
+        return "\n".join(lines)
+
+    def discord_report(self, discord: Any) -> str:
+        if discord is None:
+            return "Discord: not configured"
+        diag = discord.diagnostics()
+        lines = ["Discord:"]
+        lines.append(f"  connected: {diag['connected']}")
+        lines.append(f"  last successful poll: {diag.get('last_fetch_ok_at') or 'never'}")
+        lines.append(f"  last proactive send: {diag.get('last_proactive_at') or 'never'}")
+        lines.append(f"  inbound delivered={diag['inbound_delivered']} "
+                     f"failed={diag['inbound_failed']}")
+        d = diag.get("deliveries") or {}
+        lines.append(f"  proactive deliveries tracked={d.get('tracked', 0)} "
+                     f"delivered={d.get('delivered', 0)} failed={d.get('failed', 0)}")
+        if diag.get("last_error"):
+            lines.append(f"  last error: {diag['last_error']}")
+        return "\n".join(lines)
+
+    def _last_completed(self) -> Optional[str]:
+        for entry in reversed(self.ledger.entries(limit=50)):
+            if entry.get("status") == task_mod.COMPLETED:
+                return f"{entry.get('kind')} @ {entry.get('at')}"
+        return None
+
+    def pause_activity(self, paused: bool = True) -> str:
+        self.autonomy.set_paused(paused)
+        return "Autonomous activity paused." if paused else "Autonomous activity resumed."
+
+    def pause_notifications(self, paused: bool = True) -> str:
+        self.notifications.set_paused(paused)
+        return ("Proactive notifications paused (activity continues)." if paused
+                else "Proactive notifications resumed.")
 
     def sleep_log(self, limit: int = 12) -> str:
         return self.ledger.render(limit)
+
+    def power_report(self) -> str:
+        """A truthful, numeric view of machine resources and power behaviour."""
+        snap = self.machine_snapshot()
+        if not snap:
+            return "Machine: not measurable on this platform."
+        def pct(value: Any) -> str:
+            return "?" if value is None else f"{float(value) * 100:.0f}%"
+        lines = ["Machine and power:"]
+        lines.append(f"  cpu: {pct(snap.get('cpu_load'))} "
+                     f"memory: {pct(snap.get('memory_pressure'))}")
+        up = snap.get("uptime_seconds")
+        lines.append(f"  uptime: {'?' if up is None else f'{up / 3600:.1f}h'}")
+        lines.append(f"  ready for heavy work: {snap.get('ready_for_work')} "
+                     f"(efficiency mode: {snap.get('efficiency_mode')})")
+        lines.append(f"  startup_efficiency={self.power_cfg['startup_efficiency']} "
+                     f"sleep_with_computer={self.power_cfg['sleep_with_computer']} "
+                     f"wake_on_resume={self.power_cfg['wake_on_resume']}")
+        if self._last_suspend_seconds:
+            lines.append(f"  last suspend: ~{int(self._last_suspend_seconds)}s "
+                         "(Astra slept alongside the computer)")
+        return "\n".join(lines)
 
     def pending_decisions_text(self, limit: int = 8) -> str:
         return self.decisions.render_open(limit)
@@ -400,6 +905,28 @@ class ApplicationRouter:
             return {"text": self._proactive_command(parts[1:]), "handled": True,
                     "source": source}
 
+        if command in ("/autonomy", "/autonomous"):
+            return {"text": self._autonomy_command(parts[1:]), "handled": True,
+                    "source": source}
+
+        if command in ("/notifications", "/notify"):
+            return {"text": self._notifications_command(parts[1:]), "handled": True,
+                    "source": source}
+
+        if command == "/discord":
+            return {"text": controller.discord_report(self.session.discord),
+                    "handled": True, "source": source}
+
+        if command == "/proposals":
+            return {"text": self._proposals_command(parts[1:]), "handled": True,
+                    "source": source}
+
+        if command in ("/power", "/machine"):
+            return {"text": controller.power_report(), "handled": True, "source": source}
+
+        if command == "/schedules":
+            return {"text": self._schedules_text(), "handled": True, "source": source}
+
         if command == "/scheduler":
             diag = controller.scheduler.diagnostics()
             return {"text": f"Scheduler: enabled={diag['enabled']} "
@@ -448,6 +975,88 @@ class ApplicationRouter:
             self.controller.proactive.set_muted(False)
             return "Proactive messages unmuted."
         return "Usage: /proactive [mute|unmute]"
+
+    def _autonomy_command(self, args: List[str]) -> str:
+        controller = self.controller
+        if not args:
+            return controller.autonomy_report()
+        verb = args[0].lower()
+        if verb in ("pause", "stop"):
+            # Pausing activity does not touch notifications, and vice versa.
+            return controller.pause_activity(True)
+        if verb in ("resume", "start"):
+            return controller.pause_activity(False)
+        if verb == "now":
+            # One bounded wake, on demand, for verification.
+            report = controller.autonomy.wake(now=datetime.now(timezone.utc))
+            return ("Autonomy wake:\n" +
+                    "\n".join(f"  {k}: {v}" for k, v in report.items()))
+        return ("Usage: /autonomy [pause|resume|now]\n\n" +
+                controller.autonomy_report())
+
+    def _notifications_command(self, args: List[str]) -> str:
+        controller = self.controller
+        if not args:
+            return controller.autonomy_report()
+        verb = args[0].lower()
+        if verb in ("pause", "off", "hold"):
+            return controller.pause_notifications(True)
+        if verb in ("resume", "on"):
+            return controller.pause_notifications(False)
+        if verb == "mute":
+            controller.notifications.set_muted(True)
+            return "Proactive notifications muted."
+        if verb == "unmute":
+            controller.notifications.set_muted(False)
+            return "Proactive notifications unmuted."
+        return "Usage: /notifications [pause|resume|mute|unmute]"
+
+    def _schedules_text(self) -> str:
+        tasks = self.controller.task_store.scheduled()
+        if not tasks:
+            return "No scheduled activities configured."
+        lines = ["Scheduled activities:"]
+        for task in tasks[:20]:
+            lines.append(f"  [{task.id}] {task.kind} due {task.due_at or task.next_due_at}"
+                         f" :: {sched.describe(task.schedule or {})}")
+        return "\n".join(lines)
+
+    def _proposals_command(self, args: List[str]) -> str:
+        """Inspect or resolve durable improvement proposals.
+
+        Listing and acknowledging change no code; approving only flips a status
+        that a separate human-driven step would consume. Nothing here applies a
+        proposal, and nothing here can touch identity, boundaries, credentials,
+        permissions or source code.
+        """
+        store = self.controller.proposals
+        if not args:
+            return store.render_open()
+        verb = args[0].lower()
+        if verb in ("all", "history"):
+            items = store.all()
+            if not items:
+                return "No improvement proposals have been recorded."
+            return "\n".join(["Improvement proposals:"] +
+                             [f"  {p.public_line()}" for p in items[-20:]])
+        if verb in ("ack", "acknowledge", "approve", "decline", "reject"):
+            if len(args) < 2:
+                return f"Usage: /proposals {verb} <proposal_id>"
+            status = {"ack": proposal_mod.P_ACKNOWLEDGED,
+                      "acknowledge": proposal_mod.P_ACKNOWLEDGED,
+                      "approve": proposal_mod.P_APPROVED,
+                      "decline": proposal_mod.P_DECLINED,
+                      "reject": proposal_mod.P_DECLINED}[verb]
+            note = " ".join(args[2:]).strip()
+            item = store.set_status(args[1], status, note=note)
+            if item is None:
+                return f"No proposal {args[1]}."
+            if status == proposal_mod.P_APPROVED and item.requires_approval:
+                return (f"Approved {item.id} (scope {item.scope}). This is a "
+                        "recorded decision only; the change is applied by a "
+                        "separate, deliberate step, never by the runtime.")
+            return f"{item.public_line()}"
+        return "Usage: /proposals [a|all|ack|approve|decline <proposal_id>]"
 
     # -- proactive surfacing --------------------------------------------
     def proactive_candidates(self, *, user_active: bool = False,

@@ -134,6 +134,7 @@ def from_affect(state: Any) -> Dict[str, Any]:
     for key in list(modulation):
         modulation[key] = round(_clamp(modulation[key]), 4)
     modulation["reasons"] = reasons
+    _attach_state(modulation, state)
     return modulation
 
 
@@ -231,12 +232,76 @@ def reading_modifiers(modulation: Dict[str, Any]) -> Dict[str, Any]:
     enthusiasm = _num(modulation.get("enthusiasm", 0.5))
     interest = _num(modulation.get("interest", 0.5))
     hesitation = _num(modulation.get("hesitation", 0.0))
-    # Map the derived drive onto the existing reading inputs (0..1).
+    sad = _num(modulation.get("_sad", 0.0))
+    # Map the derived drive onto the existing reading inputs (0..1). Sadness
+    # lowers reported concentration and raises reported weary directly, so a sad
+    # state slows or stands down reading through the *existing* arithmetic
+    # rather than through a new gate.
+    concentration = _clamp((energy + enthusiasm) / 2.0 - 0.5 * sad)
+    weary = _clamp(hesitation + 0.6 * sad)
     return {
-        "engagement": round(_clamp((energy + interest) / 2.0), 4),
-        "weary": round(_clamp(hesitation), 4),
-        "concentration": round(_clamp((energy + enthusiasm) / 2.0), 4),
+        "engagement": round(_clamp((energy + interest) / 2.0 - 0.4 * sad), 4),
+        "weary": round(weary, 4),
+        "concentration": round(concentration, 4),
     }
+
+
+def activity_bias(modulation: Dict[str, Any]) -> Dict[str, Any]:
+    """How the current state should shape *what* Astra chooses to do.
+
+    This is the generalisation of ``reading_modifiers``: rather than only
+    influencing reading, the same state scales the *effort she is willing to
+    spend* and *how much she is willing to take on* across every activity. It is
+    a pure projection of the modulation (no new store), so the behaviour layer
+    remains the single place state becomes conduct.
+
+    Returns ``{effort, take_on, prefer_light, note}``:
+
+    * ``effort`` (0..1) - how much she can bring to a task; a weary/sad/flat
+      state lowers it, a warm one raises it.
+    * ``take_on`` (0..1) - how much new work she will accept in one pass; a low
+      state takes on less rather than starting many things.
+    * ``prefer_light`` - true when she should favour lighter maintenance over
+      heavy/investigative work, so a bad day does not produce deep effort.
+    * ``note`` - a plain-language reason, or ``""``.
+    """
+    if not isinstance(modulation, dict):
+        return {"effort": 0.5, "take_on": 0.5, "prefer_light": False, "note": ""}
+    energy = _num(modulation.get("energy", 0.5))
+    initiative = _num(modulation.get("initiative", 0.5))
+    enthusiasm = _num(modulation.get("enthusiasm", 0.5))
+    persistence = _num(modulation.get("persistence", 0.5))
+    interest = _num(modulation.get("interest", 0.5))
+    hesitation = _num(modulation.get("hesitation", 0.0))
+    brevity = _num(modulation.get("brevity", 0.0))
+    sad = _num(modulation.get("_sad", 0.0))
+
+    effort = _clamp((energy + persistence + enthusiasm) / 3.0 - 0.4 * sad - 0.3 * hesitation)
+    take_on = _clamp((initiative + enthusiasm + interest) / 3.0 - 0.5 * sad - 0.2 * brevity)
+    prefer_light = effort <= 0.4 or sad >= 0.4
+    note = ""
+    reasons = modulation.get("reasons") or []
+    if reasons:
+        note = str(reasons[0])
+    return {"effort": round(effort, 4), "take_on": round(take_on, 4),
+            "prefer_light": bool(prefer_light), "note": note}
+
+
+# The low mood that stands the reader down harder is carried on the modulation
+# privately (leading underscore) so it does not become a second public surface.
+def _attach_state(modulation: Dict[str, Any], state: Any) -> Dict[str, Any]:
+    """Record the raw sadness on the modulation for the readers that need it.
+
+    Kept private (``_sad``) and derived only from the affect state passed in, so
+    it is not a new stored value and not rendered in the prompt.
+    """
+    try:
+        diag = affect_mod.diagnostics(state)
+        modulation["_sad"] = round(_clamp(_num(diag.get("sad"))), 4)
+    except Exception:
+        modulation.setdefault("_sad", 0.0)
+    return modulation
+
 
 
 def prompt_block(modulation: Dict[str, Any]) -> Optional[str]:

@@ -315,6 +315,9 @@ class ChatSession:
         # is reached without slash syntax.
         self._menu_registry: Any = None
         self._menu_path: List[Any] = []
+        # Headless "think-only" flag, set by build_session for a persistent
+        # background runtime with no interactive console.
+        self.think_only = False
 
     # -- administrative menu ------------------------------------------------
     def _registry(self) -> Any:
@@ -827,6 +830,30 @@ class ChatSession:
         self._control_thread = threading.Thread(
             target=_watch, name="astra-control", daemon=True)
         self._control_thread.start()
+
+    def _run_headless(self) -> None:
+        """Run with no interactive console until asked to stop.
+
+        The background runtime and the Discord transport are the work; this loop
+        only keeps the process alive and periodically flushes, so a persistent
+        runtime does not depend on a console being open. It exits cleanly when
+        the control watcher requests a stop/restart (which calls ``os._exit``
+        after flushing) or on a signal.
+        """
+        self.note_activity()
+        while True:
+            try:
+                time.sleep(1.0)
+                # A periodic light flush keeps any dirty model durable even if
+                # no turn has happened; it is cheap when nothing is dirty.
+                store = getattr(self.orchestrator, "store", None)
+                if store is not None and callable(getattr(store, "flush", None)):
+                    store.flush()
+            except KeyboardInterrupt:
+                self._emit("\nHeadless runtime stopping.")
+                return
+            except Exception:
+                time.sleep(1.0)
 
     def _flush_and_exit(self) -> None:
         """Flush the store, then exit the process."""
@@ -1734,12 +1761,18 @@ class ChatSession:
         self._emit("=" * 58)
         self._emit("  Astra - Local Companion Core")
         self._emit("  Backend: Ollama (gemma4:e4b)")
-        self._emit("  Type /help for memory inspection & correction commands.")
-        self._emit("  Type exit or /exit to save and quit.")
+        if self.think_only:
+            self._emit("  Headless runtime: no interactive console.")
+        else:
+            self._emit("  Type /help for memory inspection & correction commands.")
+            self._emit("  Type exit or /exit to save and quit.")
         self._emit("=" * 58)
 
         try:
-            self._run_loop()
+            if self.think_only:
+                self._run_headless()
+            else:
+                self._run_loop()
         finally:
             # Flush queued memory extraction and save the store before tearing
             # anything down, so a turn's memory is not lost when the process
@@ -1843,6 +1876,7 @@ def build_session(
     *,
     enable_command_extraction: bool = True,
     enable_reader: bool = True,
+    think_only: bool = False,
 ) -> ChatSession:
     """Construct a ready-to-run session with the default components.
 
@@ -1898,6 +1932,7 @@ def build_session(
         consolidator=_default_consolidator, reader=reader,
         background_consolidation=True,
     )
+    session.think_only = bool(think_only)
 
     # The persistent background runtime: Active/Sleep, scheduler, tasks, file
     # organization, proactive policy and prepared context. It is the same
@@ -1909,7 +1944,7 @@ def build_session(
     controller = RuntimeController(
         session=session, store=store, data_dir=storage_dir,
         config_dir=config_dir, config=runtime_config, reader=reader,
-        library=library,
+        library=library, think_only=think_only,
     )
     session.controller = controller
     # The orchestrator only *reads* prepared context for its prompt; the
@@ -1926,6 +1961,15 @@ def build_session(
 
     session.discord = build_discord_adapter(router, runtime_config,
                                             data_dir=storage_dir)
+    # The outbound delivery path is the Discord transport's single send method.
+    # Wiring it here is what makes proactive messaging real rather than a prompt
+    # instruction: the autonomy driver calls this after the notification policy
+    # has decided to deliver.
+    if session.discord is not None:
+        controller.set_notifier(
+            lambda text, ref_id, outcome: session.discord.send_proactive(
+                text, ref_id=ref_id,
+                importance=float((outcome or {}).get("importance") or 0.0)))
     return session
 
 
@@ -1959,6 +2003,8 @@ def _cli_parser() -> Any:
                         help="ask a running supervisor to stop Astra gracefully")
     parser.add_argument("--status", action="store_true",
                         help="print the running runtime's version/status and exit")
+    parser.add_argument("--headless", action="store_true",
+                        help="run the background runtime only (no interactive console)")
     parser.add_argument("--config-dir", default="./config")
     parser.add_argument("--runtime-dir", default=None,
                         help="override the runtime state root (ASTRA_RUNTIME_DIR)")
@@ -1999,16 +2045,19 @@ def main(argv: Optional[List[str]] = None) -> None:
         from astra.supervisor import RuntimeSupervisor
         # The supervisor starts the runtime as a plain child; the child watches
         # the control files and flushes before exiting, so a restart is graceful.
+        # Headless is the default under the supervisor: no console is held open,
+        # and closing a CLI window cannot stop the runtime.
+        child = [sys.executable, os.path.abspath(__file__),
+                 "--config-dir", args.config_dir, "--headless"]
         RuntimeSupervisor(
-            command=[sys.executable, os.path.abspath(__file__),
-                     "--config-dir", args.config_dir],
+            command=child,
             runtime_dir=args.runtime_dir,
         ).run()
         return
 
     # The runtime storage is resolved from ASTRA_RUNTIME_DIR (set above when
     # --runtime-dir was given) or the default runtime/ tree; never the checkout.
-    build_session(config_dir=args.config_dir).run()
+    build_session(config_dir=args.config_dir, think_only=args.headless).run()
 
 
 if __name__ == "__main__":

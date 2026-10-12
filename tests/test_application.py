@@ -158,5 +158,61 @@ class TestBuildSessionWiring(unittest.TestCase):
         self.assertGreaterEqual(controller.scheduler.last_report["tasks"], 1)
 
 
+class TestAutonomyCommands(unittest.TestCase):
+    """The visibility/control surface: reports reflect real records, no model."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.storage = os.path.join(self.tmp, "storage")
+        os.makedirs(self.storage)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _session(self):
+        session = main.build_session(config_dir=self.tmp, storage_dir=self.storage,
+                                     enable_reader=False)
+        session.orchestrator.query_gemma = lambda *a, **k: "stub reply"
+        return session
+
+    def test_autonomy_and_discord_reports_do_not_call_the_model(self):
+        session = self._session()
+
+        def explode(*a, **k):
+            raise AssertionError("status reports must not call the model")
+
+        session.orchestrator.query_gemma = explode
+        for command in ("/autonomy", "/notifications", "/discord", "/schedules",
+                        "/autonomy now"):
+            out = session.router.handle(command)["text"]
+            self.assertIsInstance(out, str)
+
+    def test_pause_activity_does_not_pause_notifications(self):
+        session = self._session()
+        session.router.handle("/autonomy pause")
+        self.assertTrue(session.controller.autonomy.paused)
+        # Notifications remain un-paused: the two controls are independent.
+        self.assertFalse(session.controller.notifications.paused)
+
+    def test_pause_notifications_does_not_pause_activity(self):
+        session = self._session()
+        session.router.handle("/notifications pause")
+        self.assertTrue(session.controller.notifications.paused)
+        self.assertFalse(session.controller.autonomy.paused)
+
+    def test_headless_flag_wires_think_only(self):
+        session = main.build_session(config_dir=self.tmp, storage_dir=self.storage,
+                                     enable_reader=False, think_only=True)
+        self.assertTrue(session.think_only)
+
+    def test_discord_disabled_without_token_env(self):
+        # No bot token in the environment -> no adapter, no network attempt.
+        os.environ.pop("DISCORD_BOT_TOKEN", None)
+        session = self._session()
+        # The configured channel exists but no token, so nothing is built.
+        self.assertIsNone(session.discord)
+        self.assertIn("not configured", session.controller.discord_report(None).lower())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

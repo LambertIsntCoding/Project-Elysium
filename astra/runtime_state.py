@@ -43,13 +43,17 @@ RUNTIME_STATES = (ACTIVE, SLEEP)
 REASON_HUMAN_COMMAND = "human_command"       # Roum/CLI explicitly asked
 REASON_LIFECYCLE = "lifecycle"               # application startup/shutdown decision
 REASON_IDLE_POLICY = "idle_policy"           # a configured idle policy fired
+REASON_POWER = "power"                       # machine suspended / about to sleep
 REASON_HUMAN_MESSAGE = "human_message"       # a human spoke: wake
 REASON_HUMAN_WAKE = "human_wake"             # explicit wake command
 REASON_TASK = "background_task"              # must NOT wake her (guarded)
 
 # The only reasons that may move ACTIVE -> SLEEP. A background task is absent by
-# construction: no scheduler cycle can put her to sleep.
-_SLEEP_CAUSES = (REASON_HUMAN_COMMAND, REASON_LIFECYCLE, REASON_IDLE_POLICY)
+# construction: no scheduler cycle can put her to sleep. A power transition is
+# included because sleeping alongside the machine is the honest behaviour, and
+# it is never triggered by ordinary work.
+_SLEEP_CAUSES = (REASON_HUMAN_COMMAND, REASON_LIFECYCLE, REASON_IDLE_POLICY,
+                 REASON_POWER)
 # The only reasons that may move SLEEP -> ACTIVE. All are human/application
 # caused; REASON_TASK is explicitly rejected so work can never wake her.
 _WAKE_CAUSES = (REASON_HUMAN_MESSAGE, REASON_HUMAN_WAKE, REASON_HUMAN_COMMAND,
