@@ -653,10 +653,12 @@ the grounded-outreach wiring adds `tests/test_outreach.py`, 22 cases; the
 non-response adaptation, effective affect decay and honest reading outcomes add
 `tests/test_engagement.py`, 30 cases; the plans-as-intentions view adds
 `tests/test_intentions.py`, 25 cases; the inspection console adds
-`tests/test_inspect_console.py`, 28 cases, including that it shows the library
-without the reader daemon, renders the live screens read-only, and forwards every
-command to a running runtime over the control channel; the self-update engine and
-control channel add `tests/test_update.py`, 21 cases).
+`tests/test_inspect_console.py`, 36 cases, including that it shows the library
+without the reader daemon, renders the live screens read-only, serves the
+read-only `/library-scan` (never refused as a mutation, with `library scan` as
+an alias), checks the remote for `/update` while still refusing `/update apply`,
+and forwards every command to a running runtime over the control channel; the
+self-update engine and control channel add `tests/test_update.py`, 21 cases).
 
 ### Reading progress is measured in words
 
@@ -926,7 +928,7 @@ The invariants:
 
 New tests: `tests/test_infrastructure.py` (12), `tests/test_behavior_admin.py`
 (29, including the full-command-surface menu coverage), and `tests/test_update.py`
-(21, the self-update engine and control channel). Full suite: 1148 tests.
+(21, the self-update engine and control channel). Full suite: 1155 tests.
 
 
 ## Autonomous operation, scheduling, and proactive Discord

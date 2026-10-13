@@ -171,6 +171,50 @@ class TestInspectShowsReadingAndLibrary(_InspectFixture):
                    if before.get(p) != after.get(p)}
         self.assertEqual(changed, set(), f"inspection wrote files: {changed}")
 
+    def test_library_scan_is_a_read_not_a_refusal(self):
+        # /library-scan only lists the books folder (no ingest), so with no
+        # runtime running it must render, not be refused as a mutation.
+        text = self.inspector.handle("/library-scan")
+        self.assertNotIn("not available without a running runtime", text)
+        self.assertIn("BOOKS", text)
+        self.assertIn("/library-scan", self.inspector.available_commands())
+
+    def test_library_scan_alias_reaches_the_scan(self):
+        # The literal "library scan" (no slash) names the same read.
+        text = self.inspector.handle("library scan")
+        self.assertIn("BOOKS", text)
+
+    def test_library_scan_does_not_write(self):
+        before = self._storage_snapshot()
+        self.inspector.handle("/library-scan")
+        after = self._storage_snapshot()
+        changed = {p for p in set(before) | set(after)
+                   if before.get(p) != after.get(p)}
+        self.assertEqual(changed, set(), f"inspection wrote files: {changed}")
+
+
+class TestInspectUpdateCheck(_InspectFixture):
+    """A read-only /update must actually ask the remote, not report "unknown"."""
+
+    def test_update_check_uses_fetch_by_default(self):
+        # No runtime, so the console renders /update itself. It must request a
+        # fetch (a read); fetch=False is what made the remote always unknown.
+        calls = {}
+
+        def fake_report(*, fetch=True, git_runner=None):
+            calls["fetch"] = fetch
+            return "CODE UPDATE\n  status: up to date"
+
+        self.inspector.controller.update_report = fake_report
+        text = self.inspector.handle("/update")
+        self.assertIn("CODE UPDATE", text)
+        self.assertIs(calls.get("fetch"), True)
+
+    def test_update_apply_is_still_refused_without_a_runtime(self):
+        for command in ("/update apply", "/update reset"):
+            text = self.inspector.handle(command)
+            self.assertIn("without a running runtime", text)
+
 
 class TestInspectForwardsToRuntime(_InspectFixture):
     """With a runtime running, the console is a remote control for every command.
@@ -249,6 +293,17 @@ class TestInspectForwardsToRuntime(_InspectFixture):
     def test_bare_word_command_is_accepted_and_forwarded(self):
         # "status" (no slash) names a real command, so it is forwarded.
         self.assertIn("Astra is active", self.inspector.handle("status"))
+
+    def test_library_scan_is_forwarded_to_the_runtime(self):
+        # With a runtime running, /library-scan runs there (same implementation).
+        text = self.inspector.handle("/library-scan")
+        self.assertIn("BOOKS", text)
+
+    def test_library_scan_alias_is_forwarded(self):
+        # "library scan" is canonicalised to /library-scan before forwarding,
+        # so the runtime receives a real command (not the bare /library).
+        text = self.inspector.handle("library scan")
+        self.assertIn("BOOKS", text)
 
 
 class TestInspectLiveScreens(_InspectFixture):

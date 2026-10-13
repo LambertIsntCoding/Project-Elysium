@@ -67,12 +67,21 @@ SESSION_VIEW_METHODS: Tuple[Tuple[str, str], ...] = (
     ("/stats", "_display_stats"),
 )
 
+# Read-only session commands whose method takes an optional argument (unlike the
+# no-arg view methods above). Rendered locally only when no runtime is running;
+# a ``str.split`` of the line is used, so a quoted path with spaces is passed
+# as-is when it has none, and degrades to the default folder otherwise.
+SESSION_COMMAND_METHODS: Tuple[Tuple[str, str], ...] = (
+    ("/library-scan", "_library_scan"),
+    ("/work", "_display_work"),
+)
+
 # Commands that change something. Recognised only to be refused with a pointer
 # to the right place; they are never executed here.
 MUTATING_COMMANDS = {
     "/sleep": "the runtime", "/sleep-mode": "the runtime", "/wake": "the runtime",
     "/read": "the runtime", "/read force": "the runtime", "/read pause": "the runtime",
-    "/read resume": "the runtime", "/library-scan": "the runtime",
+    "/read resume": "the runtime",
     "/reconcile": "the runtime", "/correct": "the runtime", "/forget": "the runtime",
     "/restore": "the runtime", "/approve": "the runtime", "/reject": "the runtime",
     "/defer": "the runtime", "/autonomy pause": "the runtime",
@@ -84,6 +93,13 @@ MUTATING_COMMANDS = {
     "/update apply": "the runtime", "/update reset": "the runtime",
     "/pull apply": "the runtime", "/pull reset": "the runtime",
 }
+
+# Commands that are *read-only* but not offered by ``ROUTER_INSPECT_COMMANDS``:
+# the runtime serves them through the session's own slash handling, so with no
+# runtime running the console renders them itself from the same session views.
+# ``/library-scan`` only lists the books folder - it never ingests - so it is a
+# read, not a mutation (see ``Library.scan_books``); refusing it was a mistake.
+READ_ONLY_SESSION_COMMANDS: Tuple[str, ...] = ("/library-scan", "/work")
 
 EXIT_WORDS = {"exit", "quit", "q", ":q", "/exit", "/quit"}
 
@@ -139,12 +155,15 @@ class Inspector:
     def available_commands(self) -> List[str]:
         return sorted({
             *ROUTER_INSPECT_COMMANDS,
+            *READ_ONLY_SESSION_COMMANDS,
             *(name for name, _ in SESSION_VIEW_METHODS),
             "/help", "/report", "/menu", "/live",
         })
 
     def _known(self, command: str) -> bool:
         if command in ROUTER_INSPECT_COMMANDS:
+            return True
+        if command in READ_ONLY_SESSION_COMMANDS:
             return True
         if any(command == name for name, _ in SESSION_VIEW_METHODS):
             return True
@@ -299,6 +318,9 @@ class Inspector:
         lines.append("  Memory / self / affect views:")
         for command, _ in SESSION_VIEW_METHODS:
             lines.append(f"    {command} [arg]")
+        lines.append("  Library / work views:")
+        for command, _ in SESSION_COMMAND_METHODS:
+            lines.append(f"    {command} [arg]")
         lines.append("  Any other /command is forwarded to the runtime exactly as the")
         lines.append("  console does (mutating commands included, when a runtime is up).")
         lines.append("  exit                 Leave the inspection console")
@@ -337,7 +359,12 @@ class Inspector:
         commands["/scheduler"] = lambda: self._scheduler_text()
         commands["/reader"] = controller.reader_health_report
         commands["/normalize-text"] = lambda: controller.normalize_text_report(apply=False)
-        commands["/update"] = lambda: controller.update_report(fetch=False)
+        # Checking for an update is a read (a fetch updates only Git's
+        # remote-tracking refs, never the working tree or the store), so the
+        # read-only console asks the remote rather than reporting "unknown":
+        # otherwise the local view always claimed it could not reach origin.
+        # Applying an update stays refused below - it rewrites the checkout.
+        commands["/update"] = lambda: controller.update_report(fetch=True)
         return commands
 
     def _scheduler_text(self) -> str:
@@ -403,6 +430,20 @@ class Inspector:
         # into a bogus command, and conversation is never routed at all.
         command = first if first.startswith("/") else "/" + first
 
+        # "library scan [folder]" is the same read as "/library-scan [folder]":
+        # the sub-word names a read-only scan, not the overview. Canonicalise it
+        # so it is forwarded/rendered identically.
+        if command == "/library" and len(tokens) > 1 and tokens[1].lower() in ("scan", "list"):
+            command = "/library-scan"
+            tokens = [command, *tokens[2:]]
+            text = " ".join(tokens)
+        elif command == "/read" and len(tokens) > 1 and tokens[1].lower() in ("scan", "list"):
+            # "/read scan" is the same read-only scan; "/read" with any other
+            # argument (force/pause/resume/add) stays mutating.
+            command = "/library-scan"
+            tokens = [command, *tokens[2:]]
+            text = " ".join(tokens)
+
         # Console-local meta commands (never forwarded): they are about the
         # console itself, and /report & /live are read-only composites.
         if command in ("/help", "/?"):
@@ -447,6 +488,10 @@ class Inspector:
         if method_name:
             return self._call_view(method_name, tokens[1:])
 
+        session_cmd = dict(SESSION_COMMAND_METHODS).get(command)
+        if session_cmd:
+            return self._call_session_command(session_cmd, tokens[1:])
+
         return (f"Unknown inspection command: {command}. "
                 "Type /help for the options.")
 
@@ -460,6 +505,31 @@ class Inspector:
         try:
             try:
                 method(*args)
+            except TypeError:
+                method()
+        except Exception as exc:
+            return f"  (view failed: {exc})"
+        finally:
+            self.session.output_fn = original
+        return "\n".join(str(part) for part in buffer if str(part).strip())
+
+    def _call_session_command(self, method_name: str, args: List[str]) -> str:
+        """Render a read-only session command with an optional argument.
+
+        ``_library_scan`` takes a folder (or ``None``); ``_display_work`` takes
+        a work id (or ``None``). The argument is passed positionally so the
+        default is used when none was given, and output is captured the same way
+        as :meth:`_call_view`.
+        """
+        method = getattr(self.session, method_name, None)
+        if not callable(method):
+            return f"  (this session does not expose {method_name})"
+        buffer: List[str] = []
+        original = getattr(self.session, "output_fn", print)
+        self.session.output_fn = buffer.append
+        try:
+            try:
+                method(args[0] if args else None)
             except TypeError:
                 method()
         except Exception as exc:

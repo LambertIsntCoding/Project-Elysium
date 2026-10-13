@@ -95,7 +95,12 @@ whether a runtime is running:
   read-only views: the same `ChatSession` display methods and `RuntimeController`
   reports the live runtime uses, re-read from the durable stores before each
   command. A command that would change state is *refused* with a pointer to the
-  runtime rather than silently doing nothing.
+  runtime rather than silently doing nothing. Reads that only *look* like they
+  might change something are still served: `/library-scan` lists the books
+  folder and never ingests (so it is rendered, not refused), and `/update`
+  performs a Git *fetch* to answer "is there an update?" - a fetch updates only
+  remote-tracking refs, never the working tree - while `/update apply`/`reset`
+  remain refused because they rewrite the checkout.
 
 In both modes the console never calls the model directly and never opens
 Discord; on a populated runtime it writes nothing (only a first run performs the
