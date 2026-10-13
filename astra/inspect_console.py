@@ -79,6 +79,34 @@ MUTATING_COMMANDS = {
 
 EXIT_WORDS = {"exit", "quit", "q", ":q", "/exit", "/quit"}
 
+# The continuously-refreshing observation pages, rendered read-only here as a
+# single frame (no refresh loop, no snapshot writes). Order is the order shown
+# by a bare ``/live``.
+LIVE_SCREENS: Tuple[str, ...] = ("status", "relationship", "affect")
+
+
+class _ReadOnlySnapshots:
+    """A read-only view over the runtime's captured screen snapshots.
+
+    The live screens read recent snapshots to show direction ("what changed since
+    the last capture"). The inspection console may *read* those, but it must
+    never write one, so ``capture`` is refused rather than silently persisting.
+    """
+
+    def __init__(self, store: Any) -> None:
+        self._store = store
+
+    def recent(self, screen: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        if self._store is None:
+            return []
+        try:
+            return self._store.recent(screen, limit)
+        except Exception:
+            return []
+
+    def capture(self, screen: str, snapshot: Dict[str, Any]) -> Dict[str, Any]:
+        raise RuntimeError("the inspection console is read-only")
+
 
 class Inspector:
     """A read-only façade over a live session's own inspection surfaces."""
@@ -90,13 +118,14 @@ class Inspector:
         self.storage_dir = storage_dir
         self.config_dir = config_dir
         self.lock_path = paths.lock_path()
+        self._live: Optional[Dict[str, Any]] = None
 
     # -- commands --------------------------------------------------------
     def available_commands(self) -> List[str]:
         return sorted({
             *ROUTER_INSPECT_COMMANDS,
             *(name for name, _ in SESSION_VIEW_METHODS),
-            "/help", "/report", "/menu",
+            "/help", "/report", "/menu", "/live",
         })
 
     def _known(self, command: str) -> bool:
@@ -104,7 +133,7 @@ class Inspector:
             return True
         if any(command == name for name, _ in SESSION_VIEW_METHODS):
             return True
-        return command in ("/help", "/report")
+        return command in ("/help", "/report", "/live")
 
     def _mutating(self, command: str, tokens: List[str]) -> Optional[str]:
         if command in MUTATING_COMMANDS:
@@ -212,6 +241,8 @@ class Inspector:
         lines.append("  /report              Full status snapshot (runtime, autonomy,")
         lines.append("                       Discord, schedules, affect, ...)")
         lines.append("  /menu                The same overview, as a table of sections")
+        lines.append("  /live [screen]       Read-only frame of the live screens")
+        lines.append("                       (status | relationship | affect; default all)")
         lines.append("  Inspection reports:")
         for command in ROUTER_INSPECT_COMMANDS:
             lines.append(f"    {command}")
@@ -264,6 +295,52 @@ class Inspector:
         return (f"Scheduler: enabled={diag['enabled']} last={diag['last_reason']} "
                 f"counts={diag['task_counts']}")
 
+    # -- live observation screens (read-only) ----------------------------
+    def _live_screens(self) -> Dict[str, Any]:
+        """The same live screens the admin menu shows, rendered read-only.
+
+        They are the *same* pure renderers the running runtime uses (see
+        :mod:`astra.screens`), so what is watched here cannot drift from what the
+        menu shows. They read the durable stores and, at most, the runtime's
+        captured snapshots for direction - never a model, a thread, or a write.
+        """
+        if self._live is not None:
+            return self._live
+        from . import admin, screens
+
+        # The live screens read recent snapshots for direction. Constructing the
+        # store only *loads* the file (never writes), and the wrapper refuses a
+        # capture, so watching a screen here can never add a snapshot.
+        try:
+            store = admin.SnapshotStore(data_dir=paths.snapshots_dir())
+        except Exception:
+            store = None
+        snapshots = _ReadOnlySnapshots(store)
+        self._live = {
+            "status": lambda: screens.status_render(self.session),
+            "relationship": lambda: screens.relationship_render(self.session),
+            "affect": lambda: screens.affect_render(self.session, snapshots),
+        }
+        return self._live
+
+    def live_text(self, name: Optional[str] = None) -> str:
+        """Render one live screen, or all of them, as a single read-only frame."""
+        self.refresh()
+        screens = self._live_screens()
+        wanted = [name] if name in screens else list(LIVE_SCREENS)
+        blocks: List[str] = []
+        for screen in wanted:
+            render = screens.get(screen)
+            if render is None:
+                continue
+            try:
+                blocks.append("\n".join(render()))
+            except Exception as exc:
+                blocks.append(f"  ({screen} screen unavailable: {exc})")
+        header = ("Read-only snapshot - the live screens refresh in the running "
+                  "runtime (menu -> Relationships & Affect).")
+        return header + "\n\n" + "\n\n".join(blocks) if blocks else header
+
     def handle(self, line: str) -> str:
         """Resolve one input line to its read-only view. Returns the text."""
         text = str(line or "").strip()
@@ -281,6 +358,9 @@ class Inspector:
             return self.snapshot()
         if command == "/menu":
             return self.snapshot()
+        if command == "/live":
+            name = tokens[1].lower() if len(tokens) > 1 else None
+            return self.live_text(name)
 
         refused = self._mutating(command, tokens)
         if refused:

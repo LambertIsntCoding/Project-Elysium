@@ -648,7 +648,8 @@ the grounded-outreach wiring adds `tests/test_outreach.py`, 22 cases; the
 non-response adaptation, effective affect decay and honest reading outcomes add
 `tests/test_engagement.py`, 30 cases; the plans-as-intentions view adds
 `tests/test_intentions.py`, 25 cases; the read-only inspection console adds
-`tests/test_inspect_console.py`, 10 cases).
+`tests/test_inspect_console.py`, 19 cases, including that it shows the library
+without the reader daemon and renders the live screens read-only).
 
 ### Reading progress is measured in words
 
@@ -852,6 +853,24 @@ The invariants:
   - `DiscordHealthStore` (`discord_health.json`) is a tiny best-effort record the
     live adapter writes (throttled) so the console can show whether Discord is
     connected and when it last was, without the console opening a connection.
+  - the **library is attached even though the reader daemon is not**: the library
+    is deterministic and model-free, so ``build_session`` always builds it and
+    attaches it to the session as ``session.library`` (independent of
+    ``enable_reader``/``model_use.reading``). ``/reading`` and ``/library`` then
+    show the durable reading position and ingested works instead of "not
+    attached"; when no daemon is present the reader gate is reported honestly as
+    *disabled* (the live runtime owns the real gate) and the header says so. The
+    orchestrator's read-only ``reader.library`` views get a tiny stand-in
+    (``main._library_view``) so personal-state and the reading prompt block stay
+    correct without a thread. Do not regress this by gating the library on the
+    daemon again.
+  - the **live observation screens are watchable read-only** via ``/live
+    [status|relationship|affect]``. They call the *same* pure renderers
+    (``astra.screens``) the menu uses, so the view cannot drift; the affect
+    screen may read the runtime's captured snapshots for direction but the
+    console wraps the store so a capture is *refused* (``_ReadOnlySnapshots``),
+    never written. There is no refresh loop here - it is a single read-only
+    frame; continuous refresh is the running runtime's job.
 - **Affect is displayed at 0-100 but stored normalized.** `astra/telemetry.py`
   renders the existing `0.0..1.0` accumulators as integers on a 0-100 scale with
   direction and a supplemental qualitative band. This is *display only*: no
@@ -875,7 +894,7 @@ The invariants:
   it". None of this affects whether an interpretation is true.
 
 New tests: `tests/test_infrastructure.py` (12) and `tests/test_behavior_admin.py`
-(29, including the full-command-surface menu coverage). Full suite: 1064 tests.
+(29, including the full-command-surface menu coverage). Full suite: 1076 tests.
 
 
 ## Autonomous operation, scheduling, and proactive Discord
@@ -1037,7 +1056,13 @@ operator guide is `docs/autonomous_operation.md`. Structural invariants:
   from the machine's own uptime versus the process clock; on suspend Astra SLEEPs
   (`REASON_POWER`) so the gap is not treated as active time, and `wake_on_resume`
   is opt-in (default false). Do not decay or sample inside `build_prompt`;
-  machine sampling is a live-loop concern.
+  machine sampling is a live-loop concern. `snapshot()` takes a **fresh**
+  measurement (``sample_now``, which does not disturb suspend bookkeeping) rather
+  than echoing the stored sample, and ``_cpu_measurement`` re-reads once when a
+  provider returns ``None`` on its first read (Windows' cumulative-counter
+  provider needs two reads). Without those, a status/diagnostic read on Windows
+  reported a permanent ``cpu=?`` from one stale ``None``. Never "fix" this by
+  making an unmeasurable value a number - ``None`` stays ``None``.
 - **A durable proposal gates the changes that need approval.** `astra/proposals.py`
   records improvement proposals with a scope; protected scopes (identity,
   boundaries, credentials, permissions, source code) are flagged

@@ -141,7 +141,23 @@ def status_render(session: Any) -> List[str]:
             lines.append(f"  last read: {last_cycle.get('outcome')} "
                          f"({last_cycle.get('words')} words at {last_cycle.get('at')})")
     else:
-        lines.append("  background reading: (not attached)")
+        # No reader daemon here (reading disabled, or the read-only inspection
+        # console), but the library still owns the durable reading position.
+        library = getattr(session, "library", None)
+        if library is None:
+            library = getattr(getattr(orch, "reader", None), "library", None)
+        if library is not None:
+            state = library.current_state()
+            if state.get("work_id"):
+                words_read, total_words = library.word_measure(state)
+                lines.append(f"  background reading: daemon not attached "
+                             f"(position saved)")
+                lines.append(f"    at: {state.get('title') or state.get('work_id')} "
+                             f"({words_read:,}/{total_words:,} words)")
+            else:
+                lines.append("  background reading: (nothing queued)")
+        else:
+            lines.append("  background reading: (not attached)")
 
     # Current work item + elapsed time.
     works = orch._works() if orch is not None and hasattr(orch, "_works") else []

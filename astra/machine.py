@@ -231,7 +231,7 @@ class MachineState:
     # -- sampling --------------------------------------------------------
     def sample(self) -> Sample:
         now = self.monotonic()
-        cpu = self._call(self.cpu_provider)
+        cpu = self._cpu_measurement()
         mem = self._call(self.memory_provider)
         up = self._call(self.uptime_provider)
         idle = self._call(self.idle_provider)
@@ -241,6 +241,21 @@ class MachineState:
                         suspended_seconds=suspended)
         self._last = sample
         return sample
+
+    def _cpu_measurement(self) -> Optional[float]:
+        """The CPU fraction, tolerating a provider that needs two reads.
+
+        A cumulative-counter provider (Windows ``GetSystemTimes``) returns
+        ``None`` on its very first read because it has no previous sample to
+        difference against. Rather than persist that ``None`` for the whole
+        runtime, one immediate re-read is taken; the scratch cache is updated by
+        the first call, so the second yields a real fraction. An honestly
+        unmeasurable provider still returns ``None``.
+        """
+        cpu = self._call(self.cpu_provider)
+        if cpu is None:
+            cpu = self._call(self.cpu_provider)
+        return cpu
 
     def _call(self, provider: Optional[Callable[[], Optional[float]]]) -> Optional[float]:
         if provider is None:
@@ -353,9 +368,29 @@ class MachineState:
         """
         return self._call(self.cpu_provider)
 
+    def sample_now(self) -> Sample:
+        """Take a *fresh* measurement without disturbing suspend bookkeeping.
+
+        The stored ``_last`` sample is only refreshed on the runtime's own
+        cadence, so on a platform whose CPU reading needs two reads (Windows) the
+        first sample is ``None`` and every later :meth:`snapshot` would keep
+        reporting that stale ``None``. A status/diagnostic read wants the current
+        value, so this reads the providers again but - like :meth:`cpu_reading` -
+        does not update ``_last`` (which would mask a real suspend from the power
+        path) and does not invent anything: an unmeasurable value is still
+        ``None``.
+        """
+        return Sample(
+            at=self.monotonic(),
+            cpu_load=self._cpu_measurement(),
+            memory_pressure=self._call(self.memory_provider),
+            uptime_seconds=self._call(self.uptime_provider),
+            idle_seconds=self._call(self.idle_provider),
+        )
+
     def snapshot(self) -> Dict[str, Any]:
         """A bounded, JSON-safe view for diagnostics/status (never a memory)."""
-        sample = self._last or self.sample()
+        sample = self.sample_now()
         out = sample.as_dict()
         out.update({
             "ready_for_work": self.ready_for_work(sample),

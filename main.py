@@ -234,6 +234,29 @@ def _default_consolidator(
         print(f"[consolidation skipped: {exc}]")
 
 
+class _LibraryView:
+    """A read-only reader-shaped view over a bare :class:`~astra.library.Library`.
+
+    Used when only the library is attached and the reader daemon is not (the
+    inspection console, or a run with reading disabled). The orchestrator and the
+    display methods expect a reader object with a ``library`` attribute, so this
+    exposes just that - it never calls the model, never starts a thread, and
+    never mutates the library, so the views stay truthful and read-only.
+    """
+
+    def __init__(self, library: Any) -> None:
+        self.library = library
+        self.last_reason = None
+
+    def running(self) -> bool:
+        return False
+
+
+def _library_view(library: Any) -> Any:
+    """A reader-shaped stand-in exposing ``library`` to read-only views."""
+    return _LibraryView(library) if library is not None else None
+
+
 class ChatSession:
     """Routes one line of user input to the right handler."""
 
@@ -248,6 +271,7 @@ class ChatSession:
         consolidator: Optional[Callable[..., None]] = None,
         conversation_id: Optional[str] = None,
         reader: Any = None,
+        library: Any = None,
         model_use: Optional[Any] = None,
         background_consolidation: bool = False,
         checkpoint_every: int = 2,
@@ -264,8 +288,15 @@ class ChatSession:
         # it when Roum is interacting so it yields, but it runs on its own
         # thread and never blocks a turn.
         self.reader = reader
-        if reader is not None:
-            self.orchestrator.reader = reader
+        # The library (books + reading position) is deterministic and owns no
+        # model, so it is a first-class session resource independent of the
+        # reader daemon: the reader uses it when present, and /library, /reading
+        # and the personal-state view read it either way. When only the library
+        # is attached (e.g. the read-only inspection console), a lightweight
+        # stand-in exposes ``library`` to those views without ever running the
+        # model or a background thread.
+        self.library = library or (getattr(reader, "library", None) if reader is not None else None)
+        self.orchestrator.reader = reader if reader is not None else _library_view(self.library)
         # The Elysium root layer always has a handler so an invocation can never
         # fall through into Astra's generation path.
         self.elysium_handler = elysium_handler or ElysiumCommandHandler(elysium)
@@ -1374,14 +1405,38 @@ class ChatSession:
                     _wrap(f"({inquiry.epistemic_of(mem)}) {mem.get('content')}")
                 )
 
+    def _attached_library(self) -> Any:
+        """The library, whether attached directly or reached through the reader."""
+        library = getattr(self, "library", None)
+        if library is None:
+            reader = self.reader
+            library = getattr(reader, "library", None) if reader is not None else None
+        return library
+
     def _display_reading(self) -> None:
         """What Astra is reading, how far, and why the reader is (not) running."""
         reader = self.reader
-        if reader is None:
+        if reader is not None and callable(getattr(reader, "format_diagnostics", None)):
+            self._emit("\n" + reader.format_diagnostics())
+            return
+        # No reader daemon in this session (reading disabled, or the read-only
+        # inspection console): still show the library's own position, which is
+        # the durable truth about what she is reading and how far she got. The
+        # gate cannot be evaluated here without the live runtime, so it is
+        # reported honestly as disabled rather than guessed.
+        library = self._attached_library()
+        if library is None:
             self._emit(_section("BACKGROUND READING"))
             self._emit("  (Reader not attached in this session)")
             return
-        self._emit("\n" + reader.format_diagnostics())
+        state = library.current_state()
+        words_read, total_words = library.word_measure(state)
+        state = dict(state) | {"words_read": words_read, "total_words": total_words}
+        queue = [w.get("work_id") for w in library.list_works() if reading.is_live(w)]
+        self._emit("\n" + reading.format_diagnostics(
+            state, enabled=False, reason=reading.IDLE_DISABLED, work_queue=queue))
+        self._emit("  (Reader daemon runs in the live runtime; showing the saved "
+                   "reading position.)")
 
     def _display_time(self) -> None:
         """Astra's sense of elapsed time: the gap, and what that time contains."""
@@ -1389,8 +1444,7 @@ class ChatSession:
 
         store = self.orchestrator.store
         last_seen = store.last_present() if callable(getattr(store, "last_present", None)) else None
-        reader = self.reader
-        library = getattr(reader, "library", None) if reader is not None else None
+        library = self._attached_library()
         works = library.list_works() if library is not None else []
         questions = [
             m for m in store.get_memories("self", status=None) if inquiry.is_question(m)
@@ -1416,8 +1470,7 @@ class ChatSession:
 
     def _display_library(self) -> None:
         """The local works Astra has ingested, and her position in each."""
-        reader = self.reader
-        library = getattr(reader, "library", None) if reader is not None else None
+        library = self._attached_library()
         if library is None:
             self._emit(_section("LIBRARY"))
             self._emit("  (No library attached in this session)")
@@ -1498,8 +1551,7 @@ class ChatSession:
         without quotes, pass a bare filename and it resolves inside the books
         folder. A title after the path overrides the filename-derived one.
         """
-        reader = self.reader
-        library = getattr(reader, "library", None) if reader is not None else None
+        library = self._attached_library()
         if library is None:
             self._emit("  (No library attached in this session)")
             return
@@ -1534,8 +1586,7 @@ class ChatSession:
         never has to be typed or quoted. ``folder`` overrides the default
         ``<storage>/library/books`` for this scan and the adds that follow it.
         """
-        reader = self.reader
-        library = getattr(reader, "library", None) if reader is not None else None
+        library = self._attached_library()
         if library is None:
             self._emit("  (No library attached in this session)")
             return
@@ -2034,36 +2085,35 @@ def build_session(
         recorder = ElysiumCommandRecorder(cmd_store, CommandExtractor())
 
     # The library (reading position/works) is deterministic and always built, so
-    # /library, /reading and personal-state stay accurate. The *reader daemon* is
-    # the model-invoking part: it reuses the orchestrator's model call and only
-    # ever reads when Roum is idle and no game is running. It is the one feature
-    # that runs the model while Roum is away, so model_use gates it off by
-    # default; an explicit /read command still works even when the daemon is off.
+    # /library, /reading and personal-state stay accurate even when the reader
+    # daemon is off. The *reader daemon* is the model-invoking part: it reuses
+    # the orchestrator's model call and only ever reads when Roum is idle and no
+    # game is running. It is the one feature that runs the model while Roum is
+    # away, so model_use gates it off by default; an explicit /read command still
+    # works even when the daemon is off.
+    from astra.library import Library
+
+    library = Library(data_dir=storage_dir)
     reader = None
-    library = None
-    if enable_reader:
-        from astra.library import Library
+    if enable_reader and model_use.enabled(model_use_mod.FEATURE_READING):
+        from astra.reader import BackgroundReader
 
-        library = Library(data_dir=storage_dir)
-        if model_use.enabled(model_use_mod.FEATURE_READING):
-            from astra.reader import BackgroundReader
-
-            # One shared process policy: which tasks mean "busy", which to
-            # ignore, which to always ignore. Built from config so future
-            # background tasks consult the same answer instead of each inventing
-            # their own.
-            policy = reading.ProcessPolicy.from_config(
-                orchestrator._load_yaml("relationship.yaml").get("background_processes")
-                if hasattr(orchestrator, "_load_yaml") else None
-            )
-            reader = BackgroundReader(
-                library, store, orchestrator.query_gemma, process_policy=policy,
-            )
-            reader.start()
+        # One shared process policy: which tasks mean "busy", which to
+        # ignore, which to always ignore. Built from config so future
+        # background tasks consult the same answer instead of each inventing
+        # their own.
+        policy = reading.ProcessPolicy.from_config(
+            orchestrator._load_yaml("relationship.yaml").get("background_processes")
+            if hasattr(orchestrator, "_load_yaml") else None
+        )
+        reader = BackgroundReader(
+            library, store, orchestrator.query_gemma, process_policy=policy,
+        )
+        reader.start()
 
     session = ChatSession(
         orchestrator, cmd_store, elysium=elysium, recorder=recorder,
-        consolidator=_default_consolidator, reader=reader,
+        consolidator=_default_consolidator, reader=reader, library=library,
         model_use=model_use, background_consolidation=True,
     )
     session.think_only = bool(think_only)

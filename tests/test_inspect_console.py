@@ -125,6 +125,74 @@ class TestInspectIsReadOnly(_InspectFixture):
         self.assertEqual(getattr(reader, "enabled", before), before)
 
 
+class TestInspectShowsReadingAndLibrary(_InspectFixture):
+    """The library is deterministic, so inspection must show it, not "not attached".
+
+    The console used to build the session with ``enable_reader=False`` and then
+    read the library only through the reader daemon, so both /reading and
+    /library reported nothing. The library is now a first-class session resource
+    independent of the daemon.
+    """
+
+    def test_library_is_attached_without_the_reader_daemon(self):
+        self.assertIsNone(self.session.reader)
+        self.assertIsNotNone(self.session.library)
+
+    def test_reading_and_library_are_not_reported_missing(self):
+        for command in ("/reading", "/library"):
+            text = self.inspector.handle(command)
+            self.assertNotIn("not attached", text)
+            self.assertNotIn("No library attached", text)
+
+    def test_reading_shows_the_saved_position_when_daemon_is_off(self):
+        # Seed a work and position directly through the library.
+        self.session.library.add_text("body " * 200, title="A Work", work_id="a-work")
+        text = self.inspector.handle("/reading")
+        self.assertIn("A Work", text)
+        self.assertIn("disabled", text)          # the gate is honestly off
+        self.assertIn("saved reading position", text)
+
+    def test_library_lists_ingested_works(self):
+        self.session.library.add_text("body " * 200, title="A Work", work_id="a-work")
+        text = self.inspector.handle("/library")
+        self.assertIn("LIBRARY (1 work(s))", text)
+        self.assertIn("a-work", text)
+
+
+class TestInspectLiveScreens(_InspectFixture):
+    """The live observation screens are watchable read-only from inspection."""
+
+    def test_live_renders_the_three_screens(self):
+        text = self.inspector.handle("/live")
+        self.assertIn("STATUS (LIVE)", text)
+        self.assertIn("RELATIONSHIP (LIVE)", text)
+        self.assertIn("AFFECT (LIVE)", text)
+        self.assertIn("Read-only snapshot", text)
+
+    def test_live_can_target_one_screen(self):
+        text = self.inspector.handle("/live affect")
+        self.assertIn("AFFECT (LIVE)", text)
+        self.assertNotIn("RELATIONSHIP (LIVE)", text)
+
+    def test_live_does_not_write_storage(self):
+        before = self._storage_snapshot()
+        for command in ("/live", "/live status", "/live relationship", "/live affect"):
+            self.inspector.handle(command)
+        after = self._storage_snapshot()
+        changed = {p for p in set(before) | set(after)
+                   if before.get(p) != after.get(p)}
+        self.assertEqual(changed, set(), f"inspection wrote files: {changed}")
+
+    def test_snapshot_capture_is_refused_read_only(self):
+        wrapper = inspect_console._ReadOnlySnapshots(None)
+        with self.assertRaises(RuntimeError):
+            wrapper.capture("affect", {"values": {}})
+
+    def test_live_is_listed_in_help_and_available(self):
+        self.assertIn("/live", self.inspector.available_commands())
+        self.assertIn("/live", self.inspector.help_text())
+
+
 class TestLiveScreenRefresh(unittest.TestCase):
     def test_poll_timeout_returns_none_and_redraws(self):
         frames = {"n": 0}

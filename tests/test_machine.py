@@ -151,5 +151,55 @@ class TestDefaultBuilder(unittest.TestCase):
         self.assertIsInstance(snap["efficiency_mode"], bool)
 
 
+class TestCpuReadingIsFresh(unittest.TestCase):
+    """A status/diagnostic read must not report a stale or missing CPU value.
+
+    Windows' cumulative-counter provider returns ``None`` on its first read
+    (there is no previous sample to difference against). The old ``snapshot``
+    reused the stored sample, so that one ``None`` was reported forever and the
+    status line showed ``cpu=?``. These lock in the fix: a two-read provider
+    yields a real fraction on the very first sample, and ``snapshot`` re-reads
+    rather than echoing the stored value.
+    """
+
+    def _two_read(self):
+        calls = {"n": 0}
+
+        def cpu():
+            calls["n"] += 1
+            return None if calls["n"] == 1 else 0.5
+
+        return cpu, calls
+
+    def test_first_sample_tolerates_a_two_read_provider(self):
+        cpu, calls = self._two_read()
+        st = machine.MachineState(
+            cpu_provider=cpu, memory_provider=lambda: 0.2,
+            uptime_provider=lambda: 500.0, idle_provider=lambda: 10.0)
+        self.assertEqual(st.sample().cpu_load, 0.5)
+        self.assertGreaterEqual(calls["n"], 2)
+
+    def test_snapshot_reflects_a_fresh_reading_not_a_stale_none(self):
+        cpu, _ = self._two_read()
+        st = machine.MachineState(
+            cpu_provider=cpu, memory_provider=lambda: 0.2,
+            uptime_provider=lambda: 500.0, idle_provider=lambda: 10.0)
+        # A value that changes between reads must be visible immediately.
+        st.cpu_provider = lambda: 0.25
+        self.assertEqual(st.snapshot()["cpu_load"], 0.25)
+        st.cpu_provider = lambda: 0.75
+        self.assertEqual(st.snapshot()["cpu_load"], 0.75)
+
+    def test_snapshot_does_not_advance_suspend_bookkeeping(self):
+        # A diagnostic read must not mask a real suspend from the power path.
+        clock = _Clock()
+        st = _state(cpu=0.1, memory=0.1, uptime=100.0, monotonic=clock)
+        st.sample()
+        st.snapshot()
+        clock.advance(2.0)
+        st.uptime_provider = lambda: 4100.0
+        self.assertIsNotNone(st.sample().suspended_seconds)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
