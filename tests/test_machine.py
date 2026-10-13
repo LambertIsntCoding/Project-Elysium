@@ -38,6 +38,7 @@ def _state(**kwargs) -> machine.MachineState:
         memory_provider=provider("memory"),
         uptime_provider=provider("uptime"),
         idle_provider=provider("idle"),
+        gpu_provider=provider("gpu"),
         monotonic=kwargs.get("monotonic") or _Clock(),
         warmup_seconds=kwargs.get("warmup_seconds", 180.0),
         sample_window=kwargs.get("sample_window", 6.0),
@@ -199,6 +200,63 @@ class TestCpuReadingIsFresh(unittest.TestCase):
         clock.advance(2.0)
         st.uptime_provider = lambda: 4100.0
         self.assertIsNotNone(st.sample().suspended_seconds)
+
+
+class TestGpuAndVram(unittest.TestCase):
+    def test_gpu_is_measured_independently_of_cpu(self):
+        st = _state(cpu=0.05, memory=0.2,
+                    gpu={"util": 0.8, "vram_used": 6e9, "vram_total": 8e9})
+        snap = st.snapshot()
+        self.assertEqual(snap["gpu_util"], 0.8)
+        self.assertAlmostEqual(snap["vram_pressure"], 0.75, places=3)
+
+    def test_unmeasurable_gpu_is_none_and_blocks_nothing(self):
+        st = _state(cpu=0.05, memory=0.2)  # no gpu provider
+        snap = st.snapshot()
+        self.assertIsNone(snap["gpu_util"])
+        self.assertIsNone(snap["vram_pressure"])
+        self.assertTrue(snap["gpu_available"])
+        self.assertTrue(st.gpu_available())
+
+    def test_gpu_available_uses_vram_pressure_not_raw_usage(self):
+        # Holding a lot of VRAM but not near capacity is not a busy GPU.
+        holding = machine.Sample(gpu_util=0.1, vram_used=6e9, vram_total=8e9)
+        self.assertTrue(_state().gpu_available(holding))
+        # Near capacity it is unavailable for GPU work.
+        full = machine.Sample(gpu_util=0.1, vram_used=7.9e9, vram_total=8e9)
+        self.assertFalse(_state().gpu_available(full))
+
+    def test_busy_gpu_is_unavailable_even_with_free_vram(self):
+        busy = machine.Sample(gpu_util=0.95, vram_used=1e9, vram_total=8e9)
+        self.assertFalse(_state().gpu_available(busy))
+
+    def test_headroom_helpers(self):
+        st = _state(cpu=0.1, memory=0.3)
+        sample = machine.Sample(memory_pressure=0.3, vram_used=2e9, vram_total=8e9)
+        self.assertAlmostEqual(st.memory_headroom(sample), 0.7, places=3)
+        self.assertAlmostEqual(st.vram_headroom(sample), 0.75, places=3)
+
+    def test_nvidia_smi_parser(self):
+        parsed = machine._parse_nvidia_smi_csv("45, 2048, 8192")
+        self.assertAlmostEqual(parsed["util"], 0.45, places=3)
+        self.assertEqual(parsed["vram_used"], 2048.0)
+        self.assertEqual(parsed["vram_total"], 8192.0)
+        # "[N/A]" utilisation is None, not zero; a 0 total is not a real reading.
+        na = machine._parse_nvidia_smi_csv("[N/A], 0, 8192")
+        self.assertIsNone(na["util"])
+        self.assertIsNone(na["vram_used"])
+        self.assertIsNone(machine._parse_nvidia_smi_csv(""))
+
+    def test_sustainably_calm_ignores_memory_pressure(self):
+        # Warm and settled: the machine is ready for *energy* reasons even with
+        # memory held. Resource affordability is a separate, per-task question.
+        st = _state(cpu=0.1, memory=0.9)
+        warm = machine.Sample(at=1000.0, memory_pressure=0.9, uptime_seconds=500.0)
+        st.sustainably_calm(warm)
+        later = machine.Sample(at=1008.0, memory_pressure=0.9, uptime_seconds=500.0)
+        self.assertTrue(st.sustainably_calm(later))
+        # The conservative readiness view still says "not ready" for heavy work.
+        self.assertFalse(st.ready_for_work(later))
 
 
 if __name__ == "__main__":

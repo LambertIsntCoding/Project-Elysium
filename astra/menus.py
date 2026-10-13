@@ -77,6 +77,7 @@ Discord
 
 Power
   /power | /machine                        measured machine resources
+  /resources                               idle-vs-active baselines & per-task cost estimates
 
 Proposals / files
   /proposals [all|ack|approve|decline <id>] improvement proposals
@@ -556,9 +557,12 @@ def _screen_power(context: MenuContext) -> MenuNode:
     node.items = [
         MenuItem("1", "Measured machine resources", aliases=("power", "machine", "cpu"),
                  action=lambda ctx: _router_text(ctx, "/power")),
-        MenuItem("2", "Sleep now", aliases=("sleep", "sleep-mode"),
+        MenuItem("2", "Resource history & cost estimates",
+                 aliases=("resources", "resource-history", "cost", "gpu"),
+                 action=lambda ctx: _router_text(ctx, "/resources")),
+        MenuItem("3", "Sleep now", aliases=("sleep", "sleep-mode"),
                  action=_run(ctx_session(context), "_sleep_now")),
-        MenuItem("3", "Wake", aliases=("wake",),
+        MenuItem("4", "Wake", aliases=("wake",),
                  action=_run(ctx_session(context), "_wake_now")),
     ]
     return node

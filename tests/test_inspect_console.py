@@ -158,6 +158,17 @@ class TestInspectShowsReadingAndLibrary(_InspectFixture):
         self.assertIn("LIBRARY (1 work(s))", text)
         self.assertIn("a-work", text)
 
+    def test_resources_view_is_available_and_read_only(self):
+        self.assertIn("/resources", self.inspector.available_commands())
+        before = self._storage_snapshot()
+        text = self.inspector.handle("/resources")
+        self.assertIn("Resource history:", text)
+        self.assertIn("idle (machine alone)", text)
+        after = self._storage_snapshot()
+        changed = {p for p in set(before) | set(after)
+                   if before.get(p) != after.get(p)}
+        self.assertEqual(changed, set(), f"inspection wrote files: {changed}")
+
 
 class TestInspectLiveScreens(_InspectFixture):
     """The live observation screens are watchable read-only from inspection."""

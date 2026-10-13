@@ -38,8 +38,8 @@ from . import paths
 # called (its entry point records a human message as a side effect).
 ROUTER_INSPECT_COMMANDS: Tuple[str, ...] = (
     "/status", "/tasks", "/schedules", "/scheduler", "/autonomy", "/notifications",
-    "/proactive", "/discord", "/power", "/proposals", "/decisions", "/sleep-log",
-    "/reader", "/normalize-text",
+    "/proactive", "/discord", "/power", "/resources", "/proposals", "/decisions",
+    "/sleep-log", "/reader", "/normalize-text",
 )
 
 # Session display methods that are pure reads. Each is looked up on the session
@@ -158,7 +158,8 @@ class Inspector:
             return
         for owner in (controller,):
             for attr in ("state", "task_store", "ledger", "notifications",
-                         "proactive", "proposals", "decisions"):
+                         "proactive", "proposals", "decisions",
+                         "resource_history"):
                 obj = getattr(owner, attr, None)
                 if obj is not None and callable(getattr(obj, "reload", None)):
                     obj.reload()
@@ -276,6 +277,7 @@ class Inspector:
                 f"Proactive: muted={controller.proactive.muted}. "
                 "Mute/unmute from the running runtime."),
             "/power": controller.power_report,
+            "/resources": controller.resource_report,
             "/discord": lambda: controller.discord_report(
                 getattr(self.session, "discord", None)),
             "/decisions": controller.pending_decisions_text,

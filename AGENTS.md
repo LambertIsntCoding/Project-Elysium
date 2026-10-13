@@ -57,6 +57,8 @@ HTTP stub, and consolidation tests call the decision layer directly.
 | `astra/schedule_explain.py` | explain a scheduled/planned task (why/when/next) from its own records; derived, read-only (pure, no I/O) |
 | `astra/model_use.py` | when the language model may be invoked (pure config read; the model is her voice, not her) |
 | `astra/engagement.py` | adaptation to repeated non-response: a bounded threshold raise (never a mute, never a memory) |
+| `astra/machine.py` | measured machine awareness: CPU/memory/GPU/VRAM/uptime/idle, suspend detection, warmup vs per-task resource headroom (pure reads, no store) |
+| `astra/resources.py` | durable idle/active baselines and learned per-task cost; the pure "can this actually be done?" affordability check (never a failure) |
 | `deploy.py` | non-destructive deployment: test, restart gracefully, verify version |
 | `main.py` | CLI/admin console, routing, slash commands, supervisor/status flags |
 | `config/*.yaml` | identity, relationship boundaries, style examples |
@@ -1063,6 +1065,38 @@ operator guide is `docs/autonomous_operation.md`. Structural invariants:
   provider needs two reads). Without those, a status/diagnostic read on Windows
   reported a permanent ``cpu=?`` from one stale ``None``. Never "fix" this by
   making an unmeasurable value a number - ``None`` stays ``None``.
+- **GPU/VRAM is a separate resource axis, and unmeasurable is not busy.**
+  `machine.py` also measures GPU utilisation and VRAM (`gpu_provider`,
+  ``Sample.gpu_util``/``vram_used``/``vram_total``/``vram_pressure``), best-effort
+  and stdlib-first: ``nvidia-smi`` when present, AMD's ``/sys/class/drm``
+  otherwise, else ``None``. It is never folded into the CPU/memory numbers - a
+  machine can be CPU-idle while a game owns the GPU - and ``gpu_available`` keys
+  on *VRAM pressure* (used/total near the ceiling), not raw usage, so a machine
+  merely *holding* VRAM is not blocked. An unmeasurable GPU is ``True``
+  (available), because absence of a reading is not proof of a busy GPU.
+- **A task is deferred only when it genuinely does not fit, and a defer is
+  never a failure.** `astra/resources.py` is the "can this actually be done?"
+  layer: it keeps a bounded, durable history of machine observations tagged
+  **active vs idle** (so the idle baseline is distinguishable from the load
+  Roum's own applications produce) and learns each task kind's real cost from
+  the measured delta across its runs (EWMA, seeded from a conservative prior).
+  `affordable()` is a pure function of that estimate and the *current* sample:
+  it consults **only the resources the task uses** (`KIND_RESOURCES`; `reading`
+  claims CPU/mem/GPU/VRAM because the model may run on the GPU, light
+  bookkeeping claims CPU only), and refuses only when ``current + estimated >
+  saturation``. This is the correction to the earlier over-conservative gate: a
+  high headline number (e.g. 87% memory) does **not** fail a task that actually
+  fits, a busy GPU does not block a CPU-only task, and an unmeasurable resource
+  is skipped rather than treated as busy. The scheduler's ``_kind_allowed``
+  applies it per resource and **defers** (a skip, task stays pending, attempts
+  untouched) - it never marks a resource hold as ``FAILED``. Resource saturation
+  bounds (`SATURATION_*`, ~0.90-0.97) are deliberately separate from the
+  conservative *efficiency* ceilings in ``machine.py``; the latter describe
+  "run lean at startup", not "impossible". The controller records observations
+  each loop (``_sample_machine``, tagged active via ``_human_active``) and
+  exposes the idle/active comparison and per-kind costs read-only via
+  ``/resources`` (and the POWER/MACHINE admin screen). None of it reaches the
+  prompt.
 - **A durable proposal gates the changes that need approval.** `astra/proposals.py`
   records improvement proposals with a scope; protected scopes (identity,
   boundaries, credentials, permissions, source code) are flagged
@@ -1080,10 +1114,11 @@ New tests: `tests/test_schedules.py`, `tests/test_schedule_runtime.py`,
 `tests/test_activity.py`, `tests/test_autonomy.py`, `tests/test_notifications.py`,
 `tests/test_reply_policy.py`, `tests/test_discord_behavior.py`,
 `tests/test_presence.py`, `tests/test_machine.py`,
-`tests/test_affect_propagation.py`, `tests/test_power_runtime.py`,
+`tests/test_resources.py`, `tests/test_affect_propagation.py`,
+`tests/test_power_runtime.py`,
 `tests/test_proposals.py`, plus the new outbound-lifecycle, batching,
 addressing-gate, typing-simulation, interrupt-and-read, state-shaped timing,
 presence and reply/ping cases in
 `tests/test_discord_adapter.py` and the visibility/control cases in
 `tests/test_application.py`. `python -m unittest discover -s tests -t .`
-now runs 1016 tests, all passing (plus the script-style suites via `python -m tests`).
+now runs 1109 tests, all passing (plus the script-style suites via `python -m tests`).

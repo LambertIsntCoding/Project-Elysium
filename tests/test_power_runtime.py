@@ -29,17 +29,25 @@ class _FixedMachine:
     """A MachineState whose single sample is scripted (never the real host)."""
 
     def __init__(self, *, cpu=0.1, mem=0.1, uptime=100000.0, idle=None,
-                 suspended=None):
+                 suspended=None, gpu=None, vram_used=None, vram_total=None):
         self._sample = Sample(cpu_load=cpu, memory_pressure=mem,
                               uptime_seconds=uptime, idle_seconds=idle,
-                              suspended_seconds=suspended)
+                              suspended_seconds=suspended, gpu_util=gpu,
+                              vram_used=vram_used, vram_total=vram_total)
         self._ready = suspended is None and uptime >= 180.0 and cpu < 0.6
 
     def sample(self):
         return self._sample
 
+    def sample_now(self):
+        return self._sample
+
     def ready_for_work(self, sample=None):
         return self._ready
+
+    def sustainably_calm(self, sample=None):
+        # Warmup-only readiness: memory holding does not make it "cold".
+        return self._sample.suspended_seconds is None and self._sample.uptime_seconds >= 180.0
 
     def efficiency_mode(self, sample=None):
         return not self._ready
@@ -47,11 +55,15 @@ class _FixedMachine:
     def cpu_reading(self):
         return self._sample.cpu_load
 
+    def memory_headroom(self, sample=None):
+        return None if self._sample.memory_pressure is None else 1.0 - self._sample.memory_pressure
+
     def snapshot(self):
         out = self._sample.as_dict()
         out.update({"ready_for_work": self._ready,
                     "efficiency_mode": not self._ready,
-                    "resources_available": True})
+                    "resources_available": True,
+                    "gpu_available": True})
         return out
 
 
@@ -119,6 +131,35 @@ class TestPowerAndMachine(unittest.TestCase):
         # With no explicit cpu_load_fn, the controller uses the machine reading.
         ctrl = _controller(self.tmp, _FixedMachine(cpu=0.99))
         self.assertEqual(ctrl.scheduler.cpu_load_fn(), 0.99)
+
+    def test_power_report_includes_gpu_and_vram_when_measurable(self):
+        ctrl = _controller(self.tmp, _FixedMachine(
+            gpu=0.4, vram_used=4e9, vram_total=8e9))
+        report = ctrl.power_report()
+        self.assertIn("gpu: 40%", report)
+        self.assertIn("3.7/7.5 GB", report)
+
+    def test_power_report_says_gpu_unmeasurable_honestly(self):
+        ctrl = _controller(self.tmp, _FixedMachine())
+        self.assertIn("gpu: not measurable", ctrl.power_report())
+
+    def test_resource_report_renders_baselines_and_costs(self):
+        ctrl = _controller(self.tmp, _FixedMachine())
+        report = ctrl.resource_report()
+        self.assertIn("Resource history:", report)
+        self.assertIn("idle (machine alone)", report)
+        self.assertIn("active (Roum's apps)", report)
+        self.assertIn("reading", report)
+
+    def test_controller_owns_a_resource_history(self):
+        ctrl = _controller(self.tmp, _FixedMachine())
+        self.assertTrue(hasattr(ctrl.resource_history, "observe"))
+
+    def test_sampling_records_an_observation(self):
+        ctrl = _controller(self.tmp, _FixedMachine(cpu=0.3, mem=0.4))
+        ctrl._sample_machine()
+        snap = ctrl.resource_history.snapshot()
+        self.assertGreaterEqual(snap["observations"], 1)
 
 
 if __name__ == "__main__":

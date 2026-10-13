@@ -41,6 +41,11 @@ from typing import Any, Callable, Dict, Optional
 # cold or busy machine stays in efficiency mode until it is genuinely calm.
 DEFAULT_CPU_CEILING = 0.60          # CPU above this -> not ready for heavy work
 DEFAULT_MEMORY_CEILING = 0.85       # memory above this -> not ready
+# GPU is a *separate* resource from CPU/memory: a machine can be CPU-idle while a
+# game or render claims the GPU. Only GPU-claiming work is gated on it, and an
+# unmeasurable GPU (``None``) never blocks anything - it is not proof of absence.
+DEFAULT_GPU_CEILING = 0.85          # GPU utilisation above this -> GPU work stands down
+DEFAULT_VRAM_CEILING = 0.90         # VRAM pressure above this -> GPU work stands down
 DEFAULT_WARMUP_SECONDS = 180.0      # how long the machine must have been up
 DEFAULT_SAMPLE_WINDOW = 6.0         # how long "sustained" calm must last
 # A gap between samples at least this much larger than the wall-clock elapsed
@@ -174,6 +179,101 @@ def _posix_uptime_seconds() -> Optional[float]:
         return None
 
 
+# ---------------------------------------------------------------------------
+# GPU + VRAM (optional; each returns a real reading or ``None``)
+# ---------------------------------------------------------------------------
+# The GPU is a genuinely separate resource: a machine can be CPU-idle while a
+# game or a render owns the GPU, and a model can fit in VRAM while system memory
+# is tight. So GPU utilisation and VRAM are measured independently and never
+# folded into the CPU/memory numbers. Everything here is best-effort and
+# stdlib-first (``subprocess`` to ``nvidia-smi`` only if present, ``/sys`` for
+# AMD); an unmeasurable GPU is ``None`` and blocks nothing.
+def _parse_nvidia_smi_csv(output: str) -> Optional[Dict[str, Optional[float]]]:
+    """Parse one ``nvidia-smi --query-gpu=...,memory.used,memory.total`` row."""
+    rows = [r for r in str(output or "").strip().splitlines() if r.strip()]
+    if not rows:
+        return None
+    parts = [p.strip() for p in rows[0].split(",")]
+    if len(parts) < 3:
+        return None
+
+    def num(text: str) -> Optional[float]:
+        try:
+            return float(text)
+        except (TypeError, ValueError):
+            return None
+
+    util = num(parts[0])
+    used = num(parts[1])
+    total = num(parts[2])
+    return {
+        "util": None if util is None else max(0.0, min(1.0, util / 100.0)),
+        "vram_used": used if (used is not None and used > 0) else None,
+        "vram_total": total if (total is not None and total > 0) else None,
+    }
+
+
+def _nvidia_smi_reading() -> Optional[Dict[str, Optional[float]]]:
+    """GPU/VRAM via ``nvidia-smi`` when it is installed, else ``None``."""
+    try:
+        import shutil
+        import subprocess
+
+        exe = shutil.which("nvidia-smi")
+        if not exe:
+            return None
+        proc = subprocess.run(
+            [exe, "--query-gpu=utilization.gpu,memory.used,memory.total",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=2.0,
+        )
+        if proc.returncode != 0:
+            return None
+        return _parse_nvidia_smi_csv(proc.stdout)
+    except Exception:
+        return None
+
+
+def _amdgpu_reading() -> Optional[Dict[str, Optional[float]]]:
+    """GPU/VRAM for AMD cards via ``/sys/class/drm`` when present, else ``None``."""
+    try:
+        import glob
+        import os
+
+        def read_int(path: str) -> Optional[float]:
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    return float(fh.read().strip())
+            except Exception:
+                return None
+
+        for busy_path in sorted(glob.glob("/sys/class/drm/card*/device/gpu_busy_percent")):
+            dev = os.path.dirname(busy_path)
+            util = read_int(busy_path)
+            used = read_int(os.path.join(dev, "mem_info_vram_used"))
+            total = read_int(os.path.join(dev, "mem_info_vram_total"))
+            if util is None and not (used and total):
+                continue
+            return {
+                "util": None if util is None else max(0.0, min(1.0, util / 100.0)),
+                "vram_used": used if (used and used > 0) else None,
+                "vram_total": total if (total and total > 0) else None,
+            }
+    except Exception:
+        return None
+    return None
+
+
+def default_gpu_reading() -> Optional[Dict[str, Optional[float]]]:
+    """A GPU/VRAM reading from whichever real source is available.
+
+    Order is deliberate: ``nvidia-smi`` (the most common discrete GPU, and the
+    one Ollama uses) first, then AMD's ``/sys`` interface. Anything else returns
+    ``None`` - the absence of a measurement is never treated as an idle GPU.
+    """
+    return _nvidia_smi_reading() or _amdgpu_reading()
+
+
 def default_is_windows() -> bool:
     import sys
     return sys.platform.startswith("win")
@@ -192,6 +292,16 @@ class Sample:
     uptime_seconds: Optional[float] = None    # since boot, or None
     idle_seconds: Optional[float] = None      # since last user input, or None
     suspended_seconds: Optional[float] = None  # detected suspend gap, or None
+    gpu_util: Optional[float] = None      # 0..1 GPU utilisation, or None
+    vram_used: Optional[float] = None     # bytes in use, or None
+    vram_total: Optional[float] = None    # bytes total, or None
+
+    def vram_pressure(self) -> Optional[float]:
+        """VRAM in use as a fraction (0..1), or ``None`` when not measurable."""
+        used, total = self.vram_used, self.vram_total
+        if used is None or total is None or total <= 0:
+            return None
+        return max(0.0, min(1.0, used / total))
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -200,6 +310,10 @@ class Sample:
             "uptime_seconds": self.uptime_seconds,
             "idle_seconds": self.idle_seconds,
             "suspended_seconds": self.suspended_seconds,
+            "gpu_util": self.gpu_util,
+            "vram_used": self.vram_used,
+            "vram_total": self.vram_total,
+            "vram_pressure": self.vram_pressure(),
         }
 
 
@@ -217,9 +331,12 @@ class MachineState:
     memory_provider: Optional[Callable[[], Optional[float]]] = None
     uptime_provider: Optional[Callable[[], Optional[float]]] = None
     idle_provider: Optional[Callable[[], Optional[float]]] = None
+    gpu_provider: Optional[Callable[[], Optional[Dict[str, Optional[float]]]]] = None
     monotonic: Callable[[], float] = time.monotonic
     cpu_ceiling: float = DEFAULT_CPU_CEILING
     memory_ceiling: float = DEFAULT_MEMORY_CEILING
+    gpu_ceiling: float = DEFAULT_GPU_CEILING
+    vram_ceiling: float = DEFAULT_VRAM_CEILING
     warmup_seconds: float = DEFAULT_WARMUP_SECONDS
     sample_window: float = DEFAULT_SAMPLE_WINDOW
     # The CPU sampling on Windows needs two reads to produce a fraction; that
@@ -227,8 +344,30 @@ class MachineState:
     _scratch: Dict[str, Any] = field(default_factory=dict)
     _last: Optional[Sample] = None
     _calm_since: Optional[float] = None
+    _settled_since: Optional[float] = None
 
     # -- sampling --------------------------------------------------------
+    def _gpu_measurement(self) -> Dict[str, Optional[float]]:
+        """GPU utilisation and VRAM from the injected provider (or empty)."""
+        if self.gpu_provider is None:
+            return {}
+        try:
+            value = self.gpu_provider()
+        except Exception:
+            return {}
+        if not isinstance(value, dict):
+            return {}
+
+        def num(key: str) -> Optional[float]:
+            try:
+                raw = value.get(key)
+                return None if raw is None else float(raw)
+            except (TypeError, ValueError):
+                return None
+
+        return {"gpu_util": num("util"), "vram_used": num("vram_used"),
+                "vram_total": num("vram_total")}
+
     def sample(self) -> Sample:
         now = self.monotonic()
         cpu = self._cpu_measurement()
@@ -236,9 +375,10 @@ class MachineState:
         up = self._call(self.uptime_provider)
         idle = self._call(self.idle_provider)
         suspended = self._detect_suspend(now, up)
+        gpu = self._gpu_measurement()
         sample = Sample(at=now, cpu_load=cpu, memory_pressure=mem,
                         uptime_seconds=up, idle_seconds=idle,
-                        suspended_seconds=suspended)
+                        suspended_seconds=suspended, **gpu)
         self._last = sample
         return sample
 
@@ -308,6 +448,48 @@ class MachineState:
             return False
         return True
 
+    def gpu_available(self, sample: Optional[Sample] = None) -> bool:
+        """True when a measured GPU/VRAM is below its ceiling.
+
+        GPU is a *separate* axis from CPU/memory, and only GPU-claiming work is
+        gated on it. An unmeasurable GPU (``None``) is ``True`` here - the
+        absence of a reading is never treated as a busy GPU. Likewise VRAM is
+        only a problem when *pressure* is high (used/total near the ceiling);
+        a machine holding a lot of VRAM but not near capacity is not blocked,
+        which is exactly the "holding more memory than needed is not the same as
+        being unable to take the task" case.
+        """
+        sample = sample or self._last or self.sample()
+        util = sample.gpu_util
+        if util is not None and util >= self.gpu_ceiling:
+            return False
+        pressure = sample.vram_pressure()
+        if pressure is not None and pressure >= self.vram_ceiling:
+            return False
+        return True
+
+    def memory_headroom(self, sample: Optional[Sample] = None) -> Optional[float]:
+        """Free system memory as a fraction (0..1), or ``None`` when unknown.
+
+        This is the *positive* form of ``memory_pressure``: ``1 - pressure``.
+        It is what an affordability estimate multiplies a task's cost against,
+        so a machine that is merely holding memory (high usage but not near the
+        ceiling) still reports real headroom rather than a refusal.
+        """
+        sample = sample or self._last or self.sample()
+        mem = sample.memory_pressure
+        if mem is None:
+            return None
+        return max(0.0, min(1.0, 1.0 - float(mem)))
+
+    def vram_headroom(self, sample: Optional[Sample] = None) -> Optional[float]:
+        """Free VRAM as a fraction (0..1), or ``None`` when not measurable."""
+        sample = sample or self._last or self.sample()
+        pressure = sample.vram_pressure()
+        if pressure is None:
+            return None
+        return max(0.0, min(1.0, 1.0 - float(pressure)))
+
     def warm(self, sample: Optional[Sample] = None) -> bool:
         """True when the machine has been up long enough to be fully ready."""
         sample = sample or self._last or self.sample()
@@ -324,6 +506,12 @@ class MachineState:
         Requires both a warm machine and sustainedly-available resources. The
         "sustained" part is what keeps a momentary dip (a program starting) from
         immediately admitting heavy work; calm must last ``sample_window``.
+
+        This is the conservative *efficiency* answer used for display and the
+        startup policy. The scheduler's per-task affordability check is finer
+        (it compares a task's estimated cost against measured headroom), so a
+        machine merely holding memory is not blanket-refused there - see
+        :meth:`sustainably_calm` and :mod:`astra.resources`.
         """
         sample = sample or self._last or self.sample()
         if sample.suspended_seconds:
@@ -336,6 +524,23 @@ class MachineState:
         if self._calm_since is None:
             self._calm_since = sample.at
         return self.warm(sample) and (sample.at - self._calm_since) >= self.sample_window
+
+    def sustainably_calm(self, sample: Optional[Sample] = None) -> bool:
+        """Warm and settled, *ignoring* the resource ceilings.
+
+        The energy/warmup half of :meth:`ready_for_work`, with its own tracker so
+        the two do not interfere. Resource affordability is a separate, per-task
+        measured question (see :mod:`astra.resources`): a warm machine is warm
+        regardless of how much memory it happens to be holding, so this
+        deliberately does not consult CPU/memory.
+        """
+        sample = sample or self._last or self.sample()
+        if sample.suspended_seconds:
+            self._settled_since = None
+            return False
+        if self._settled_since is None:
+            self._settled_since = sample.at
+        return self.warm(sample) and (sample.at - self._settled_since) >= self.sample_window
 
     def efficiency_mode(self, sample: Optional[Sample] = None) -> bool:
         """True while Astra should run conservatively (low power/resource use).
@@ -386,6 +591,7 @@ class MachineState:
             memory_pressure=self._call(self.memory_provider),
             uptime_seconds=self._call(self.uptime_provider),
             idle_seconds=self._call(self.idle_provider),
+            **self._gpu_measurement(),
         )
 
     def snapshot(self) -> Dict[str, Any]:
@@ -396,6 +602,9 @@ class MachineState:
             "ready_for_work": self.ready_for_work(sample),
             "efficiency_mode": self.efficiency_mode(sample),
             "resources_available": self.resources_available(sample),
+            "gpu_available": self.gpu_available(sample),
+            "memory_headroom": self.memory_headroom(sample),
+            "vram_headroom": self.vram_headroom(sample),
             "at": _now(),
         })
         return out
@@ -413,15 +622,18 @@ def build_default(*, monotonic: Callable[[], float] = time.monotonic
         return MachineState(
             cpu_provider=cpu, memory_provider=_windows_memory_pressure,
             uptime_provider=_windows_uptime_seconds,
-            idle_provider=_windows_idle_seconds, monotonic=monotonic,
+            idle_provider=_windows_idle_seconds,
+            gpu_provider=default_gpu_reading, monotonic=monotonic,
         )
     return MachineState(
         cpu_provider=_posix_cpu_load, memory_provider=_posix_memory_pressure,
-        uptime_provider=_posix_uptime_seconds, monotonic=monotonic)
+        uptime_provider=_posix_uptime_seconds,
+        gpu_provider=default_gpu_reading, monotonic=monotonic)
 
 
 __all__ = [
-    "MachineState", "Sample", "build_default",
-    "DEFAULT_CPU_CEILING", "DEFAULT_MEMORY_CEILING", "DEFAULT_WARMUP_SECONDS",
-    "DEFAULT_SAMPLE_WINDOW", "SUSPEND_BACKLOG_SECONDS",
+    "MachineState", "Sample", "build_default", "default_gpu_reading",
+    "DEFAULT_CPU_CEILING", "DEFAULT_MEMORY_CEILING",
+    "DEFAULT_GPU_CEILING", "DEFAULT_VRAM_CEILING",
+    "DEFAULT_WARMUP_SECONDS", "DEFAULT_SAMPLE_WINDOW", "SUSPEND_BACKLOG_SECONDS",
 ]

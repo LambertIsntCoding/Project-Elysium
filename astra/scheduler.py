@@ -30,7 +30,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from . import reading, tasks as task_mod
+from . import reading, resources, tasks as task_mod
 
 Handler = Callable[[task_mod.BackgroundTask], Dict[str, Any]]
 
@@ -72,6 +72,18 @@ REASON_STOPPED = "stopped"
 REASON_DISABLED = "disabled"
 REASON_LOW_ENERGY = "low_energy"
 REASON_MACHINE_COLD = "machine_cold"
+# Resource-aware deferral reasons (never a failure - the task stays pending).
+REASON_CPU_HEADROOM = "cpu_headroom"
+REASON_MEMORY_HEADROOM = "memory_headroom"
+REASON_GPU_HEADROOM = "gpu_headroom"
+REASON_VRAM_HEADROOM = "vram_headroom"
+
+_RESOURCE_REASON = {
+    resources.LIMITED_CPU: REASON_CPU_HEADROOM,
+    resources.LIMITED_MEMORY: REASON_MEMORY_HEADROOM,
+    resources.LIMITED_GPU: REASON_GPU_HEADROOM,
+    resources.LIMITED_VRAM: REASON_VRAM_HEADROOM,
+}
 
 # Below this "how much she can bring right now" (0..1), only light work runs.
 LOW_ENERGY_THRESHOLD = 0.4
@@ -103,6 +115,8 @@ class Scheduler:
         require_sleep: bool = True,
         intensity_provider: Optional[Callable[[], float]] = None,
         machine_ready_provider: Optional[Callable[[], bool]] = None,
+        machine_sample_provider: Optional[Callable[[], Any]] = None,
+        resource_history: Optional[resources.ResourceHistory] = None,
         completion_hook: Optional[CompletionHook] = None,
         clock: Callable[[], float] = time.monotonic,
         now_fn: Optional[Callable[[], Any]] = None,
@@ -133,6 +147,13 @@ class Scheduler:
         # only light work runs until the machine has been up a while and is
         # measured calm. ``None`` means the gate is not applied.
         self.machine_ready_provider = machine_ready_provider
+        # A fresh machine sample (``MachineState.sample_now`` or similar), used to
+        # ask the affordability question per resource. ``None`` means "cannot
+        # measure here", and then no resource gate is applied.
+        self.machine_sample_provider = machine_sample_provider
+        # The durable resource history: the idle/active baselines and the learned
+        # per-kind cost. ``None`` disables cost-based gating entirely.
+        self.resource_history = resource_history
         self.completion_hook = completion_hook
         self._clock = clock
         self._now_fn = now_fn
@@ -196,6 +217,15 @@ class Scheduler:
         except Exception:
             return True
 
+    def machine_sample(self) -> Any:
+        """A fresh machine reading for the affordability check, or ``None``."""
+        if self.machine_sample_provider is None:
+            return None
+        try:
+            return self.machine_sample_provider()
+        except Exception:
+            return None
+
     def machine_state(self) -> Dict[str, Any]:
         """The shared process/load answer for this cycle (never invents one)."""
         game = busy = None
@@ -211,7 +241,36 @@ class Scheduler:
             except Exception:
                 load = None
         return {"game": game, "busy": busy, "cpu_load": load,
-                "intensity": self.intensity(), "machine_ready": self.machine_ready()}
+                "intensity": self.intensity(), "machine_ready": self.machine_ready(),
+                "sample": self.machine_sample()}
+
+    def task_cost(self, kind: str) -> resources.ResourceCost:
+        """The estimated resource cost of one task of ``kind`` (prior or learned)."""
+        if self.resource_history is None:
+            return resources.prior_cost(kind)
+        try:
+            return self.resource_history.cost(kind)
+        except Exception:
+            return resources.prior_cost(kind)
+
+    def _resource_allowed(self, kind: str,
+                          machine: Dict[str, Any]) -> Optional[str]:
+        """Ask "can this task actually be done?" per resource it uses.
+
+        Returns ``None`` when it fits (or cannot be measured), else the reason it
+        does not. The estimate (learned from prior runs, else a conservative
+        prior) is compared against the *measured* headroom for each resource the
+        task genuinely uses - so a busy GPU never blocks a CPU-only task, and a
+        high memory number only blocks work that actually needs the memory. This
+        is deliberately separate from the conservative startup *efficiency* gate:
+        it only refuses when a resource would be pushed past saturation.
+        """
+        sample = machine.get("sample")
+        if sample is None:
+            return None
+        cost = self.task_cost(kind)
+        ok, reason = resources.affordable(cost, sample)
+        return None if ok else _RESOURCE_REASON.get(reason, reason)
 
     def _kind_allowed(self, kind: str, machine: Dict[str, Any]) -> bool:
         if machine.get("game"):
@@ -235,6 +294,12 @@ class Scheduler:
             # Cold or busy machine (e.g. just after boot): efficiency mode, so
             # only light work runs until the machine has warmed and settled.
             return kind in LIGHT_KINDS
+        # The measured affordability check: even in efficiency mode a task is
+        # admitted when its *estimated* cost still fits the real headroom. This
+        # is the "the headline number does not say it is impossible" correction -
+        # we never defer work we can demonstrably do, and a defer is not a fail.
+        if self._resource_allowed(kind, machine) is not None:
+            return False
         return True
 
     # -- one cycle -------------------------------------------------------
@@ -300,7 +365,11 @@ class Scheduler:
                 elif not machine.get("machine_ready", True):
                     reason = REASON_MACHINE_COLD
                 else:
-                    reason = REASON_LOW_ENERGY
+                    resource_reason = self._resource_allowed(task.kind, machine)
+                    if resource_reason is not None:
+                        reason = resource_reason
+                    else:
+                        reason = REASON_LOW_ENERGY
                 report["skipped"].append({
                     "id": task.id, "kind": task.kind, "reason": reason,
                 })
@@ -333,11 +402,16 @@ class Scheduler:
             self.ledger.record(task_id=task.id, kind=task.kind,
                                status=task_mod.BLOCKED, detail="no handler")
             return
+        # Measure the machine around the task so its real cost can be learned for
+        # the next estimate. This never changes the outcome - it is observation.
+        before = self.machine_sample()
         deadline = self._clock() + self.task_budget_seconds
         try:
             outcome = handler(task) or {}
         except Exception as exc:  # a handler bug must not kill the cycle
             outcome = {"status": task_mod.FAILED, "detail": f"handler error: {exc}"}
+        after = self.machine_sample()
+        self._learn_cost(task.kind, before, after)
 
         if self._clock() > deadline:
             # Over budget: the handler finished but slowly. Record it honestly.
@@ -374,6 +448,20 @@ class Scheduler:
                 self.completion_hook(task, status)
             except Exception:
                 pass
+
+    def _learn_cost(self, kind: str, before: Any, after: Any) -> None:
+        """Fold a task's measured resource delta into its kind's cost estimate.
+
+        Best-effort and never fatal: a missing history or an unmeasurable delta
+        simply teaches nothing. This is what grounds the *next* estimate in the
+        previous usage case rather than a static guess.
+        """
+        if self.resource_history is None or before is None or after is None:
+            return
+        try:
+            self.resource_history.record_task(kind, before, after)
+        except Exception:
+            pass
 
     def diagnostics(self) -> Dict[str, Any]:
         return {

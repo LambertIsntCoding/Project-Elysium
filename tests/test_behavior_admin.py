@@ -283,7 +283,8 @@ class TestMenuCoversFullCommandSurface(_Fixture):
         catalog = menus_mod.COMMAND_CATALOG
         for command in ("/autonomy", "/notifications", "/discord", "/schedules",
                         "/tasks", "/scheduler", "/proposals", "/power",
-                        "/check-messages", "/normalize-text", "/reader"):
+                        "/resources", "/check-messages", "/normalize-text",
+                        "/reader"):
             self.assertIn(command, catalog)
             slug = command.lstrip("/").replace("-", "-")
             self.assertTrue(any(slug in a or a in slug for a in aliases),

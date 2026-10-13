@@ -30,7 +30,8 @@ from . import (activity, autonomy, engagement as engagement_mod,
                file_organizer, filesystem, intentions, machine as machine_mod,
                model_use, notifications as notify_mod, prepared_context, proactive,
                proactive_compose, proposals as proposal_mod,
-               reading, runtime_state, schedule_explain, schedules as sched,
+               reading, resources as resources_mod, runtime_state,
+               schedule_explain, schedules as sched,
                tasks as task_mod)
 from . import schedule_runtime
 from .scheduler import Scheduler
@@ -118,6 +119,11 @@ class RuntimeController:
             "wake_on_resume": bool(power_cfg.get("wake_on_resume", False)),
         }
         self._last_suspend_seconds: Optional[float] = None
+        # Durable resource history: the idle/active baselines and the learned
+        # per-kind cost that ground the scheduler's "can this actually be done?"
+        # estimate. It is application state (never a memory) and never reaches
+        # the prompt.
+        self.resource_history = resources_mod.ResourceHistory(data_dir=data_dir)
 
         # Persistent application state (each with its own serialization).
         self.state = runtime_state.RuntimeStateStore(data_dir=data_dir)
@@ -191,6 +197,8 @@ class RuntimeController:
             task_budget_seconds=float(sched_cfg.get("task_budget_seconds", 3.0)),
             intensity_provider=self._intensity,
             machine_ready_provider=self._machine_ready_for_work,
+            machine_sample_provider=self._machine_sample_now,
+            resource_history=self.resource_history,
         )
         self._register_handlers()
 
@@ -213,6 +221,8 @@ class RuntimeController:
             task_budget_seconds=float(auto_cfg.get("task_budget_seconds", 20.0)),
             completion_hook=self._after_scheduled_run,
             machine_ready_provider=self._machine_ready_for_work,
+            machine_sample_provider=self._machine_sample_now,
+            resource_history=self.resource_history,
         )
         for kind, handler in self.scheduler._handlers.items():
             self.scheduled_scheduler.register(kind, handler)
@@ -289,19 +299,36 @@ class RuntimeController:
             return {}
 
     def _machine_ready_for_work(self) -> bool:
-        """Whether the computer is warm and calm enough to do heavy work.
+        """Whether the computer is warm and settled enough to do heavy work.
 
         Conservative at startup (see :mod:`astra.machine`): a machine that just
-        booted, or one that is loaded, keeps her in efficiency mode. ``None`` /
-        unmeasurable is treated by the scheduler as "no gate".
+        booted, or one that just resumed, keeps her in efficiency mode. This is
+        the *energy* half of readiness - it deliberately does not refuse work
+        because of a high CPU/memory number, because whether a specific task can
+        be done is a finer, per-task measured question (``astra.resources``,
+        wired through the scheduler's ``machine_sample_provider``). ``None`` /
+        unmeasurable is treated as "no gate".
         """
         if not self.power_cfg.get("startup_efficiency", True):
             return True
         try:
             sample = self.machine.sample()
+            settled = getattr(self.machine, "sustainably_calm", None)
+            if callable(settled):
+                return bool(settled(sample))
             return bool(self.machine.ready_for_work(sample))
         except Exception:
             return True
+
+    def _machine_sample_now(self) -> Any:
+        """A fresh machine reading for the scheduler's affordability estimate."""
+        try:
+            sample_now = getattr(self.machine, "sample_now", None)
+            if callable(sample_now):
+                return sample_now()
+            return self.machine.sample()
+        except Exception:
+            return None
 
     def _after_scheduled_run(self, task: BackgroundTask, status: str) -> None:
         """Re-arm a recurring scheduled occurrence after it has run.
@@ -702,11 +729,45 @@ class RuntimeController:
             self._stop.wait(self.poll_seconds)
 
     def _sample_machine(self) -> None:
-        """Sample the machine once (bounded, read-only)."""
+        """Sample the machine once and record it (bounded, read-only).
+
+        The observation is tagged with whether Roum is currently engaged, so the
+        history can distinguish the machine's idle baseline from the load his own
+        applications produce - the active-vs-idle comparison the affordability
+        estimate is grounded in.
+        """
         try:
-            self.machine.sample()
+            sample = self.machine.sample()
+        except Exception:
+            return
+        try:
+            self.resource_history.observe(sample, active=self._human_active())
         except Exception:
             pass
+
+    def _human_active(self) -> bool:
+        """Whether Roum appears to be actively using the machine right now.
+
+        Two read-only signals: a recent *conversation* turn (the in-memory
+        ``last_interaction`` marker) or recent OS input (the machine's own idle
+        time). Either means he is here, so the machine's current load is his
+        doing rather than the runtime's. Unknown idle time is treated as *not*
+        active, so a platform without the reading never mislabels a busy machine
+        as his.
+        """
+        try:
+            if self._user_present(datetime.now(timezone.utc)):
+                return True
+        except Exception:
+            pass
+        try:
+            sample = getattr(self.machine, "_last", None)
+            idle = getattr(sample, "idle_seconds", None)
+            if idle is None:
+                return False
+            return float(idle) < reading.DEFAULT_IDLE_SECONDS
+        except Exception:
+            return False
 
     def _handle_power(self) -> None:
         """Sleep alongside the machine and re-orient on resume.
@@ -839,10 +900,12 @@ class RuntimeController:
         if snap:
             cpu = snap.get("cpu_load")
             mem = snap.get("memory_pressure")
+            gpu = snap.get("gpu_util")
             lines.append(
                 "Machine: "
                 f"cpu={'?' if cpu is None else f'{cpu * 100:.0f}%'} "
                 f"mem={'?' if mem is None else f'{mem * 100:.0f}%'} "
+                f"gpu={'?' if gpu is None else f'{gpu * 100:.0f}%'} "
                 f"{'efficiency-mode' if snap.get('efficiency_mode') else 'ready'}")
             if snap.get("suspended_seconds"):
                 lines.append(f"  last suspend: ~{int(snap['suspended_seconds'])}s "
@@ -1007,6 +1070,16 @@ class RuntimeController:
         lines = ["Machine and power:"]
         lines.append(f"  cpu: {pct(snap.get('cpu_load'))} "
                      f"memory: {pct(snap.get('memory_pressure'))}")
+        gpu = snap.get("gpu_util")
+        vram_used, vram_total = snap.get("vram_used"), snap.get("vram_total")
+        if gpu is not None or vram_total is not None:
+            vram = "?"
+            if vram_used is not None and vram_total:
+                vram = (f"{vram_used / (1024 ** 3):.1f}/"
+                        f"{vram_total / (1024 ** 3):.1f} GB")
+            lines.append(f"  gpu: {pct(gpu)} vram: {vram}")
+        else:
+            lines.append("  gpu: not measurable on this platform")
         up = snap.get("uptime_seconds")
         lines.append(f"  uptime: {'?' if up is None else f'{up / 3600:.1f}h'}")
         lines.append(f"  ready for heavy work: {snap.get('ready_for_work')} "
@@ -1017,6 +1090,39 @@ class RuntimeController:
         if self._last_suspend_seconds:
             lines.append(f"  last suspend: ~{int(self._last_suspend_seconds)}s "
                          "(Astra slept alongside the computer)")
+        return "\n".join(lines)
+
+    def resource_report(self) -> str:
+        """The active-vs-idle comparison and the learned per-task costs.
+
+        Read-only: it renders the durable resource history (what the machine
+        looks like when Roum is engaged versus idle, and what each kind of task
+        has actually cost) and the estimate for the next task of each kind. It
+        never stores anything and never reaches Astra's prompt.
+        """
+        def pct(value: Any) -> str:
+            return "?" if value is None else f"{float(value) * 100:.0f}%"
+
+        def row(label: str, base: Dict[str, Any]) -> str:
+            return (f"  {label}: cpu={pct(base.get('cpu'))} "
+                    f"mem={pct(base.get('mem'))} gpu={pct(base.get('gpu'))} "
+                    f"vram={pct(base.get('vram'))} "
+                    f"({base.get('samples', 0)} sample(s))")
+
+        lines = ["Resource history:"]
+        try:
+            snap = self.resource_history.snapshot()
+        except Exception:
+            return "Resource history: unavailable."
+        lines.append(row("idle (machine alone)", snap.get("idle_baseline") or {}))
+        lines.append(row("active (Roum's apps)", snap.get("active_baseline") or {}))
+        lines.append("Estimated cost per task kind (learned, else prior):")
+        for kind in sorted(task_mod.TASK_KINDS):
+            cost = self.scheduler.task_cost(kind)
+            used = resources_mod.KIND_RESOURCES.get(kind, ())
+            parts = ", ".join(f"{r}={pct(getattr(cost, r))}" for r in used
+                              if getattr(cost, r, 0.0) > 0.0)
+            lines.append(f"  {kind}: {parts or 'negligible'}")
         return "\n".join(lines)
 
     def pending_decisions_text(self, limit: int = 8) -> str:
@@ -1157,6 +1263,10 @@ class ApplicationRouter:
 
         if command in ("/power", "/machine"):
             return {"text": controller.power_report(), "handled": True, "source": source}
+
+        if command in ("/resources", "/resource-history"):
+            return {"text": controller.resource_report(), "handled": True,
+                    "source": source}
 
         if command == "/schedules":
             return {"text": self._schedules_text(), "handled": True, "source": source}
