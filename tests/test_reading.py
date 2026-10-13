@@ -999,6 +999,61 @@ class TestCumulativeLearning(_Base):
         prompt = orchestrator.build_prompt("What did you notice about the garden?", [])
         self.assertIn("brass key", prompt)
 
+    def test_work_context_block_is_bounded(self):
+        # A work read to the end accumulates far more notes than a turn can
+        # carry; the block must stay bounded and say what it left out, rather
+        # than growing the prompt without limit.
+        digest = {"observations": [f"Fact {i} about the garden." for i in range(120)],
+                  "interpretations": ["The garden is a threshold."]}
+        self.store.apply_reading_results(work_id="garden", title="Garden", digest=digest)
+        orchestrator = CompanionOrchestrator(self.store, config_dir=self.tmp)
+        prompt, diag = orchestrator.build_prompt_with_diagnostics(
+            "What did you notice about the garden?", [])
+        self.assertIn("WORK CONTEXT: garden", prompt)
+        # Every record is still in the store...
+        self.assertGreater(len(self.store.get_work_context("garden")),
+                           inquiry.WORK_KNOWLEDGE_PROMPT_LIMIT)
+        # ...but the block carries at most the cap and says so.
+        block = prompt.split("WORK CONTEXT: garden", 1)[1]
+        self.assertLessEqual(block.count("\n  - ("), inquiry.WORK_KNOWLEDGE_PROMPT_LIMIT)
+        self.assertIn("firmest/most recent", prompt)
+        # The block and the diagnostics agree on what was injected.
+        self.assertLessEqual(len(diag["work_context"]["garden"]),
+                             inquiry.WORK_KNOWLEDGE_PROMPT_LIMIT)
+
+    def test_select_prompt_knowledge_prioritises_stated_over_tentative(self):
+        from astra import inquiry as inq
+        self.store.apply_reading_results(
+            work_id="w", title="W",
+            digest={"observations": [f"stated {i}" for i in range(5)],
+                    "interpretations": [f"tentative {i}" for i in range(5)]})
+        records = self.store.get_work_context("w")
+        selected = inq.select_prompt_knowledge(records, "w", limit=3)
+        self.assertEqual(len(selected), 3)
+        # Stated observations outrank tentative interpretations under the cap.
+        self.assertTrue(all(inq.epistemic_of(m) == inq.EPISTEMIC_KNOWN
+                            for m in selected))
+
+    def test_injected_reading_knowledge_counts_as_used(self):
+        # Knowledge shown to the model through the work-context block must earn
+        # a use_count; otherwise the notes reading produces decay toward
+        # dormancy as if they had never been recalled.
+        self.store.apply_reading_results(
+            work_id="garden", title="Garden",
+            digest={"observations": ["A brass key lay under the gate"],
+                    "questions": ["Who left the key there?"]})
+        orchestrator = CompanionOrchestrator(self.store, config_dir=self.tmp)
+        prompt, diag = orchestrator.build_prompt_with_diagnostics(
+            "What did you notice about the garden?", [])
+        knowledge_ids = {m["id"] for m in self.store.get_work_context("garden")}
+        question_ids = {q["id"] for q in self.store.get_questions(open_only=True)}
+        self.assertTrue(knowledge_ids <= set(diag["injected_ids"]))
+        self.assertTrue(question_ids <= set(diag["injected_ids"]))
+        orchestrator.note_retrieval(diag)
+        after = {m["id"]: m.get("use_count", 0)
+                 for m in self.store.get_work_context("garden")}
+        self.assertTrue(all(after[i] > 0 for i in knowledge_ids))
+
 
 class TestArgParsing(unittest.TestCase):
     def test_quotes_keep_a_windows_path_whole(self):

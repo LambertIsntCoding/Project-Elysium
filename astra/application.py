@@ -684,17 +684,22 @@ class RuntimeController:
         every cycle across restarts.
         """
         seeds = [
-            (KIND_FILE_INSPECTION, "allowed-roots", 20),
-            (KIND_MEMORY_MAINTENANCE, "routine-decay", 60),
-            (KIND_CONTEXT_PREPARATION, "nightly", 50),
-            (KIND_READING, "next-work", 30),
-            (KIND_APP_MAINTENANCE, "queue-sweep", 45),
+            (KIND_FILE_INSPECTION, "allowed-roots", 20, 3),
+            (KIND_MEMORY_MAINTENANCE, "routine-decay", 60, 3),
+            (KIND_CONTEXT_PREPARATION, "nightly", 50, 3),
+            # Reading is long-lived background work: a down model backend must
+            # not exhaust its attempts and strand the book. The reader already
+            # holds its position and backs off between retries, so a generous
+            # attempt budget lets a recurring occurrence keep resuming after an
+            # outage instead of leaving the work unread until the next restart.
+            (KIND_READING, "next-work", 30, 20),
+            (KIND_APP_MAINTENANCE, "queue-sweep", 45, 3),
         ]
         with self._lock:
-            for kind, key, priority in seeds:
+            for kind, key, priority, max_attempts in seeds:
                 self.task_store.enqueue(BackgroundTask(
                     kind=kind, origin=task_mod.ORIGIN_SCHEDULER,
-                    priority=priority, dedupe_key=key))
+                    priority=priority, dedupe_key=key, max_attempts=max_attempts))
 
     # -- lifecycle -------------------------------------------------------
     def start(self) -> None:

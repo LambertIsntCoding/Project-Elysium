@@ -584,6 +584,31 @@ Top-level `memory_store.py`, `orchestrator.py`, `elysium.py`, `consolidator.py`,
   invents a pause, and pausing relies on the session signalling one. `build_session`
   starts the reader by default (`enable_reader=False` to disable); the session
   marks activity on every input and re-checks for games each loop iteration.
+- **What reading produces must actually accumulate and be recalled.** Three
+  links in the read -> knowledge -> retrieval loop are load-bearing, and each was
+  a place the loop could silently leak:
+  - **The work-context prompt block is bounded.** A work read to the end
+    accumulates hundreds of notes; rendering every one on every turn would grow
+    the prompt without limit. `inquiry.select_prompt_knowledge` orders a work's
+    records by how firmly she holds them (stated > known > interpretation >
+    suspected > possible > unknown) then recency, and
+    `work_knowledge_prompt_block` shows at most `WORK_KNOWLEDGE_PROMPT_LIMIT`
+    (40) with an explicit "showing the N firmest/most recent of M" footer. The
+    cap is display-only - nothing is dropped from the store or from retrieval.
+  - **Injected notes and questions count as *used*.** Work knowledge and open
+    questions are injected through their own labelled blocks, not generic
+    retrieval, but they *are* shown - so `_build_diagnostics` adds their ids to
+    `injected_ids` and `note_retrieval` records a use. Without this, the notes
+    reading produces never earn a `use_count` and decay toward dormancy as if
+    they had never been recalled. `_append_work_knowledge` returns the *rendered*
+    subset so a note left out of the capped block is never marked used.
+  - **Reading work is long-lived and continuous.** `seed()` gives the reading
+    task a generous `max_attempts` (20) so a down model backend cannot exhaust
+    its attempts and strand the book; the reader already holds its position and
+    backs off between retries. The planner proposes a partway work as a
+    *continuation* - its reason names the notes and open questions already
+    recorded (`ActivityPlanner._work_learning`, read-only) - and bounds how many
+    works it proposes per pass (`max_reading_works`).
 
 ## Astra audit: authority, provenance, grounding (behavioural regression suite)
 

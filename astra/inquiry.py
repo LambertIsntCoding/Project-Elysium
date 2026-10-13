@@ -381,19 +381,61 @@ def questions_prompt_block(memories: List[Dict[str, Any]]) -> Optional[str]:
     return "\n".join(lines)
 
 
-def work_knowledge_prompt_block(memories: List[Dict[str, Any]], work_id: str) -> Optional[str]:
-    """Everything Astra has for one work, labelled by how well she knows it.
+# The most notes a single work may contribute to the prompt. A work read to the
+# end accumulates hundreds of records; injecting every one would grow the prompt
+# without bound on every turn. The cap keeps the block a bounded, useful summary
+# of what she knows, ordered by how firmly she knows it.
+WORK_KNOWLEDGE_PROMPT_LIMIT = 40
+
+# Firmness order for the prompt block: what the work *stated* is shown first,
+# then her more confident knowledge, then her tentative readings. This is
+# display priority only - it never changes a record's epistemic label.
+_EPISTEMIC_PROMPT_RANK = {
+    EPISTEMIC_STATED: 0, EPISTEMIC_KNOWN: 1, EPISTEMIC_INTERPRETATION: 2,
+    EPISTEMIC_SUSPECTED: 3, EPISTEMIC_POSSIBLE: 4, EPISTEMIC_UNKNOWN: 5,
+}
+
+
+def select_prompt_knowledge(memories: List[Dict[str, Any]], work_id: str,
+                            limit: int = WORK_KNOWLEDGE_PROMPT_LIMIT
+                            ) -> List[Dict[str, Any]]:
+    """The bounded, prioritised slice of a work's knowledge for the prompt.
+
+    Ordered by how firmly she holds each note (stated > known > interpretation >
+    suspected > possible > unknown) and then by recency, so the cap keeps what
+    matters and drops the thinnest, oldest lines. Read-only.
+    """
+    scoped = [m for m in memories
+              if is_knowledge(m) and work_of(m) == work_id and m.get("content")]
+    scoped.sort(key=lambda m: (
+        _EPISTEMIC_PROMPT_RANK.get(epistemic_of(m), 5),
+        str(m.get("timestamp") or ""),
+    ))
+    try:
+        limit = max(0, int(limit))
+    except (TypeError, ValueError):
+        limit = WORK_KNOWLEDGE_PROMPT_LIMIT
+    return scoped[:limit] if limit else []
+
+
+def work_knowledge_prompt_block(memories: List[Dict[str, Any]], work_id: str,
+                                limit: int = WORK_KNOWLEDGE_PROMPT_LIMIT
+                                ) -> Optional[str]:
+    """A bounded summary of what Astra has for one work, labelled by how well she knows it.
 
     This is the boundary that keeps work-specific understanding distinct from
     the base model's knowledge: only what Astra actually recorded about the work
     appears here, and each line says whether it is known, tentative, or merely
     suspected. Stay with what is recorded - where her notes do not cover
     something, uncertainty is preferred to invention.
+
+    Bounded on purpose: a work read to the end accumulates far more notes than a
+    turn can carry, so the block shows the firmest, most recent ones and says how
+    many it left out rather than growing without limit (``select_prompt_knowledge``).
     """
-    scoped = [m for m in memories if is_knowledge(m) and work_of(m) == work_id and m.get("content")]
+    scoped = select_prompt_knowledge(memories, work_id, limit)
     if not scoped:
         return None
-    scoped.sort(key=lambda m: (epistemic_of(m) != EPISTEMIC_STATED, str(m.get("timestamp") or "")))
     lines = [f"\n=== WORK CONTEXT: {work_id} (ONLY WHAT ASTRA HAS ENCOUNTERED) ==="]
     lines.append(
         "These are Astra's own notes from this work, not general knowledge. A "
@@ -405,6 +447,11 @@ def work_knowledge_prompt_block(memories: List[Dict[str, Any]], work_id: str) ->
     for mem in scoped:
         label = epistemic_of(mem)
         lines.append(f"  - ({label}) {_clean(mem.get('content'))}")
+    total = len([m for m in memories
+                 if is_knowledge(m) and work_of(m) == work_id and m.get("content")])
+    if total > len(scoped):
+        lines.append(f"  (showing the {len(scoped)} firmest/most recent of "
+                     f"{total} recorded note(s))")
     return "\n".join(lines)
 
 

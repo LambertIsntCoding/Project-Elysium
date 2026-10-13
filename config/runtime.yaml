@@ -79,6 +79,9 @@ autonomy:
   max_new_per_pass: 2
   max_live_tasks: 24
   per_kind_limit: 2
+  # How many partway works may be proposed for continued reading per pass, so a
+  # large library does not flood the queue and the reading lane takes its turn.
+  max_reading_works: 3
   # Budgets for scheduled work (it may run while a human is engaged).
   max_scheduled_per_wake: 2
   cycle_budget_seconds: 30.0

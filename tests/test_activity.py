@@ -89,6 +89,32 @@ class TestUnfinishedWorks(unittest.TestCase):
         self.assertTrue(reading_cands)
         self.assertEqual(reading_cands[0]["payload"]["work_id"], "partway")
 
+    def test_reading_candidate_names_accumulated_learning(self):
+        # A work she has already formed understanding on is proposed as a
+        # *continuation*: the reason names what she has so far, so the activity
+        # is continuous with the reading rather than a cold restart.
+        self.library.add_text("word " * 300, title="Partway", work_id="partway")
+        self.memory.apply_reading_results(
+            work_id="partway", title="Partway",
+            digest={"observations": ["A river flows north."],
+                    "questions": ["Where does it end?"]})
+        cands = [c for c in self._planner().candidates()
+                 if c["kind"] == T.KIND_READING]
+        self.assertTrue(cands)
+        self.assertIn("1 note(s) so far", cands[0]["reason"])
+        self.assertIn("1 open question(s)", cands[0]["reason"])
+
+    def test_reading_candidates_are_capped_per_pass(self):
+        # A large library must not flood the queue: only a bounded number of
+        # partway works are proposed for continued reading in one pass.
+        for i in range(8):
+            self.library.add_text("word " * 300, title=f"Book {i}", work_id=f"book{i}")
+        planner = activity.ActivityPlanner(
+            self.store, store=self.memory, library=self.library, ledger=self.ledger,
+            config={"max_reading_works": 2}, enabled_kinds=[T.KIND_READING])
+        reading_cands = [c for c in planner.candidates() if c["kind"] == T.KIND_READING]
+        self.assertEqual(len(reading_cands), 2)
+
 
 class TestPlanBounds(unittest.TestCase):
     def setUp(self):

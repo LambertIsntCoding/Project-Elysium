@@ -825,7 +825,10 @@ class CompanionOrchestrator:
         self._append_formative(parts, formative_experiences)
         self._append_dispositions(parts)
         self._append_questions(parts, relevant_questions)
-        self._append_work_knowledge(parts, work_knowledge)
+        # Replace the full grouped list with the *rendered* subset: only what
+        # the capped block actually showed may be counted as used, so a note left
+        # out of the block does not earn a use_count it never earned.
+        work_knowledge = self._append_work_knowledge(parts, work_knowledge)
         self._append_temporal(parts, all_questions)
         self._append_impatience(parts, all_questions)
         # The behavioural modulation reads the affect and temporal state the
@@ -1419,11 +1422,25 @@ class CompanionOrchestrator:
             parts.append(block)
 
     def _append_work_knowledge(self, parts: List[str],
-                               grouped: Dict[str, List[Dict[str, Any]]]) -> None:
+                               grouped: Dict[str, List[Dict[str, Any]]]
+                               ) -> Dict[str, List[Dict[str, Any]]]:
+        """Render each work's bounded context block; return what was shown.
+
+        The returned mapping is the *rendered* subset (bounded by
+        ``inquiry.select_prompt_knowledge``), so a caller counts only the notes
+        that actually reached the model - a record left out of the capped block
+        was not shown and must not be marked as used.
+        """
+        rendered: Dict[str, List[Dict[str, Any]]] = {}
         for work in sorted(grouped):
+            selected = inquiry.select_prompt_knowledge(grouped[work], work)
+            if not selected:
+                continue
             block = inquiry.work_knowledge_prompt_block(grouped[work], work)
             if block:
                 parts.append(block)
+                rendered[work] = selected
+        return rendered
 
     def _append_current_state(self, parts: List[str], current_state: List[Dict[str, Any]]) -> None:
         rows = [
@@ -1567,10 +1584,20 @@ class CompanionOrchestrator:
         retrieved_ids = {
             m.get("id") for m in (retrieved_roum + retrieved_self + retrieved_rel)
         }
+        # Work knowledge and open questions are injected through their own
+        # labelled blocks, not generic retrieval, but they *are* shown to the
+        # model - so they must count as used. Without this, the notes reading
+        # produces never earn a use_count and decay toward dormancy as if they
+        # had never been recalled, and accumulated learning is quietly forgotten.
+        work_knowledge_ids = {
+            m.get("id") for mems in work_knowledge.values() for m in mems
+        }
         injected_ids = (
             set(retrieved_ids)
             | {m.get("id") for m in governing}
             | {m.get("id") for m in current_state}
+            | {m.get("id") for m in relevant_questions}
+            | work_knowledge_ids
         )
         # Explicit behavioural constraints (authoritative runtime rules), with
         # their origin preserved so a future debug can tell "never received" from

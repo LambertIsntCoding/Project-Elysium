@@ -106,6 +106,10 @@ class ActivityPlanner:
         self.max_new = max(0, int(cfg.get("max_new_per_pass", 2)))
         self.max_live = max(1, int(cfg.get("max_live_tasks", 24)))
         self.per_kind_limit = max(1, int(cfg.get("per_kind_limit", 2)))
+        # How many partway works may be proposed for continued reading in one
+        # pass. Bounded so a large library does not flood the queue; the reading
+        # lane takes its turn rather than dominating it.
+        self.max_reading_works = max(1, int(cfg.get("max_reading_works", 3)))
         # The kinds the planner may select. The application passes the set that
         # actually has a registered handler, so a proposal is always executable.
         self.enabled_kinds = set(enabled_kinds or task_mod.TASK_KINDS)
@@ -161,6 +165,33 @@ class ActivityPlanner:
         except Exception:
             return 0
 
+    def _work_learning(self, work_id: Optional[str]) -> "tuple[int, int]":
+        """``(knowledge notes, open questions)`` already recorded for a work.
+
+        Read-only evidence that Astra has built understanding on this work: the
+        notes reading produced (observations/interpretations/hypotheses) and the
+        questions it left unresolved. Used only to describe *why* a work is worth
+        continuing, never to claim a capability or to change what is stored.
+        """
+        work_id = str(work_id or "").strip()
+        if not work_id or self.store is None:
+            return 0, 0
+        notes = 0
+        getter = getattr(self.store, "get_work_context", None)
+        if callable(getter):
+            try:
+                notes = len(getter(work_id) or [])
+            except Exception:
+                notes = 0
+        open_qs = 0
+        questions = getattr(self.store, "get_questions", None)
+        if callable(questions):
+            try:
+                open_qs = len(questions(work_id=work_id, open_only=True) or [])
+            except Exception:
+                open_qs = 0
+        return notes, open_qs
+
     def _unfinished_works(self) -> List[Dict[str, Any]]:
         if self.library is None or not callable(getattr(self.library, "list_works", None)):
             return []
@@ -206,12 +237,23 @@ class ActivityPlanner:
                 importance=0.5, scope="review recent experiences"))
 
         if unfinished:
-            for work in unfinished[:3]:
+            for work in unfinished[:self.max_reading_works]:
                 work_id = work.get("work_id") or work.get("title")
+                learned, open_qs = self._work_learning(work_id)
+                # Building on prior learning: a work she has already formed
+                # understanding on (or raised questions about) is worth
+                # continuing, and the reason names what she has, so the activity
+                # is continuous with the reading rather than a cold restart.
+                reason = f"unfinished work: {work.get('title') or work_id}"
+                if learned or open_qs:
+                    reason += (f" ({learned} note(s) so far"
+                               + (f", {open_qs} open question(s)" if open_qs else "")
+                               + ")")
                 out.append(self._cand(
                     task_mod.KIND_READING, f"work:{work_id}",
-                    reason=f"unfinished work: {work.get('title') or work_id}",
-                    importance=0.55, scope="continue a partway work",
+                    reason=reason,
+                    importance=0.55 + (0.05 if learned else 0.0),
+                    scope="continue a partway work",
                     payload={"work_id": work_id}))
 
         # Maintenance and evaluation are always *potentially* worthwhile, but
