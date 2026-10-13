@@ -2094,6 +2094,16 @@ def build_session(
     from astra.library import Library
 
     library = Library(data_dir=storage_dir)
+    # One measured machine object for the whole session. Sharing it means the
+    # reader's load check and the scheduler's resource check read the same real
+    # numbers - and, crucially, that the reader has a *measured* load wherever
+    # the platform can provide one (e.g. Windows, where the reader's own
+    # ``os.getloadavg`` fallback yields ``None``). Without it a busy application
+    # could stand reading down indefinitely because the headroom could never be
+    # measured; with it, the reader proceeds on a measurably calm machine.
+    from astra import machine as machine_mod
+
+    machine = machine_mod.build_default()
     reader = None
     if enable_reader and model_use.enabled(model_use_mod.FEATURE_READING):
         from astra.reader import BackgroundReader
@@ -2108,6 +2118,7 @@ def build_session(
         )
         reader = BackgroundReader(
             library, store, orchestrator.query_gemma, process_policy=policy,
+            cpu_load_fn=getattr(machine, "cpu_reading", None),
         )
         reader.start()
 
@@ -2128,7 +2139,7 @@ def build_session(
     controller = RuntimeController(
         session=session, store=store, data_dir=storage_dir,
         config_dir=config_dir, config=runtime_config, reader=reader,
-        library=library, think_only=think_only,
+        library=library, think_only=think_only, machine=machine,
     )
     session.controller = controller
     # The orchestrator only *reads* prepared context for its prompt; the

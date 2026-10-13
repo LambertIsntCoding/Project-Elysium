@@ -490,6 +490,20 @@ class MachineState:
             return None
         return max(0.0, min(1.0, 1.0 - float(pressure)))
 
+    def gpu_headroom(self, sample: Optional[Sample] = None) -> Optional[float]:
+        """Free GPU capacity as a fraction (0..1), or ``None`` when unknown.
+
+        The positive form of GPU utilisation: ``1 - gpu_util``. It is ``None``
+        whenever the GPU cannot be measured, which is what keeps a GPU-claiming
+        task from being refused merely because the machine has no readable GPU -
+        the absence of a measurement is not a busy GPU.
+        """
+        sample = sample or self._last or self.sample()
+        util = sample.gpu_util
+        if util is None:
+            return None
+        return max(0.0, min(1.0, 1.0 - float(util)))
+
     def warm(self, sample: Optional[Sample] = None) -> bool:
         """True when the machine has been up long enough to be fully ready."""
         sample = sample or self._last or self.sample()

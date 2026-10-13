@@ -894,6 +894,112 @@ class TestCliBooksCommands(_Base):
         self.assertIn("Added 'elsewhere'", "\n".join(self.out))
 
 
+class TestReaderModelBackoff(_Base):
+    """A down model backs off instead of hammering; the position is held."""
+
+    def test_backoff_is_exponential_and_capped(self):
+        self.assertEqual(reading.model_backoff_seconds(0), 0.0)
+        self.assertEqual(reading.model_backoff_seconds(1),
+                         reading.MODEL_BACKOFF_BASE_SECONDS)
+        self.assertGreater(reading.model_backoff_seconds(3),
+                           reading.model_backoff_seconds(2))
+        self.assertLessEqual(reading.model_backoff_seconds(99),
+                             reading.MODEL_BACKOFF_MAX_SECONDS)
+
+    def test_failure_trips_backoff_and_holds_the_position(self):
+        self.library.add_text("word " * 500, title="Held", work_id="held")
+        calls = []
+
+        def failing(_prompt):
+            calls.append(1)
+            return "[Error: unreachable]"
+
+        reader = self.reader(model=failing)
+        reader.run_once()
+        # The passage was not processed, so the offset is still at the start.
+        self.assertEqual(self.library.get_state("held")["char_offset"], 0)
+        self.assertGreater(reader.backoff_remaining(), 0.0)
+        # A second wake is held off by the backoff - no further model call.
+        allowed, reason = reader.may_read()
+        self.assertFalse(allowed)
+        self.assertEqual(reason, reading.IDLE_MODEL_BACKOFF)
+        reader.run_once()
+        self.assertEqual(len(calls), 1)
+
+    def test_a_success_clears_the_backoff(self):
+        self.library.add_text("word " * 500, title="Recovers", work_id="recovers")
+        state = {"fail": True}
+
+        def flaky(_prompt):
+            if state["fail"]:
+                return "[Error: unreachable]"
+            return '{"observation": "a real note"}'
+
+        reader = self.reader(model=flaky)
+        reader.run_once()
+        self.assertGreater(reader.backoff_remaining(), 0.0)
+        state["fail"] = False
+        # Roum forcing a cycle overrides the wait and retries immediately.
+        reader.run_once(force=True)
+        self.assertEqual(reader.backoff_remaining(), 0.0)
+        self.assertGreater(self.library.get_state("recovers")["char_offset"], 0)
+
+    def test_a_finished_work_does_not_shadow_a_live_one(self):
+        self.library.add_text("one two three " * 50, title="Done", work_id="done")
+        self.library.add_text("four five six " * 50, title="Next", work_id="next")
+        self.library.set_status("done", reading.WORK_FINISHED)
+        self.library.set_current("done")
+        # The pinned current is finished, so the reader moves to the live work.
+        self.assertEqual(self.library.current_work_id(), "next")
+
+
+# ---------------------------------------------------------------------
+# Cumulative learning: reading retains knowledge and is grounded in memory
+# ---------------------------------------------------------------------
+class TestCumulativeLearning(_Base):
+    """Reading across sessions accumulates governed knowledge that retrieves."""
+
+    def test_reading_accumulates_and_retrieves_across_sessions(self):
+        self.library.add_text("Alice found a key under the gate. " * 300,
+                              title="Garden", work_id="garden")
+
+        def model(_prompt):
+            return json.dumps({
+                "observations": ["A brass key lay under the gate"],
+                "interpretations": ["The key likely matters later"],
+                "questions": ["Who left the key there?"],
+            })
+
+        # Session one reads one bounded chunk.
+        self.reader(model, chunks_per_cycle=1).run_once()
+        first = self.library.get_state("garden")["char_offset"]
+        self.assertGreater(first, 0)
+        # A *fresh* reader (a new session) resumes rather than restarting.
+        self.reader(model, chunks_per_cycle=1).run_once()
+        self.assertGreater(self.library.get_state("garden")["char_offset"], first)
+
+        # What she read is retained as governed, work-scoped knowledge.
+        context = self.store.get_work_context("garden")
+        self.assertTrue(any("brass key" in m["content"] for m in context))
+        self.assertTrue(all(inquiry.work_of(m) == "garden" for m in context))
+        # A passage's unresolved question stayed an open question.
+        self.assertTrue(any("key" in q["content"]
+                            for q in self.store.get_questions(open_only=True)))
+
+    def test_reading_knowledge_reaches_the_prompt(self):
+        # The knowledge reading produced is not merely stored: a turn about the
+        # work surfaces it, so reading actually informs conversation.
+        self.store.apply_reading_results(
+            work_id="garden", title="Garden",
+            digest={"observations": ["A brass key lay under the gate"]})
+        self.library.add_text("Alice found a key under the gate. " * 60,
+                              title="Garden", work_id="garden")
+        orchestrator = CompanionOrchestrator(self.store, config_dir=self.tmp)
+        orchestrator.reader = self.reader()
+        prompt = orchestrator.build_prompt("What did you notice about the garden?", [])
+        self.assertIn("brass key", prompt)
+
+
 class TestArgParsing(unittest.TestCase):
     def test_quotes_keep_a_windows_path_whole(self):
         from main import split_args

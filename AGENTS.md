@@ -1097,6 +1097,36 @@ operator guide is `docs/autonomous_operation.md`. Structural invariants:
   exposes the idle/active comparison and per-kind costs read-only via
   ``/resources`` (and the POWER/MACHINE admin screen). None of it reaches the
   prompt.
+- **A defer can never outlast the condition that caused it.** The affordability
+  check reads a *live* sample, so a genuinely saturated resource still stands
+  work down - but the next cycle re-samples and re-decides, and an unmeasurable
+  resource (or one the platform cannot read, e.g. Windows CPU without a
+  provider) is skipped rather than treated as busy. `machine.gpu_headroom()` is
+  the positive counterpart to ``vram_headroom()`` and is ``None`` when the GPU is
+  unreadable, so "no GPU reading" is never a reason to refuse GPU work. The
+  reader and the scheduler share **one** `machine.build_default()` object
+  (`build_session` passes ``machine.cpu_reading`` to the reader), so the reader's
+  headroom check is *measured* wherever the platform allows instead of the
+  reader's own ``os.getloadavg`` fallback yielding ``None`` and a busy
+  application blocking reading indefinitely.
+- **A finished work never shadows a live one.** `Library.current_work_id()`
+  honours the pinned ``current`` only while it is still *live*
+  (`reading.is_live`); once it is finished/abandoned the next queued live work is
+  returned, so the reader moves on instead of re-opening a completed book. The
+  activity planner and the knowledge-gap handler classify works by the reading
+  state's ``status`` field (`reading.is_live`), **not** a boolean ``finished``
+  flag - the flag never exists on a reading state, so testing it counted every
+  completed work as unfinished and kept generating reading candidates for books
+  already done.
+- **A down model backs off; the position is held.** `reading.model_backoff_seconds`
+  is exponential (base 30s, capped at 10 min) and in-memory only. A failed model
+  call increments `BackgroundReader._consecutive_failures` and arms the backoff;
+  `may_read` reports `IDLE_MODEL_BACKOFF` while it is armed (an explicit
+  `/read force` overrides it), and a successful call clears it. The offset is
+  *never* advanced on a failure, so no passage is ever skipped - the backoff only
+  slows the retry. `application._handle_reading` maps `IDLE_MODEL_BACKOFF` to
+  ``SKIPPED`` (a hold, re-armed next occurrence), so a down backend cannot spin a
+  tight loop or exhaust the bounded retry budget into a permanent block.
 - **A durable proposal gates the changes that need approval.** `astra/proposals.py`
   records improvement proposals with a scope; protected scopes (identity,
   boundaries, credentials, permissions, source code) are flagged
@@ -1121,4 +1151,4 @@ addressing-gate, typing-simulation, interrupt-and-read, state-shaped timing,
 presence and reply/ping cases in
 `tests/test_discord_adapter.py` and the visibility/control cases in
 `tests/test_application.py`. `python -m unittest discover -s tests -t .`
-now runs 1109 tests, all passing (plus the script-style suites via `python -m tests`).
+now runs 1118 tests, all passing (plus the script-style suites via `python -m tests`).

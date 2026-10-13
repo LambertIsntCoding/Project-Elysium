@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from . import behavior
+from . import reading
 from . import tasks as task_mod
 
 # Decision vocabulary for an existing activity.
@@ -171,8 +172,13 @@ class ActivityPlanner:
         for work in works:
             if not isinstance(work, dict):
                 continue
-            # A partway or unstarted work is a real project; a finished one is not.
-            if work.get("finished"):
+            # A partway or unstarted work is a real project; a finished or
+            # abandoned one is not. The work's *own* liveness is the authority
+            # (``reading.is_live``): the reading state carries a ``status`` field,
+            # not a boolean ``finished`` flag, so testing the flag would wrongly
+            # count every completed work as still unfinished - which would
+            # generate a reading candidate for a book that is already done.
+            if not reading.is_live(work):
                 continue
             unfinished.append(work)
         return unfinished

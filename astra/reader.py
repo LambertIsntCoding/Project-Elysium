@@ -140,6 +140,11 @@ class BackgroundReader:
         self._thread: Optional[threading.Thread] = None
         self.last_cycle: Dict[str, Any] = {}
         self.last_reason: str = reading.IDLE_NO_WORK
+        # Consecutive model failures and the instant retrying is next allowed.
+        # In-memory scratch only (a restart retries afresh); it holds the
+        # position, it never skips a passage and never abandons a work.
+        self._consecutive_failures = 0
+        self._backoff_until = 0.0
         # The current pace (chunks this cycle, rest afterwards) and the state it
         # was derived from, kept for diagnostics. Set each cycle.
         self.last_pace: Dict[str, Any] = {}
@@ -220,6 +225,27 @@ class BackgroundReader:
     def note_gpu_busy(self, busy: bool) -> None:
         with self._lock:
             self._gpu_busy = bool(busy)
+
+    def _note_model_failure(self) -> None:
+        """Record a failed model call and arm the bounded retry backoff."""
+        with self._lock:
+            self._consecutive_failures += 1
+            wait = reading.model_backoff_seconds(self._consecutive_failures)
+            self._backoff_until = self._clock() + wait if wait else 0.0
+
+    def _clear_model_failure(self) -> None:
+        """A successful model call clears the failure count and the backoff."""
+        with self._lock:
+            self._consecutive_failures = 0
+            self._backoff_until = 0.0
+
+    def _in_backoff(self) -> bool:
+        with self._lock:
+            return bool(self._backoff_until and self._clock() < self._backoff_until)
+
+    def backoff_remaining(self) -> float:
+        with self._lock:
+            return max(0.0, self._backoff_until - self._clock()) if self._backoff_until else 0.0
 
     def _seconds_since_input(self) -> Optional[float]:
         with self._lock:
@@ -340,6 +366,11 @@ class BackgroundReader:
             has_work=has_work, idle_threshold=self.idle_seconds,
             load_ceiling=self.load_ceiling, force=force, **conditions,
         )
+        # A bounded model-failure backoff holds *reading* off (the position is
+        # still held; nothing is skipped) so a down backend is not hammered. An
+        # explicit force overrides the wait - Roum asked, so retry now.
+        if allowed and not force and self._in_backoff():
+            allowed, reason = False, reading.IDLE_MODEL_BACKOFF
         # Cache the reason so the prompt path can describe the reader without
         # re-running the gate (which may scan processes).
         self.last_reason = reason
@@ -434,8 +465,13 @@ class BackgroundReader:
             if digest is None:
                 # The model call failed, so this passage was *not* processed.
                 # Do not advance: leave the offset where it is so the next cycle
-                # retries it. Losing one passage is better than skipping it.
+                # retries it. Losing one passage is better than skipping it. The
+                # consecutive-failure count trips a bounded backoff so a down
+                # backend is not hammered; the position is still held, so nothing
+                # is ever skipped.
+                self._note_model_failure()
                 break
+            self._clear_model_failure()
             applied = self._apply(work_id, state, digest, passage) if digest else {"memories": 0}
             state = reading.advance(
                 state, char_offset=end, units_read=int(state.get("units_read") or 0) + 1,
@@ -570,6 +606,8 @@ class BackgroundReader:
             "headroom_ok": reading._calm_enough(
                 cond.get("calm_load"), reading.DEFAULT_HEADROOM_CEILING),
             "policy": self.process_policy.as_dict(),
+            "model_backoff_seconds": round(self.backoff_remaining(), 1),
+            "consecutive_model_failures": self._consecutive_failures,
         }
 
     def format_diagnostics(self) -> str:

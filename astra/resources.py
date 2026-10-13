@@ -16,6 +16,12 @@ number crosses a policy line, we ask the honest question:
 Only when a resource the task genuinely needs is *demonstrably* near saturation
 (``current + estimated_cost > saturation``) is the task deferred - and a defer is
 a *skip*, never a failure (the scheduler keeps the task pending for a later turn).
+Crucially, a deferral can never outlast the machine: saturation is a *point in
+time*, not a permanent verdict. Before the first measurement of a resource - or
+while every measurement is stale - the task is admitted rather than refused, so
+an unmeasurable (or never-yet-sampled) resource is never an indefinite blocker.
+Reading must be able to start on a fresh machine, not wait forever for a history
+that only a first read would create.
 
 Two ideas do the work:
 
@@ -57,6 +63,10 @@ RESOURCE_VERSION = 1
 MAX_OBSERVATIONS = 240
 # How many recent observations feed a baseline mean.
 BASELINE_WINDOW = 60
+# How long an observation stays "current" for the affordability check. Beyond
+# this the reading is stale and is treated as unmeasurable (admitted, not
+# refused): a snapshot taken an hour ago must never hold a task down now.
+OBSERVATION_TTL_SECONDS = 120.0
 # A kind's learned cost needs at least this many real observations before it
 # fully replaces the conservative prior (below it we blend toward the prior).
 MIN_COST_SAMPLES = 2
@@ -138,6 +148,25 @@ DEFAULT_LIGHT_COST = {"cpu": 0.02}
 def _now() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat()
+
+
+def _utc_epoch() -> float:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).timestamp()
+
+
+def _epoch_of(value: Any) -> Optional[float]:
+    """Parse an ISO-8601 timestamp to a POSIX epoch, or ``None`` if unparseable."""
+    if not value:
+        return None
+    try:
+        from datetime import datetime, timezone
+        ts = datetime.fromisoformat(str(value))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return ts.timestamp()
+    except (TypeError, ValueError):
+        return None
 
 
 def prior_cost(kind: str) -> ResourceCost:
@@ -325,13 +354,94 @@ class ResourceHistory:
         with self._lock:
             return {k: dict(v) for k, v in self._costs.items()}
 
+    def freshness(self) -> Dict[str, bool]:
+        """Whether each resource has a *current* (non-stale) measurement.
+
+        A resource is "fresh" when the most recent observation that actually
+        carried a value for it is within :data:`OBSERVATION_TTL_SECONDS`. This is
+        what lets the affordability check distinguish "measured and busy" from
+        "never measured / stale", so an unmeasurable or long-ago-sampled
+        resource is admitted rather than treated as a permanent block.
+        """
+        with self._lock:
+            rows = list(self._observations)
+        now = _utc_epoch()
+        out: Dict[str, bool] = {}
+        for key in ("cpu", "mem", "gpu", "vram"):
+            fresh = False
+            for row in reversed(rows):
+                if row.get(key) is None:
+                    continue
+                at = _epoch_of(row.get("at"))
+                fresh = at is not None and (now - at) <= OBSERVATION_TTL_SECONDS
+                break
+            out[key] = fresh
+        return out
+
+    def last_observation_at(self) -> Optional[str]:
+        with self._lock:
+            return str(self._observations[-1].get("at")) if self._observations else None
+
     def snapshot(self) -> Dict[str, Any]:
         return {
             "observations": len(self._observations),
             "idle_baseline": self.idle_baseline(),
             "active_baseline": self.active_baseline(),
             "kind_costs": self.kind_costs(),
+            "freshness": self.freshness(),
+            "last_observation_at": self.last_observation_at(),
         }
+
+
+# ---------------------------------------------------------------------------
+# Affinity: which resource a task actually contends for, and by how much
+# ---------------------------------------------------------------------------
+# A task is deferred only for the resource it genuinely competes for, and only
+# when it would push that resource past saturation. Cost alone is not enough:
+# e.g. a large model may *hold* a lot of memory (high absolute cost) yet not be
+# adding to memory pressure - holding is not contending. So the affordability
+# test asks two honest questions per resource the task uses:
+#
+#   1. is the resource already near saturation? (``current >= saturation``)
+#   2. would this task's estimated cost push it over? (``current + cost > sat``)
+#
+# A resource the machine is not near its limit on never blocks, however large
+# the task's absolute footprint looks.
+RESOURCE_CPU = "cpu"
+RESOURCE_MEMORY = "memory"
+RESOURCE_GPU = "gpu"
+RESOURCE_VRAM = "vram"
+RESOURCE_USAGE: Dict[str, Tuple[str, str]] = {
+    "cpu": ("cpu_load", RESOURCE_CPU),
+    "mem": ("memory_pressure", RESOURCE_MEMORY),
+    "gpu": ("gpu_util", RESOURCE_GPU),
+    "vram": ("vram_pressure", RESOURCE_VRAM),
+}
+
+
+def _sample_value(sample: Any, key: str) -> Optional[float]:
+    """Read one resource fraction from a ``Sample`` or a mapping, or ``None``."""
+    if key == "vram":
+        if hasattr(sample, "vram_pressure") and callable(sample.vram_pressure):
+            try:
+                return sample.vram_pressure()
+            except Exception:
+                return None
+        if isinstance(sample, dict):
+            used, total = sample.get("vram_used"), sample.get("vram_total")
+            if used is not None and total:
+                try:
+                    return max(0.0, min(1.0, float(used) / float(total)))
+                except (TypeError, ValueError):
+                    return None
+        return None
+    attr = RESOURCE_USAGE[key][0]
+    raw = (sample.get(attr) if isinstance(sample, dict)
+           else getattr(sample, attr, None))
+    try:
+        return None if raw is None else float(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def affordable(cost: ResourceCost, sample: Any, *,
@@ -343,30 +453,23 @@ def affordable(cost: ResourceCost, sample: Any, *,
 
     Pure. A resource the task does not use is never consulted, so a busy GPU
     cannot block a CPU-only task and a high system-memory number cannot block a
-    GPU-only one. A resource we cannot measure is skipped (unknown is not busy).
+    GPU-only one. A resource we cannot measure is skipped (unknown is not busy),
+    so an unmeasurable resource can never become a permanent reason to refuse
+    work. ``sample`` is a *live* reading, so it is the current truth: a resource
+    that is genuinely saturated does stand the task down (a legitimate limit),
+    but the next cycle re-samples it and re-decides, so a defer never outlasts
+    the condition that caused it.
+
+    A resource is only a reason to defer when the task *uses* it and the machine
+    is already near saturation such that the task's estimated cost would push it
+    over the bound. This is the honest "can this actually be done?" test: a
+    machine merely holding memory is not near saturation, so it does not refuse a
+    memory-using task.
 
     Returns ``(True, AFFORD_OK)`` when it fits, else ``(False, <reason>)`` naming
     the first resource that would saturate. A ``False`` is a *defer*, never a
     failure - the caller keeps the task pending for a later turn.
     """
-    def current(key: str) -> Optional[float]:
-        if key == "vram":
-            if hasattr(sample, "vram_pressure") and callable(sample.vram_pressure):
-                return sample.vram_pressure()
-            if isinstance(sample, dict):
-                used, total = sample.get("vram_used"), sample.get("vram_total")
-                if used is not None and total:
-                    return max(0.0, min(1.0, float(used) / float(total)))
-            return None
-        attr = {"cpu": "cpu_load", "mem": "memory_pressure",
-                "gpu": "gpu_util"}[key]
-        raw = (sample.get(attr) if isinstance(sample, dict)
-               else getattr(sample, attr, None))
-        try:
-            return None if raw is None else float(raw)
-        except (TypeError, ValueError):
-            return None
-
     bounds = {"cpu": cpu_saturation, "mem": mem_saturation,
               "gpu": gpu_saturation, "vram": vram_saturation}
     reasons = {"cpu": LIMITED_CPU, "mem": LIMITED_MEMORY,
@@ -375,7 +478,7 @@ def affordable(cost: ResourceCost, sample: Any, *,
         need = getattr(cost, resource, 0.0)
         if need <= 0.0:
             continue  # the task does not use this resource: never consulted
-        now = current(resource)
+        now = _sample_value(sample, resource)
         if now is None:
             continue  # unmeasurable: unknown, not busy
         if now + need > bounds[resource]:
@@ -385,8 +488,8 @@ def affordable(cost: ResourceCost, sample: Any, *,
 
 __all__ = [
     "ResourceCost", "ResourceHistory", "affordable", "prior_cost",
-    "KIND_RESOURCES", "DEFAULT_COST",
+    "KIND_RESOURCES", "DEFAULT_COST", "RESOURCE_USAGE",
     "AFFORD_OK", "LIMITED_CPU", "LIMITED_MEMORY", "LIMITED_GPU", "LIMITED_VRAM",
     "SATURATION_CPU", "SATURATION_MEMORY", "SATURATION_GPU", "SATURATION_VRAM",
-    "MAX_OBSERVATIONS", "MIN_COST_SAMPLES",
+    "MAX_OBSERVATIONS", "MIN_COST_SAMPLES", "OBSERVATION_TTL_SECONDS",
 ]

@@ -56,6 +56,40 @@ class TestCandidates(unittest.TestCase):
                                          activity.LANE_EXPLORATION))
 
 
+class TestUnfinishedWorks(unittest.TestCase):
+    """A finished work must not be proposed as work to continue reading."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.store = T.TaskStore(data_dir=self.tmp)
+        self.memory = TripleMemoryStore(data_dir=self.tmp, mirror_guard=False)
+        self.ledger = T.TaskLedger(data_dir=self.tmp)
+        from astra.library import Library
+
+        self.library = Library(data_dir=self.tmp)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _planner(self):
+        return activity.ActivityPlanner(
+            self.store, store=self.memory, library=self.library, ledger=self.ledger,
+            enabled_kinds=[T.KIND_READING])
+
+    def test_finished_work_is_not_a_reading_candidate(self):
+        self.library.add_text("word " * 300, title="Finished Book", work_id="finished")
+        self.library.set_status("finished", "finished")
+        kinds = {c["kind"] for c in self._planner().candidates()}
+        self.assertNotIn(T.KIND_READING, kinds)
+
+    def test_live_work_is_a_reading_candidate(self):
+        self.library.add_text("word " * 300, title="Partway", work_id="partway")
+        cands = self._planner().candidates()
+        reading_cands = [c for c in cands if c["kind"] == T.KIND_READING]
+        self.assertTrue(reading_cands)
+        self.assertEqual(reading_cands[0]["payload"]["work_id"], "partway")
+
+
 class TestPlanBounds(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()

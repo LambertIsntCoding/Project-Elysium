@@ -65,6 +65,7 @@ IDLE_HELD = "held"                       # no model call was permitted this cycl
 IDLE_FORCED = "forced"                   # Roum forced a cycle: the gate was bypassed
 IDLE_NOT_CONCENTRATING = "not_concentrating"  # too scattered/weary to read well
 IDLE_HARD_PROHIBITED = "hard_prohibited"  # a user-set absolute exclusion is running
+IDLE_MODEL_BACKOFF = "model_backoff"     # repeated model failures: waiting before retrying
 
 # The reasons that are genuine *interruptions* (as opposed to "fine to read" or
 # "nothing to read"). Only these are worth telling Astra about in her prompt.
@@ -107,6 +108,31 @@ LONG_ABSENCE_SECONDS = 3 * 86400.0  # an absence this long counts as "a while"
 # consumed in one burst. Scaled by the pace (see ``reading_pace``).
 DEFAULT_REST_SECONDS = 20.0
 WEARY_REST_SECONDS = 90.0
+
+# Repeated model failures back off instead of hammering a down backend or
+# spinning a tight retry loop. The position is *held* the whole time (no passage
+# is ever skipped), so this only slows the retry - it never abandons material.
+# The backoff is in-memory scratch, not a durable record: a restart simply
+# retries afresh, and a later success clears it.
+MODEL_BACKOFF_BASE_SECONDS = 30.0
+MODEL_BACKOFF_MAX_SECONDS = 600.0   # cap: never wait more than 10 minutes
+MODEL_BACKOFF_RESET = 1             # consecutive failures that trip the backoff
+
+
+def model_backoff_seconds(failures: int) -> float:
+    """How long to wait after ``failures`` consecutive model failures (0 = none).
+
+    Exponential from :data:`MODEL_BACKOFF_BASE_SECONDS`, capped at
+    :data:`MODEL_BACKOFF_MAX_SECONDS`. A non-positive count means no backoff.
+    """
+    try:
+        n = int(failures)
+    except (TypeError, ValueError):
+        return 0.0
+    if n <= 0:
+        return 0.0
+    wait = MODEL_BACKOFF_BASE_SECONDS * (2 ** (n - 1))
+    return float(min(MODEL_BACKOFF_MAX_SECONDS, wait))
 
 
 def concentration_ok(*, concentration: Optional[float] = None,

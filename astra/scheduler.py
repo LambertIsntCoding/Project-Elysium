@@ -261,9 +261,12 @@ class Scheduler:
         does not. The estimate (learned from prior runs, else a conservative
         prior) is compared against the *measured* headroom for each resource the
         task genuinely uses - so a busy GPU never blocks a CPU-only task, and a
-        high memory number only blocks work that actually needs the memory. This
-        is deliberately separate from the conservative startup *efficiency* gate:
-        it only refuses when a resource would be pushed past saturation.
+        high memory number only blocks work that actually needs the memory. A
+        resource with no current measurement (unmeasurable, or the history is
+        stale) is skipped, so an unmeasurable resource is never an indefinite
+        blocker. This is deliberately separate from the conservative startup
+        *efficiency* gate: it only refuses when a resource would be pushed past
+        saturation.
         """
         sample = machine.get("sample")
         if sample is None:
@@ -285,6 +288,14 @@ class Scheduler:
                     return False
             except (TypeError, ValueError):
                 pass
+        # The measured affordability check runs *before* the energy/efficiency
+        # gates. A task whose estimated cost fits the measured headroom is
+        # admitted even when the state is low or the machine is still warming, so
+        # a resource question is answered by measurement rather than by a mood or
+        # a startup timer. This is also what keeps reading from being deferred
+        # forever on a machine that is merely holding memory.
+        if self._resource_allowed(kind, machine) is not None:
+            return False
         intensity = machine.get("intensity")
         if intensity is not None and float(intensity) < LOW_ENERGY_THRESHOLD:
             # She cannot bring much right now: only light work, so a flat or sad
@@ -294,12 +305,6 @@ class Scheduler:
             # Cold or busy machine (e.g. just after boot): efficiency mode, so
             # only light work runs until the machine has warmed and settled.
             return kind in LIGHT_KINDS
-        # The measured affordability check: even in efficiency mode a task is
-        # admitted when its *estimated* cost still fits the real headroom. This
-        # is the "the headline number does not say it is impossible" correction -
-        # we never defer work we can demonstrably do, and a defer is not a fail.
-        if self._resource_allowed(kind, machine) is not None:
-            return False
         return True
 
     # -- one cycle -------------------------------------------------------
@@ -358,18 +363,17 @@ class Scheduler:
                 report["reason"] = REASON_BUDGET
                 break
             if not self._kind_allowed(task.kind, machine):
+                resource_reason = self._resource_allowed(task.kind, machine)
                 if machine.get("game"):
                     reason = REASON_GAME
                 elif machine.get("busy"):
                     reason = REASON_BUSY
+                elif resource_reason is not None:
+                    reason = resource_reason
                 elif not machine.get("machine_ready", True):
                     reason = REASON_MACHINE_COLD
                 else:
-                    resource_reason = self._resource_allowed(task.kind, machine)
-                    if resource_reason is not None:
-                        reason = resource_reason
-                    else:
-                        reason = REASON_LOW_ENERGY
+                    reason = REASON_LOW_ENERGY
                 report["skipped"].append({
                     "id": task.id, "kind": task.kind, "reason": reason,
                 })

@@ -295,6 +295,17 @@ class TestReadingOutcomes(_Base):
             out = self.outcome(reader, T.BackgroundTask(kind=T.KIND_READING))
             self.assertEqual(out["status"], T.SKIPPED, reason)
 
+    def test_model_backoff_is_a_hold_not_a_failure(self):
+        from astra import tasks as T
+        from astra import reading
+        # Repeated model failures back off; that is a deliberate hold, so it is
+        # SKIPPED (re-armed next occurrence) rather than FAILED (which would
+        # exhaust the bounded retry budget into a permanent block).
+        reader = _StubReadingReader({"read": False, "reason": reading.IDLE_MODEL_BACKOFF,
+                                     "chunks": 0, "words": 0})
+        out = self.outcome(reader, T.BackgroundTask(kind=T.KIND_READING))
+        self.assertEqual(out["status"], T.SKIPPED)
+
     def test_no_material_is_completed(self):
         from astra import tasks as T
         from astra import reading

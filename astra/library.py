@@ -424,11 +424,21 @@ class Library:
         return words_read, total_words
 
     def current_work_id(self) -> str:
+        """The work the reader resumes from, or ``""`` when nothing is live.
+
+        The pinned ``current`` is authoritative *only while it is still live*: a
+        finished or abandoned work must not shadow a work that still has text
+        left, or the reader would keep re-opening a completed book and never
+        reach the next one. When the pinned work is no longer live the next
+        queued live work is returned instead, so progress never stalls on
+        material that is already done.
+        """
         with self._lock:
             current = str(self.state.get("current") or "")
-            if current and current in self.state["works"]:
+            state = self.state["works"].get(current) if current else None
+            if state is not None and reading.is_live(state):
                 return current
-            return self.next_work_id() or ""
+        return self.next_work_id() or ""
 
     def current_state(self) -> Dict[str, Any]:
         """The reader's current position - the state the reader resumes from."""

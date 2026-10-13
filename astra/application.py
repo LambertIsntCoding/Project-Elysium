@@ -481,6 +481,12 @@ class RuntimeController:
             return {"status": task_mod.FAILED, "detail": detail, "result": result}
         if reason == reading.IDLE_HELD:
             return {"status": task_mod.BLOCKED, "detail": detail, "result": result}
+        if reason == reading.IDLE_MODEL_BACKOFF:
+            # Repeated model failures: the reader is deliberately waiting before
+            # retrying, holding its position. That is a hold, not a fault - a
+            # SKIPPED task re-arms on the next occurrence rather than consuming
+            # the bounded retry budget, so a down backend cannot loop forever.
+            return {"status": task_mod.SKIPPED, "detail": detail, "result": result}
         if reason in (reading.IDLE_NO_WORK, reading.IDLE_WORK_FINISHED):
             return {"status": task_mod.COMPLETED, "detail": detail, "result": result}
         return {"status": task_mod.SKIPPED, "detail": detail, "result": result}
@@ -596,7 +602,7 @@ class RuntimeController:
             works = self.library.list_works() if self.library is not None else []
         except Exception:
             works = []
-        unfinished = [w for w in works if isinstance(w, dict) and not w.get("finished")]
+        unfinished = [w for w in works if isinstance(w, dict) and reading.is_live(w)]
         detail = f"{len(gaps)} open question(s), {len(unfinished)} unfinished work(s)"
         return {"status": task_mod.COMPLETED, "detail": detail,
                 "result": {"count": len(gaps)},
