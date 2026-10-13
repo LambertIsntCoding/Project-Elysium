@@ -181,6 +181,39 @@ decays with time, and a reply clears it. Inspect it in `/autonomy`.
 
 ## 6. Pause, resume, and inspect (CLI / Discord)
 
+### The numbered admin menu
+
+`/menu` (or `menu` at the prompt) opens the numbered admin menu. **Every
+command is reachable from it** by number *or* by word, so nothing has to be
+remembered as slash syntax. The top level is:
+
+| # | Area | Contains |
+|---|---|---|
+| 1 | Conversation / session | status, history, temporary, sleep log, file decisions, sleep, wake |
+| 2 | Memories | overviews by model, governing, contradictions, reconcile, dormant, stats, search, forget/restore/correct |
+| 3 | Self | self-portrait, permanent knowledge, observations, experiences |
+| 4 | Relationships & affect | live screens + diagnostics |
+| 5 | Reading | status, one cycle, force, pause, resume |
+| 6 | Library | overview, scan, add by number |
+| 7 | Questions / inquiry | open questions, work knowledge, priority |
+| 8 | Timeline / history | timeline buckets, journal, reading journal, sense of time |
+| 9 | Automation / scheduler | autonomy status + pause/resume + run-now, schedules, tasks, scheduler, ledger, notification status + pause/resume/mute, proactive mute |
+| 10 | Discord | connection/delivery status, check messages |
+| 11 | Improvement proposals | open/all, acknowledge, approve, decline |
+| 12 | File organization | decisions waiting, approve, reject, defer |
+| 13 | Power / machine | measured resources, sleep, wake |
+| 14 | Elysium | status, help |
+| 15 | Diagnostics | debug, memory-text normalization (preview/apply), reader health |
+| 16 | All commands (reference) | the full command catalog |
+| 17 | Exit | leave the menu |
+
+Word aliases make a screen reachable by any word of its title (e.g. `automation`
+or `scheduler`, `power` or `machine`). Entries marked `>` open a sub-menu. The
+menu calls the *same* router the console does, so behaviour can never drift
+between the two.
+
+### Commands
+
 These commands work from the console or Discord and never call the model:
 
 | Command | Effect |
@@ -191,8 +224,11 @@ These commands work from the console or Discord and never call the model:
 | `/notifications` | Status (sent today/interval, quiet hours, pending digest). |
 | `/notifications pause` / `resume` | Pause/resume **proactive messaging** only. |
 | `/notifications mute` / `unmute` | Silence notifications without stopping work. |
-| `/schedules` | List configured/scheduled activities and their due times. |
+| `/schedules` | Explain each configured/scheduled activity: **why** it is in play, **when** it is due (in the schedule's own timezone), how many attempts it has had, and **what happens next** - stating an overdue occurrence per its catch-up policy rather than implying a run the policy would refuse. Derived read-only from the task records (`astra/schedule_explain.py`). |
+| `/reader` | Reader health: the reader's state, the measured machine reading, and the exact gate reason (idle/load/busy/hard-prohibited), so "why is she/ is she not reading?" has a truthful answer. |
+| `/normalize-text [apply]` | Preview (read-only) or apply cleanup of stored memory text (entities, ligatures, invisible characters, whitespace). `apply` rewrites content only, idempotently, with an audit file - never a migration. |
 | `/discord` | Connection state, last poll, last proactive send, delivery counters, last error. |
+| `/check-messages` | Explicitly look at the channel and answer anything addressed to her, bypassing the mention gate. |
 | `/power` (or `/machine`) | Measured machine resources (cpu/memory/uptime), efficiency mode, and suspend history. |
 | `/proposals` | Improvement proposals awaiting your acknowledgement; `ack`/`approve`/`decline <id>`. |
 | `/tasks` | Task-store counts and non-terminal tasks. |
@@ -200,6 +236,67 @@ These commands work from the console or Discord and never call the model:
 
 Activity and notifications are **independent**: pausing work does not silence
 messaging, and silencing messaging does not stop work.
+
+## 6a. How Astra converses on Discord
+
+Three behaviours keep her Discord presence human and unobtrusive. All are pure,
+code-owned, and configurable under `discord:` in `config/runtime.yaml`;
+`astra/discord_behavior.py` holds the addressing rule and the typing-pace maths.
+
+- **She is not always watching.** With `require_mention: true` (the running
+  default), she answers only a message that is *addressed* to her - an
+  `@`-mention (`<@bot_id>` / `<@!bot_id>` / `@display_name`) or a reply to one of
+  her own messages. Everything else is left alone; she does not react to a
+  channel she happens to be polling. `/check-messages` (or the optional
+  `check_on_cycle` / `check_interval_seconds`) makes her look on purpose and
+  answer then. Direct construction of `DiscordAdapter` keeps `require_mention`
+  off, so transport-level tests are unaffected.
+- **She types, she does not paste.** `typing_simulation: true` gives every reply
+  a human pace that is deliberately *not* a clean function of its length. Each
+  message picks its own tempo from a wide band (`TEMPO_WPM_LOW`..`TEMPO_WPM_HIGH`,
+  independent of the base `typing_wpm`), its structure nudges the total (long
+  words, digits, non-latin words, paragraph breaks and hesitations each add a
+  little), each sentence end adds a small re-read pause, and the result is split
+  into bursts with pauses by `typing_segments`. A short "last look-over" pause
+  (`BEFORE_SEND_SECONDS`) is reserved before the message actually goes out, so it
+  does not appear the instant the typing indicator stops. In practice a 20-word
+  reply lands anywhere from ~19s to ~37s across runs rather than at a fixed
+  value, and the same words with long/punctuated phrasing type slower. The
+  typing indicator is refreshed so it stays visible, and a split long reply
+  continues with a short pause and a typing refresh per part rather than a burst
+  of pasted lines.
+- **She reads the whole thought.** A message that arrives while she is typing
+  interrupts the typing, abandons the unsent reply, and re-buffers that reply's
+  source messages *with* the new one, so the resumed answer carries the full
+  thought instead of replying to the first fragment. The inbound debounce
+  (`batch_seconds`, default 6s) already waits for a multi-line thought before
+  answering. A new message never lands mid-send because the send only happens on
+  the poll loop once typing has stopped.
+- **Reply (and ping) only for emphasis.** Astra reply-attaches only when her own
+  response begins with the emphasis marker `↪ ` (`astra/reply_policy.py`); when
+  it does, she *also* pings the message's author (a reply that does not ping is
+  easily missed, so the two are coupled). Otherwise she sends a plain message
+  and pings no one.
+- **She notices when you walk away.** `astra/presence.py` decides whether an
+  exchange is still live. A message addressed to her opens it; while the gap
+  since your last addressed message is inside her *state-scaled* patience she
+  stays attentive (`present`/`lingering`); once you have gone quiet past it the
+  exchange closes (`away`) and she returns to her own work, checking for messages
+  on a slower cadence. The moment you speak again it reopens. The patience is
+  `presence_base_patience` (default 300s) scaled by her state, so the same
+  silence can read as "still here" for a warm state and "gone quiet" for a flat
+  one.
+- **How long her actions take is a consequence of her state.** The same
+  modulation is projected onto timing by `behavior.timing_modifiers`: a warm,
+  engaged state types a little brisker and waits longer for a reply; a flat,
+  weary or sad one is slower to answer and gives up sooner. The adapter reads her
+  state live and scales the typing simulation and its before-send beat. It is a
+  pure read - Discord never writes affect - and a neutral state changes nothing.
+
+These are transport/behaviour rules, not personality-prompt instructions: the
+decision lives in code so it is deterministic, testable, and cannot be talked
+away by the model. They do not change memory authority, the mention gate keeps
+her quiet when not addressed, and no new network access is introduced.
 
 Approving a proposal **records a decision only**; it never applies a change to
 identity, boundaries, credentials, permissions or source code. Those scopes are
@@ -241,6 +338,10 @@ does:
 - **How she reads.** The reader gate folds the modulation's reading modifiers
   into `reading.should_read`, so a sad/weary state can genuinely stand reading
   *down*, not merely slow it.
+- **How fast she acts.** `behavior.timing_modifiers` projects the same state onto
+  timing (typing pace, and how long she holds an exchange open), consumed by the
+  Discord adapter and `astra/presence` - so her mood changes not only *what* she
+  does but *how long* it takes, and how patient she is when you go quiet.
 
 All of it is derived, read-only, and stores nothing new; a neutral state changes
 nothing. Nothing numeric leaks into the prompt (asserted by the behavioural
@@ -290,6 +391,8 @@ python -m unittest tests.test_affect_propagation -v # emotions cause work/readin
 python -m unittest tests.test_power_runtime -v   # power/suspend at runtime
 python -m unittest tests.test_proposals -v       # approval boundary
 python -m unittest tests.test_engagement -v      # non-response adaptation + reading outcomes
+python -m unittest tests.test_text_normalize -v  # memory-text normalization (write path + migration)
+python -m unittest tests.test_schedule_explain -v # schedule why/when/next explainability
 ```
 
 Manual end-to-end check:
@@ -305,6 +408,16 @@ Manual end-to-end check:
 
 ## 8. Honest limitations
 
+- **Transient network errors are retried, not reported as failures.** A read
+  timeout, a dropped connection, or a 5xx while polling or sending is retried
+  in-place a bounded number of times (`TRANSPORT_MAX_ATTEMPTS`) before it is
+  surfaced, so a single blip does not fail a poll or count against a proactive
+  message's retry bound. A 4xx (bad token, missing permission, unknown channel)
+  is a definite answer and is *not* retried - it is reported once through
+  `/discord` (`last_error`) rather than hammered. If Discord is unreachable for
+  longer than the retries allow, the affected activity/handled turn is recorded
+  honestly and picked up when the link returns; nothing is marked delivered that
+  was not.
 - **Model availability.** If Ollama is unreachable, model-dependent work is not
   marked complete; it fails or defers and is retried within bounds. A missed
   schedule is recorded as missed, never pretended. In particular the background

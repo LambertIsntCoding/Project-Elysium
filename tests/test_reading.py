@@ -505,21 +505,51 @@ class TestReaderCycle(_Base):
         self.assertFalse(report["read"])
         self.assertEqual(report["reason"], reading.IDLE_NO_WORK)
 
-    def test_force_reads_against_a_busy_task(self):
-        # A configured busy task normally stands the reader down, but a forced
-        # cycle reads anyway - the "just start it now" escape hatch.
+    def test_busy_task_blocks_unless_the_machine_has_headroom(self):
+        # A configured busy task is a workload *preference*, not proof the
+        # machine is unavailable. With a measured, loaded machine it stands the
+        # reader down; the "just start it now" force still reads anyway.
         self.library.add_text("Alice found a key. " * 500, title="Garden", work_id="garden")
         model, calls = self._digest_model()
         policy = reading.ProcessPolicy(busy=["render"])
-        reader = self.reader(model, process_names_fn=lambda: ["blender_render.exe"],
+        loaded = self.reader(model, cpu_load_fn=lambda: 0.9,
+                             process_names_fn=lambda: ["blender_render.exe"],
                              process_policy=policy)
-        blocked = reader.run_once()
+        blocked = loaded.run_once()
         self.assertFalse(blocked["read"])
         self.assertEqual(blocked["reason"], reading.IDLE_MACHINE_BUSY)
-        forced = reader.run_once(force=True)
+        forced = loaded.run_once(force=True)
         self.assertTrue(forced["read"])
         self.assertEqual(forced["reason"], reading.IDLE_FORCED)
+
+    def test_busy_task_proceeds_when_the_machine_is_calm(self):
+        # The section-7 fix: a running (overridable) busy app no longer blocks
+        # reading when the machine's own load says there is spare capacity.
+        self.library.add_text("Alice found a key. " * 500, title="Garden", work_id="garden")
+        model, calls = self._digest_model()
+        policy = reading.ProcessPolicy(busy=["render"])
+        reader = self.reader(model, cpu_load_fn=lambda: 0.05,
+                             process_names_fn=lambda: ["blender_render.exe"],
+                             process_policy=policy)
+        report = reader.run_once()
+        self.assertTrue(report["read"])
         self.assertEqual(len(calls), 1)
+
+    def test_hard_prohibition_is_never_overridden(self):
+        # A hard prohibition is a user-set absolute exclusion: it stops reading
+        # even on a calm machine and even under force.
+        self.library.add_text("Alice found a key. " * 500, title="Garden", work_id="garden")
+        model, calls = self._digest_model()
+        policy = reading.ProcessPolicy(hard=["live-call"])
+        reader = self.reader(model, cpu_load_fn=lambda: 0.02,
+                             process_names_fn=lambda: ["live-call.exe"],
+                             process_policy=policy)
+        report = reader.run_once()
+        self.assertFalse(report["read"])
+        self.assertEqual(report["reason"], reading.IDLE_HARD_PROHIBITED)
+        forced = reader.run_once(force=True)
+        self.assertFalse(forced["read"])
+        self.assertEqual(forced["reason"], reading.IDLE_HARD_PROHIBITED)
 
     def test_force_still_yields_to_a_running_game(self):
         self.library.add_text("Alice found a key. " * 500, title="Garden", work_id="garden")
@@ -710,16 +740,40 @@ class TestCliReadingCommands(_Base):
         session._handle_slash("/read resume")
         self.assertTrue(reader.enabled)
 
-    def test_read_force_starts_a_cycle_against_a_busy_task(self):
+    def test_read_proceeds_on_a_calm_machine_despite_a_busy_task(self):
+        # A busy task no longer blocks a /read on a measurably calm machine.
         from astra import reading as reading_mod
 
         session, reader = self._session(lambda p: "{}")
         reader.process_policy = reading_mod.ProcessPolicy(busy=["render"])
         reader.process_names_fn = lambda: ["blender_render.exe"]
+        reader.cpu_load_fn = lambda: 0.0
+        session._handle_slash("/read")
+        self.assertTrue(any("words from" in line for line in self.out))
+
+    def test_read_refuses_on_a_loaded_machine_and_force_overrides(self):
+        from astra import reading as reading_mod
+
+        session, reader = self._session(lambda p: "{}")
+        reader.process_policy = reading_mod.ProcessPolicy(busy=["render"])
+        reader.process_names_fn = lambda: ["blender_render.exe"]
+        reader.cpu_load_fn = lambda: 0.95
         session._handle_slash("/read")
         self.assertFalse(any("Read " in line for line in self.out))
         session._handle_slash("/read force")
         self.assertTrue(any("words from" in line for line in self.out))
+
+    def test_read_refuses_a_hard_prohibition_even_forced(self):
+        from astra import reading as reading_mod
+
+        session, reader = self._session(lambda p: "{}")
+        reader.process_policy = reading_mod.ProcessPolicy(hard=["live-call"])
+        reader.process_names_fn = lambda: ["live-call.exe"]
+        reader.cpu_load_fn = lambda: 0.0
+        session._handle_slash("/read force")
+        self.assertFalse(any("words from" in line for line in self.out))
+        self.assertTrue(any("hard" in line.lower() or "prohibit" in line.lower()
+                            for line in self.out))
 
     def test_read_now_still_refuses_while_a_game_runs(self):
         session, reader = self._session(lambda p: "{}")

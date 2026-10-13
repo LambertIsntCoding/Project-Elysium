@@ -123,6 +123,11 @@ class ProposalStore:
                 continue
         return out
 
+    def reload(self) -> None:
+        """Re-read from disk, for a separate read-only inspection process."""
+        with self._lock:
+            self._items = self._load()
+
     def _persist(self) -> None:
         with self._lock:
             atomic_save(self.path, {

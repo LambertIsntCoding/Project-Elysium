@@ -224,6 +224,100 @@ class TestMenuRegistry(_Fixture):
         self.assertTrue(rows[0]["reasons"])
 
 
+class TestMenuCoversFullCommandSurface(_Fixture):
+    """Every operational command is reachable from the numbered menu.
+
+    The menu is meant to be the discoverable face of the whole command surface,
+    so a gap is a real regression: the operator should never have to remember a
+    slash command. These assert structure and that the entries actually run.
+    """
+
+    def _registry(self):
+        from main import ChatSession
+        session = ChatSession(self.orch, self.cmd, output_fn=lambda _: None,
+                              input_fn=lambda _: "")
+        return menus_mod.build_registry(session, emit=lambda _: None)
+
+    def test_top_level_has_every_area(self):
+        root = self._registry().build()
+        titles = " ".join(item.label.upper() for item in root.items)
+        for area in ("CONVERSATION", "MEMORIES", "SELF", "RELATIONSHIPS",
+                     "READING", "LIBRARY", "QUESTIONS", "TIMELINE",
+                     "AUTOMATION", "DISCORD", "PROPOSALS", "FILE",
+                     "POWER", "ELYSIUM", "DIAGNOSTICS", "COMMANDS"):
+            self.assertIn(area, titles, f"missing menu area: {area}")
+        self.assertEqual(root.items[-1].label, "Exit")
+
+    def test_automation_screen_exposes_the_full_control_set(self):
+        root = self._registry().build()
+        node = root.find_child("automation")
+        aliases = {a for item in node.items for a in item.aliases}
+        for needed in ("autonomy", "pause", "resume", "schedules", "tasks",
+                       "scheduler", "notifications", "mute", "unmute",
+                       "proactive"):
+            self.assertIn(needed, aliases, f"automation missing: {needed}")
+
+    def test_discord_power_proposals_files_screens_exist(self):
+        root = self._registry().build()
+        for slug, words in (("discord", {"discord", "check-messages"}),
+                            ("power", {"power", "sleep", "wake"}),
+                            ("proposals", {"proposals", "approve", "decline"}),
+                            ("file", {"decisions", "approve", "reject", "defer"})):
+            node = root.find_child(slug)
+            aliases = {a for item in node.items for a in item.aliases}
+            self.assertTrue(words <= aliases, f"{slug} missing {words - aliases}")
+
+    def test_every_catalog_command_is_reachable_by_number_or_alias(self):
+        """The static catalog and the live menu must not drift apart."""
+        root = self._registry().build()
+        # Collect every word alias in the whole tree.
+        aliases = set()
+
+        def walk(node):
+            for item in node.items:
+                aliases.update(item.aliases)
+                if item.children is not None:
+                    walk(item.children)
+
+        walk(root)
+        catalog = menus_mod.COMMAND_CATALOG
+        for command in ("/autonomy", "/notifications", "/discord", "/schedules",
+                        "/tasks", "/scheduler", "/proposals", "/power",
+                        "/check-messages", "/normalize-text", "/reader"):
+            self.assertIn(command, catalog)
+            slug = command.lstrip("/").replace("-", "-")
+            self.assertTrue(any(slug in a or a in slug for a in aliases),
+                            f"no menu alias matches {command}")
+
+    def test_catalog_lists_every_command_the_console_handles(self):
+        catalog = menus_mod.COMMAND_CATALOG
+        for command in ("/memories", "/memory", "/search", "/governing",
+                        "/contradictions", "/reconcile", "/self", "/experiences",
+                        "/questions", "/work", "/relationship", "/affect",
+                        "/time", "/timeline", "/journal", "/reading-journal",
+                        "/reading", "/read", "/library", "/library-scan",
+                        "/dormant", "/stats", "/forget", "/restore", "/correct",
+                        "/status", "/debug", "/help", "/menu"):
+            self.assertIn(command, catalog, f"catalog missing {command}")
+
+    def test_router_text_falls_back_without_a_router(self):
+        """A session with no router still runs a command, not crashes.
+
+        The session's own slash handler emits through ``output_fn`` (the same
+        channel the console prints to), so that is what the fallback must reach.
+        """
+        from astra.admin import MenuContext
+        from main import ChatSession
+        emitted = []
+        session = ChatSession(self.orch, self.cmd, output_fn=emitted.append,
+                              input_fn=lambda _: "")
+        session.router = None  # explicitly no router attached
+        registry = menus_mod.build_registry(session, emit=lambda _: None)
+        context = MenuContext(session, emitted.append, registry)
+        menus_mod._router_text(context, "/status")
+        self.assertTrue(emitted, "the fallback must emit something")
+
+
 def _fake_session(orch):
     class _S:
         pass

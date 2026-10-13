@@ -135,6 +135,7 @@ class BackgroundReader:
         self._busy_flag = False            # a non-game busy task was signalled
         self._last_game: Optional[str] = None   # last process seen (for diagnostics)
         self._last_busy: Optional[str] = None
+        self._last_hard: Optional[str] = None
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self.last_cycle: Dict[str, Any] = {}
@@ -268,22 +269,30 @@ class BackgroundReader:
             gpu_busy = self._gpu_busy
             busy_signalled = self._busy_flag
         # A game is inferred from the process list (its patterns are built in); a
-        # configured "busy" process stands down on load but does not claim the
-        # GPU. Ignored names are filtered inside the policy, so a trusted task
-        # never blocks reading.
+        # configured "busy" process is a workload conflict the reader may
+        # override on a calm machine, while a "hard" process is an absolute
+        # prohibition that never is. Ignored names are filtered inside the
+        # policy, so a trusted task never blocks reading.
         busy_scanned = False
         busy_name = self._busy_process
+        overridable = False
+        hard_name: Optional[str] = None
         if self.process_names_fn is not None:
             try:
-                found_game, found_busy = self.process_policy.classify(
+                severity = self.process_policy.busy_severity(
                     self.process_names_fn() or [])
-                game = game or found_game
-                busy_scanned = bool(found_busy)
-                busy_name = busy_name or found_busy
+                game = game or severity["game"]
+                hard_name = severity["hard"]
+                busy_scanned = bool(severity["busy"] or severity["hard"])
+                busy_name = busy_name or severity["busy"] or severity["hard"]
+                # Only an overridable busy workload (no game, no hard block) can
+                # be overridden by headroom.
+                overridable = bool(severity["overridable"])
             except Exception:
                 pass
         self._last_game = game
         self._last_busy = busy_name
+        self._last_hard = hard_name
         cpu_load = None
         if self.cpu_load_fn is not None:
             try:
@@ -311,8 +320,13 @@ class BackgroundReader:
             "gpu_busy": gpu_busy,
             "machine_busy_flag": busy_signalled or busy_scanned,
             "cpu_load": cpu_load,
-            # Reading requires concentration: the gate reads her current state,
-            # including the modulation's view of it.
+            # The headroom override: whether the busy signal is a mere workload
+            # (overridable) and what the machine's own reading says about
+            # spare capacity. ``calm_load`` is the *same* measured load; naming
+            # it makes the override rule explicit rather than incidental.
+            "busy_overridable": overridable,
+            "hard_prohibited": bool(hard_name),
+            "calm_load": cpu_load,
             "concentration": concentration,
             "weary": weary,
             "frustration": affect.get("frustration"),
@@ -531,7 +545,32 @@ class BackgroundReader:
             state, enabled=self.enabled, reason=reason, game=self._last_game,
             busy=self._last_busy, policy=self.process_policy.as_dict(),
             work_queue=queue, last_cycle=self.last_cycle,
+            signals=self.resource_signals(),
         )
+
+    def resource_signals(self) -> Dict[str, Any]:
+        """The measured signals behind the reader's gate, for the admin view.
+
+        Read-only and cheap enough to call on demand: the process policy's
+        severity split and the machine's own load reading, plus the two derived
+        answers the override rule turns on (is the busy signal overridable, and
+        is there headroom). Nothing here is stored or reaches the prompt.
+        """
+        cond = self._conditions()
+        busy_severity = "game" if cond.get("game") else (
+            "hard" if self._last_hard else ("busy" if cond.get("busy") else None))
+        return {
+            "cpu_load": cond.get("cpu_load"),
+            "game": cond.get("game"),
+            "busy": self._last_busy,
+            "hard": self._last_hard,
+            "busy_severity": busy_severity,
+            "busy_overridable": bool(cond.get("busy_overridable")),
+            "headroom_ceiling": reading.DEFAULT_HEADROOM_CEILING,
+            "headroom_ok": reading._calm_enough(
+                cond.get("calm_load"), reading.DEFAULT_HEADROOM_CEILING),
+            "policy": self.process_policy.as_dict(),
+        }
 
     def format_diagnostics(self) -> str:
         d = self.diagnostics()
@@ -546,7 +585,7 @@ class BackgroundReader:
         return reading.format_diagnostics(
             state, enabled=d["enabled"], reason=d["reason"],
             game=d["game"], busy=d["busy"], work_queue=d["queue"],
-            last_cycle=d["last_cycle"],
+            last_cycle=d["last_cycle"], signals=d.get("signals"),
         )
 
 

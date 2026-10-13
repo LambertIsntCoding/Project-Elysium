@@ -26,6 +26,11 @@ Design constraints:
   existing affect decay, and the modulation relaxes with it.
 * **Separate systems stay separate.** Nothing here writes affect, memory,
   relationship, reading or inquiry state. It reads them and returns modifiers.
+
+The same modulation is projected onto *timing* by :func:`timing_modifiers`
+(how long her actions take: typing, reading, how long she waits for a reply),
+consumed by :mod:`astra.presence` and the Discord adapter. So one state drives
+both *how* she engages and *how fast*, without a second arithmetic.
 """
 from __future__ import annotations
 
@@ -285,6 +290,49 @@ def activity_bias(modulation: Dict[str, Any]) -> Dict[str, Any]:
         note = str(reasons[0])
     return {"effort": round(effort, 4), "take_on": round(take_on, 4),
             "prefer_light": bool(prefer_light), "note": note}
+
+
+def timing_modifiers(modulation: Dict[str, Any]) -> Dict[str, Any]:
+    """How the current state should shape *how long* her actions take.
+
+    A pure projection of the modulation (no new store), so the behaviour layer
+    stays the single place state becomes conduct. Discord timing consumes this:
+    a warm, engaged state types and answers a little more briskly and waits
+    longer for a reply; a flat, weary or withdrawn state is slower to answer and
+    quicker to conclude that Roum has stepped away.
+
+    Returns bounded multipliers (each around ``1.0``) so no state makes her
+    instant, or waits forever:
+
+    * ``typing_scale`` - multiplies the typing simulation's total;
+    * ``read_scale`` - multiplies the pause to read an arriving message;
+    * ``patience_scale`` - multiplies how long she holds an exchange open.
+
+    Positive affect (happy, engagement, curiosity, anticipation) *shortens*
+    typing (``typing_scale < 1``) and *lengthens* patience. Sadness/weary raise
+    the typing scale and lower patience. Hesitation nudges typing up a touch.
+    """
+    if not isinstance(modulation, dict):
+        return {"typing_scale": 1.0, "read_scale": 1.0, "patience_scale": 1.0}
+    energy = _num(modulation.get("energy", 0.5))
+    enthusiasm = _num(modulation.get("enthusiasm", 0.5))
+    pace = _num(modulation.get("pace", 0.5))
+    interest = _num(modulation.get("interest", 0.5))
+    hesitation = _num(modulation.get("hesitation", 0.0))
+    brevity = _num(modulation.get("brevity", 0.0))
+    sad = _num(modulation.get("_sad", 0.0))
+
+    # Drive (0..1, centred) pulls typing faster; the flat/withdrawn side is the
+    # absence of drive plus the explicit low-state terms.
+    drive = (energy + enthusiasm + pace + interest) / 4.0 - 0.5
+    typing_scale = 1.0 - 0.45 * drive + 0.55 * sad + 0.30 * hesitation
+    read_scale = 1.0 - 0.25 * drive + 0.30 * sad + 0.15 * brevity
+    patience_scale = 1.0 + 0.80 * drive - 0.60 * sad - 0.35 * hesitation
+    return {
+        "typing_scale": round(_clamp(typing_scale, 0.45, 2.2), 4),
+        "read_scale": round(_clamp(read_scale, 0.5, 2.0), 4),
+        "patience_scale": round(_clamp(patience_scale, 0.35, 2.4), 4),
+    }
 
 
 # The low mood that stands the reader down harder is carried on the modulation

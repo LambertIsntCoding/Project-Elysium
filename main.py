@@ -169,6 +169,12 @@ HELP_TEXT = """
     /wake                     Leave Sleep (a human-caused wake event)
     /sleep-log                Recent background activity (Sleep ledger)
     /decisions                File decisions waiting for your judgement
+    /schedules                What is scheduled/planned: why, when, and next
+    /reader                   Reader health: state, machine reading, gate reason
+    /normalize-text [apply]   Preview (or apply) cleanup of stored memory text
+    /autonomy [pause|resume|now]  Pause/resume activity; or one bounded wake
+    /notifications [pause|resume|mute|unmute]  Control proactive messages
+    /discord                  Discord connectivity and delivery status
     /help                     Show this list
     /debug <message>          Memory retrieval diagnostics for a message
     /exit                     Save session and exit
@@ -332,15 +338,82 @@ class ChatSession:
         return self._menu_registry
 
     def _screen_poll(self, timeout: float) -> Optional[str]:
-        """Non-blocking-ish poll used by the live screens.
+        """Read one keypress within ``timeout`` seconds, or return ``None``.
 
-        Uses the session's own ``input_fn`` so the refresh loop is testable and
-        so a real terminal reads the key the user just pressed.
+        Returning ``None`` on timeout is what lets a :class:`~astra.admin.LiveScreen`
+        refresh on its own cadence without a keypress. The old implementation
+        called the blocking ``input_fn`` directly, so on a real terminal it never
+        returned ``None`` and the refresh branch was unreachable - the page was
+        rendered once and then sat frozen until a key arrived, which is why the
+        "live" screens appeared never to update.
         """
         try:
-            return self.input_fn("")
+            if not sys.stdin.isatty():
+                # No terminal (a test, a pipe): do not block, just let the loop
+                # tick so behaviour stays deterministic and testable.
+                time.sleep(max(0.0, timeout))
+                return None
+        except Exception:
+            time.sleep(max(0.0, timeout))
+            return None
+        if os.name == "nt":
+            try:
+                return self._screen_poll_windows(timeout)
+            except (KeyboardInterrupt, EOFError):
+                return "q"
+        try:
+            return self._screen_poll_posix(timeout)
         except (KeyboardInterrupt, EOFError):
             return "q"
+
+    def _screen_poll_posix(self, timeout: float) -> Optional[str]:
+        import select
+        import termios
+        import tty
+
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd)
+            ready, _, _ = select.select([sys.stdin], [], [], max(0.0, timeout))
+            if not ready:
+                return None
+            ch = sys.stdin.read(1)
+            return ch if ch else None
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+    def _screen_poll_windows(self, timeout: float) -> Optional[str]:
+        import msvcrt
+
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            if msvcrt.kbhit():
+                try:
+                    ch = msvcrt.getwch()
+                except Exception:
+                    return None
+                if ch in ("\x00", "\xe0"):  # a function/arrow key: consume the pair
+                    msvcrt.getwch()
+                    continue
+                return ch or None
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.05)
+
+    def _screen_clear(self) -> None:
+        """Clear the terminal before a live screen's next frame.
+
+        Best-effort: on a non-tty (or a terminal that refuses the sequence) the
+        screen simply appends, which is still readable. Kept separate from
+        ``_emit`` so the menu/admin output path is unchanged.
+        """
+        try:
+            if sys.stdout.isatty():
+                sys.stdout.write("\x1b[2J\x1b[H")
+                sys.stdout.flush()
+        except Exception:
+            pass
 
     def enter_menu(self) -> None:
         """Enter the numbered admin menu. Nested menus return here on 'q'."""
@@ -418,6 +491,35 @@ class ChatSession:
             self._emit("  (persistent runtime not attached in this session)")
             return
         self._emit("\n" + controller.pending_decisions_text())
+
+    def _display_schedules(self) -> None:
+        """Explain what is scheduled, why, and what happens next (read-only)."""
+        controller = self.controller
+        if controller is None:
+            self._emit("  (persistent runtime not attached in this session)")
+            return
+        self._emit("\n" + controller.schedule_report())
+
+    def _display_normalize_text(self, args: Optional[List[str]] = None) -> None:
+        """Preview (default) or apply cleanup of stored memory text.
+
+        Preview is read-only; ``apply`` rewrites content only, idempotently and
+        with an audit file, so the corpus can be cleaned without a migration.
+        """
+        controller = self.controller
+        if controller is None:
+            self._emit("  (persistent runtime not attached in this session)")
+            return
+        apply = bool(args) and str(args[0]).lower() in ("apply", "--apply", "-a")
+        self._emit("\n" + _wrap(controller.normalize_text_report(apply=apply)))
+
+    def _display_reader_health(self) -> None:
+        """Why the reader is (not) running, and the machine's own reading."""
+        controller = self.controller
+        if controller is None:
+            self._emit("  (persistent runtime not attached in this session)")
+            return
+        self._emit("\n" + controller.reader_health_report())
 
     def _emit(self, text: str) -> None:
         self.output_fn(text)
@@ -954,6 +1056,12 @@ class ChatSession:
             self._display_sleep_log()
         elif command in ("/decisions", "/files"):
             self._display_file_decisions()
+        elif command in ("/schedules", "/scheduled"):
+            self._display_schedules()
+        elif command in ("/normalize-text", "/normalize_text"):
+            self._display_normalize_text(parts[1:])
+        elif command in ("/reader", "/reader-health"):
+            self._display_reader_health()
         else:
             self._emit(f"Unknown command: {command}. Type /help for options.")
 
@@ -1376,6 +1484,9 @@ class ChatSession:
         elif report.get("reason") == reading.IDLE_GAME_RUNNING:
             self._emit("  Not reading: game_running (a game is running; forced "
                        "cycles still yield to a game).")
+        elif report.get("reason") == reading.IDLE_HARD_PROHIBITED:
+            self._emit("  Not reading: hard_prohibited (a user-set absolute "
+                       "exclusion is running; this is never overridden).")
         else:
             self._emit(f"  Did not read: {report.get('reason')}")
 
@@ -2012,6 +2123,38 @@ def build_session(
     return session
 
 
+def _run_inspect(*, config_dir: str) -> None:
+    """Run the read-only inspection console against the live runtime's state.
+
+    It builds a session the same way a real run does so it can reuse the
+    session's own display methods and the controller's reports - but it never
+    calls ``run()``: no lock is taken (the live runtime keeps it), no background
+    thread starts, no model is called, and no Discord transport is opened. It
+    therefore cannot talk to Astra or mutate her state.
+    """
+    from astra import inspect_console, paths
+
+    storage = paths.resolve_storage_dir(None)
+    session = build_session(config_dir=config_dir, think_only=True,
+                            enable_reader=False)
+    inspector = inspect_console.Inspector(
+        session, storage_dir=storage, config_dir=config_dir)
+    print(inspector.snapshot())
+    print("\nType /help for read-only inspection commands, or exit to leave.")
+    while True:
+        try:
+            line = input("\nInspect > ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nLeaving inspection.")
+            break
+        if not line:
+            continue
+        if line.lower() in inspect_console.EXIT_WORDS:
+            print("Leaving inspection.")
+            break
+        print(inspector.handle(line))
+
+
 def _build_voice(runtime_config: Dict[str, Any]) -> Any:
     """Build the voice renderer named in config (default: text pass-through)."""
     from astra.response_plan import NullVoiceRenderer, VoiceRenderer
@@ -2044,6 +2187,10 @@ def _cli_parser() -> Any:
                         help="print the running runtime's version/status and exit")
     parser.add_argument("--headless", action="store_true",
                         help="run the background runtime only (no interactive console)")
+    parser.add_argument("--inspect", action="store_true",
+                        help="read-only inspection console: view the running runtime's "
+                             "state, schedules, Discord health and affect WITHOUT "
+                             "being able to chat or change anything")
     parser.add_argument("--config-dir", default="./config")
     parser.add_argument("--runtime-dir", default=None,
                         help="override the runtime state root (ASTRA_RUNTIME_DIR)")
@@ -2078,6 +2225,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             command=[sys.executable, os.path.abspath(__file__)],
             runtime_dir=args.runtime_dir,
         ).run()
+        return
+
+    if args.inspect:
+        _run_inspect(config_dir=args.config_dir)
         return
 
     if args.supervise:

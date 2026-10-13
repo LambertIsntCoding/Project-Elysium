@@ -210,6 +210,11 @@ class MenuNode:
                 return item
         return None
 
+    def find_child(self, token: str) -> Optional["MenuNode"]:
+        """The sub-screen of the entry matching ``token``, or ``None``."""
+        item = self.find(token)
+        return item.children if item is not None else None
+
     def render(self) -> List[str]:
         lines = [f"\n=== {self.title} ==="]
         for item in self.items:
@@ -260,7 +265,7 @@ class MenuRegistry:
                 root.items.append(MenuItem(
                     key=str(len(root.items) + 1), label=node.title,
                     children=node,
-                    aliases=(_slug(node.title),),
+                    aliases=_node_aliases(node.title),
                 ))
         # Exit is always last and always available.
         root.items.append(MenuItem(
@@ -280,6 +285,27 @@ class MenuRegistry:
 
 def _slug(text: str) -> str:
     return "".join(c if c.isalnum() else "-" for c in str(text).casefold()).strip("-")
+
+
+def _node_aliases(title: str) -> Tuple[str, ...]:
+    """Word aliases for a top-level screen: the full slug plus each first word.
+
+    A screen titled "AUTOMATION / SCHEDULER" is reachable as
+    "automation---scheduler" (the historical alias), "automation", and
+    "scheduler", so a person can pick it by any word they remember - never just
+    the exact punctuation-free title. Duplicates are dropped, order preserved.
+    """
+    out: List[str] = []
+    raw_slug = _slug(title)
+    words = []
+    for word in str(title).casefold().replace("/", " ").split():
+        cleaned = "".join(c for c in word if c.isalnum())
+        if cleaned:
+            words.append(cleaned)
+    for candidate in (raw_slug, raw_slug.replace("---", "-"), *words):
+        if candidate and candidate not in out:
+            out.append(candidate)
+    return tuple(out)
 
 
 # ---------------------------------------------------------------------
@@ -377,17 +403,25 @@ class LiveScreen:
 
     def run(self, *, poll: Callable[[float], Optional[str]],
             emit: Callable[[str], None], sleep: Callable[[float], None] = time.sleep,
-            max_iterations: Optional[int] = None) -> str:
+            max_iterations: Optional[int] = None,
+            clear: Optional[Callable[[], None]] = None) -> str:
         """Refresh until the user leaves. Returns the exit reason.
 
         Commands inside a screen: Enter/``r`` refreshes now, ``s`` captures a
         snapshot, ``h`` lists recent snapshots, ``q``/``b``/Esc leaves. Anything
         else is ignored, so a stray key never breaks the loop.
+
+        ``clear`` (when supplied) is invoked before each automatic redraw so a
+        refreshing page replaces its previous frame instead of scrolling a new
+        copy below it every few seconds. It is optional and defaults to a no-op,
+        so the loop stays testable without a terminal.
         """
         iterations = 0
         emit(f"\n[Live: {self.name}] refreshing every {self.refresh_seconds:.1f}s. "
              "Enter=refresh  s=snapshot  h=history  q=leave")
         while True:
+            if iterations and clear is not None:
+                clear()
             for line in self.render():
                 emit(line)
             iterations += 1

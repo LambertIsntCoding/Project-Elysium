@@ -42,6 +42,7 @@ from . import reading
 from . import relational
 from . import self_memory
 from . import selfhood
+from . import text_normalize
 
 
 # ---------------------------------------------------------------------
@@ -1819,6 +1820,20 @@ class TripleMemoryStore:
     def _load_file(self, path: str) -> List[Dict[str, Any]]:
         return _load_dict_list(path)
 
+    def reload(self) -> None:
+        """Re-read every model from disk, without touching anything else.
+
+        For the read-only inspection console: a separate process does not share
+        this store's memory with the running runtime, so it re-reads before each
+        report instead of showing a snapshot taken at construction time. It
+        never persists, never runs maintenance, and leaves the in-memory
+        ``temporary`` scratch untouched (that is session-only, not on disk).
+        """
+        with self._lock:
+            self.memories = {name: self._load_file(path)
+                             for name, path in self.files.items()}
+            self.journal = self._load_file(self.journal_file)
+
     @staticmethod
     def _check_target(target_model: str) -> None:
         if target_model not in VALID_TARGET_MODELS:
@@ -2061,7 +2076,14 @@ class TripleMemoryStore:
         text = str(content).strip() if content is not None else ""
         if not text:
             raise ValueError("content must not be empty")
-        return text
+        # Presentation noise (markup, entities, ligatures, whitespace debris) is
+        # removed here, at the single write choke point, so *everything* that
+        # enters the store is readable. ``normalize`` is conservative and
+        # idempotent, and an already-clean string is returned unchanged; an
+        # input that was nothing but markup falls back to its stripped original
+        # rather than becoming empty (content must not be lost).
+        normalized = text_normalize.normalize(text)
+        return normalized or text
 
     def _current_state_is_supported(self, content: str) -> bool:
         """True when a current-state claim is tied to a real record.
@@ -3115,6 +3137,122 @@ class TripleMemoryStore:
         self.apply_utility_decay()
         self.purge_temporary_context()
         return True
+
+    # ---- text normalization of the existing corpus (section 10) --------
+    def preview_text_normalization(self, limit: Optional[int] = None
+                                   ) -> Dict[str, Any]:
+        """Report which stored records would change under normalization.
+
+        Pure and read-only: it never writes. Returns counts plus up to ``limit``
+        before/after rows (id, model, before, after) so the change can be shown
+        before it is applied, and a count of records that would be *emptied*
+        (which the applier refuses to write). ``is_noisy`` gates the (cheap) work
+        so already-clean records are skipped.
+        """
+        rows: List[Dict[str, Any]] = []
+        changed = emptied = total = 0
+        for model in sorted(VALID_TARGET_MODELS):
+            for mem in self.memories.get(model) or []:
+                content = mem.get("content")
+                if not isinstance(content, str) or not content:
+                    continue
+                total += 1
+                if not text_normalize.is_noisy(content):
+                    continue
+                view = text_normalize.diff(content)
+                if not view["changed"]:
+                    continue
+                changed += 1
+                if view["emptied"]:
+                    emptied += 1
+                    continue
+                if limit is None or len(rows) < limit:
+                    rows.append({
+                        "id": mem.get("id"), "model": model,
+                        "before": view["before"], "after": view["after"],
+                    })
+        return {"total": total, "changed": changed, "emptied": emptied,
+                "rows": rows}
+
+    def normalize_memory_texts(self, *, apply: bool = True,
+                               audit_dir: Optional[str] = None) -> Dict[str, Any]:
+        """Clean presentation noise from existing memory content, safely.
+
+        New content is normalized at the write choke point
+        (:meth:`_clean_content`); this repairs the corpus already on disk. It is
+        deliberately conservative:
+
+        * **Idempotent.** Content is replaced with its normalized form, and
+          ``normalize`` is idempotent, so a re-run changes nothing.
+        * **Non-destructive.** Identity, provenance, confidence, authority,
+          timestamps, tags, contradiction links and lifecycle state are all left
+          untouched - only ``content`` is rewritten, and only when it actually
+          changes. An input that normalizes to *empty* is skipped, never written.
+        * **Audited.** The full before/after list is written to
+          ``text_normalization_audit.json`` under the store dir so a bulk change
+          is reproducible and recoverable.
+        * **No duplicates.** It updates records in place; it never re-adds one,
+          so dedupe cannot merge two records into a new content.
+        """
+        out: Dict[str, int] = {}
+        audit: List[Dict[str, Any]] = []
+        for model in sorted(VALID_TARGET_MODELS):
+            changed = skipped = 0
+            with self._lock:
+                for mem in self.memories.get(model) or []:
+                    content = mem.get("content")
+                    if not isinstance(content, str) or not content:
+                        continue
+                    if apply and not text_normalize.is_noisy(content):
+                        continue
+                    view = text_normalize.diff(content)
+                    if not view["changed"]:
+                        continue
+                    if view["emptied"]:
+                        skipped += 1  # never write emptiness over real content
+                        continue
+                    audit.append({
+                        "id": mem.get("id"), "model": model,
+                        "before": view["before"], "after": view["after"],
+                    })
+                    if apply:
+                        with self._transaction(model):
+                            mem["content"] = view["after"]
+                    changed += 1
+            if changed or skipped:
+                out[model] = changed
+                if skipped:
+                    out[f"{model}_emptied"] = skipped
+        if audit_dir is None:
+            audit_dir = getattr(self, "data_dir", None) or "."
+        if audit:
+            self._write_normalization_audit(audit_dir, audit, applied=apply)
+        out["changed"] = sum(
+            v for k, v in out.items() if not k.endswith("_emptied"))
+        return out
+
+    @staticmethod
+    def _write_normalization_audit(audit_dir: str, rows: List[Dict[str, Any]],
+                                   *, applied: bool) -> str:
+        """Persist the normalization audit (best-effort); return its path."""
+        path = os.path.join(audit_dir, "text_normalization_audit.json")
+        payload = {
+            "at": _now(),
+            "applied": bool(applied),
+            "count": len(rows),
+            "entries": rows,
+        }
+        try:
+            atomic_save(path, payload, backup=True)
+        except Exception:
+            # A failed audit write must not fail the (already-applied) change;
+            # the operation is still idempotent and can be re-run.
+            try:
+                with open(path, "w", encoding="utf-8") as handle:
+                    json.dump(payload, handle)
+            except OSError:
+                pass
+        return path
 
     def apply_utility_decay(self) -> Dict[str, int]:
         """Mark stale, low-value memories dormant (section 6).

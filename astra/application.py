@@ -30,7 +30,8 @@ from . import (activity, autonomy, engagement as engagement_mod,
                file_organizer, filesystem, intentions, machine as machine_mod,
                model_use, notifications as notify_mod, prepared_context, proactive,
                proactive_compose, proposals as proposal_mod,
-               reading, runtime_state, schedules as sched, tasks as task_mod)
+               reading, runtime_state, schedule_explain, schedules as sched,
+               tasks as task_mod)
 from . import schedule_runtime
 from .scheduler import Scheduler
 from .tasks import (BackgroundTask, KIND_APP_MAINTENANCE,
@@ -898,6 +899,61 @@ class RuntimeController:
         lines.append(f"Last completed activity: {last or 'none recorded'}")
         return "\n".join(lines)
 
+    def schedule_report(self, limit: int = 15) -> str:
+        """Explain every scheduled/planned activity from its own records.
+
+        This is the section-8/9 "what is scheduled, why, and what next" view.
+        It is derived read-only from the task store, so it cannot drift from the
+        queue, and it states an overdue occurrence according to its catch-up
+        policy rather than implying a run the policy would refuse.
+        """
+        rows = schedule_explain.explain_all(self.task_store, limit=limit + 1)
+        header = ["Scheduled & planned activities:"]
+        body = schedule_explain.render(rows, limit=limit).splitlines()
+        return "\n".join(header + body)
+
+    def normalize_text_report(self, *, apply: bool = False,
+                              limit: int = 8) -> str:
+        """Preview or apply normalization of stored memory text (section 10).
+
+        Preview is read-only. Apply rewrites *content only* (idempotent, audited,
+        never writing emptiness) and reports the count. Kept behind an explicit
+        call so a bulk rewrite of the corpus is never a side effect of viewing.
+        """
+        if apply:
+            result = self.store.normalize_memory_texts()
+            return ("Text normalization applied: "
+                    f"{result.get('changed', 0)} record(s) rewritten; "
+                    "audit at text_normalization_audit.json")
+        view = self.store.preview_text_normalization(limit=limit)
+        lines = ["Text normalization preview (read-only):"]
+        lines.append(f"  records scanned: {view['total']}")
+        lines.append(f"  would change: {view['changed']}  "
+                     f"(would-be-emptied, skipped: {view['emptied']})")
+        for row in view["rows"]:
+            lines.append(f"  [{row['id']}] {row['model']}")
+            lines.append(f"      before: {str(row['before'])[:120]}")
+            lines.append(f"      after:  {str(row['after'])[:120]}")
+        if view["changed"] > len(view["rows"]):
+            lines.append(f"  ... and {view['changed'] - len(view['rows'])} more")
+        lines.append("  Apply with: /normalize-text apply")
+        return "\n".join(lines)
+
+    def reader_health_report(self) -> str:
+        """Why the background reader is (not) running, in plain language.
+
+        Built from the reader's own diagnostics: the state, the machine reading,
+        and whether a busy application is merely a workload (overridable on a
+        calm machine) or an absolute exclusion.
+        """
+        reader = self.reader
+        if reader is None:
+            return "Reader: not attached in this session."
+        fmt = getattr(reader, "format_diagnostics", None)
+        if callable(fmt):
+            return fmt()
+        return "Reader: diagnostics unavailable."
+
     def discord_report(self, discord: Any) -> str:
         if discord is None:
             return "Discord: not configured"
@@ -911,6 +967,14 @@ class RuntimeController:
         d = diag.get("deliveries") or {}
         lines.append(f"  proactive deliveries tracked={d.get('tracked', 0)} "
                      f"delivered={d.get('delivered', 0)} failed={d.get('failed', 0)}")
+        if diag.get("presence"):
+            lines.append(f"  presence: {diag['presence']} "
+                         f"(exchange open={diag.get('exchange_open')}, "
+                         f"patience={diag.get('patience_seconds')}s)")
+        timing = diag.get("timing") or {}
+        if timing:
+            lines.append(f"  state-scaled timing: typing x{timing.get('typing_scale')} "
+                         f"patience x{timing.get('patience_scale')}")
         if diag.get("last_error"):
             lines.append(f"  last error: {diag['last_error']}")
         return "\n".join(lines)
@@ -1014,6 +1078,11 @@ class ApplicationRouter:
         if self.controller is not None and callable(
                 getattr(self.controller, "note_human_message", None)):
             self.controller.note_human_message()
+        # Presence: any routed human message (CLI or Discord) marks Roum as here,
+        # so the runtime knows he is around without a state flip. In-memory only.
+        if self.controller is not None and callable(
+                getattr(self.controller, "touch", None)):
+            self.controller.touch()
 
         # Any human message is a human-caused wake event.
         if not text.startswith("/") and self.controller.sleeping():
@@ -1078,6 +1147,10 @@ class ApplicationRouter:
             return {"text": controller.discord_report(self.session.discord),
                     "handled": True, "source": source}
 
+        if command in ("/check-messages", "/check_messages", "/messages"):
+            return {"text": self._check_messages_command(), "handled": True,
+                    "source": source}
+
         if command == "/proposals":
             return {"text": self._proposals_command(parts[1:]), "handled": True,
                     "source": source}
@@ -1087,6 +1160,15 @@ class ApplicationRouter:
 
         if command == "/schedules":
             return {"text": self._schedules_text(), "handled": True, "source": source}
+
+        if command in ("/normalize-text", "/normalize_text"):
+            apply = any(a.lower() in ("apply", "--apply", "-a") for a in parts[1:])
+            return {"text": controller.normalize_text_report(apply=apply),
+                    "handled": True, "source": source}
+
+        if command in ("/reader", "/reader-health"):
+            return {"text": controller.reader_health_report(), "handled": True,
+                    "source": source}
 
         if command == "/scheduler":
             diag = controller.scheduler.diagnostics()
@@ -1098,6 +1180,27 @@ class ApplicationRouter:
         # works identically from Discord, which cannot "print").
         return {"text": self._capture(lambda: self.session._handle_slash(text)),
                 "handled": True, "source": source}
+
+    def _check_messages_command(self) -> str:
+        """The explicit "check my Discord messages" action.
+
+        Fetches the channel and answers anything she has not handled, bypassing
+        the mention gate (she is looking on purpose). Reports honestly whether
+        Discord is even connected, so an empty result is not mistaken for silence.
+        """
+        adapter = self.session.discord
+        if adapter is None:
+            return "Discord is not configured, so there are no messages to check."
+        report = adapter.poll_once(force=True)
+        if not report.get("ok"):
+            return f"Could not reach Discord: {report.get('error')}"
+        handled = int(report.get("handled") or 0)
+        accepted = int(report.get("accepted") or 0)
+        if handled:
+            return f"Checked messages: answered {handled}."
+        if accepted:
+            return f"Checked messages: {accepted} held for a moment (she is reading)."
+        return "Checked messages: nothing new addressed to me."
 
     def _tasks_text(self) -> str:
         counts = self.controller.task_store.counts()
@@ -1173,14 +1276,10 @@ class ApplicationRouter:
         return "Usage: /notifications [pause|resume|mute|unmute]"
 
     def _schedules_text(self) -> str:
-        tasks = self.controller.task_store.scheduled()
-        if not tasks:
-            return "No scheduled activities configured."
-        lines = ["Scheduled activities:"]
-        for task in tasks[:20]:
-            lines.append(f"  [{task.id}] {task.kind} due {task.due_at or task.next_due_at}"
-                         f" :: {sched.describe(task.schedule or {})}")
-        return "\n".join(lines)
+        # The explanation is derived read-only from the task records, and states
+        # an overdue occurrence according to its catch-up policy rather than
+        # implying a run the policy would refuse (see astra.schedule_explain).
+        return self.controller.schedule_report()
 
     def _proposals_command(self, args: List[str]) -> str:
         """Inspect or resolve durable improvement proposals.

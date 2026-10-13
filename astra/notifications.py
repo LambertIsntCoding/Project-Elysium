@@ -135,6 +135,11 @@ class NotificationPolicy:
             "last_digest_at": raw.get("last_digest_at"),
         }
 
+    def reload(self) -> None:
+        """Re-read the persisted state, for a separate inspection process."""
+        with self._lock:
+            self._state = self._load()
+
     def _persist(self) -> None:
         with self._lock:
             atomic_save(self.path, self._state)

@@ -8,8 +8,10 @@ mocked at the level of the code under test: the adapter calls the real
 import shutil
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 
 from astra import discord_adapter as da
+from astra import presence as presence_mod
 
 
 class FakeTransport:
@@ -443,6 +445,315 @@ class TestProactiveDelivery(unittest.TestCase):
         self.assertEqual(result["suppressed"], "permission")
         self.assertIn("permission", adapter.last_error or "")
 
+    def test_poll_records_persisted_health_for_a_separate_process(self):
+        transport = FakeTransport([_msg("1", "seed")])
+        adapter = self._adapter(transport)
+        adapter.poll_once()  # success
+        health = da.DiscordHealthStore(data_dir=self.tmp)
+        self.assertTrue(health.read().get("last_fetch_ok_at"))
+        self.assertIsNone(health.read().get("last_error"))
+
+        class FailFetch(FakeTransport):
+            def fetch_messages(self, channel_id, *, after=None, limit=20):
+                return {"ok": False, "error": "http 503"}
+
+        # A later fetch failure is written to the same health record, so a
+        # separate process (the read-only console) sees it.
+        adapter.transport = FailFetch([])
+        adapter.poll_once()
+        fresh = da.DiscordHealthStore(data_dir=self.tmp)
+        self.assertEqual(fresh.read().get("last_error"), "http 503")
+
+    def test_successful_send_is_recorded_in_health(self):
+        transport = FakeTransport([])
+        adapter = self._adapter(transport)
+        adapter.send_proactive("done", ref_id="o1")
+        self.assertTrue(da.DiscordHealthStore(data_dir=self.tmp).read().get(
+            "last_send_ok_at"))
+
+
+class TestAddressedGate(unittest.TestCase):
+    """A running adapter answers only messages addressed to it, unless checking."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _adapter(self, transport, router, **kw):
+        kw.setdefault("require_mention", True)
+        kw.setdefault("bot_user_id", "42")
+        adapter = da.DiscordAdapter(transport, router, channel_id="c1",
+                                    data_dir=self.tmp, batch_seconds=0.0, **kw)
+        adapter.poll_once()  # baseline
+        return adapter
+
+    def test_unaddressed_message_is_not_answered(self):
+        transport = FakeTransport([_msg("1", "seed")])
+        router = FakeRouter(reply="hi")
+        adapter = self._adapter(transport, router)
+        transport.messages = [_msg("2", "just talking to myself")]
+        report = adapter.poll_once()
+        self.assertEqual(report["accepted"], 0)
+        self.assertEqual(router.calls, [])
+        self.assertEqual(transport.sent, [])
+
+    def test_mentioned_message_is_answered(self):
+        transport = FakeTransport([_msg("1", "seed")])
+        router = FakeRouter(reply="hi")
+        adapter = self._adapter(transport, router)
+        transport.messages = [{"id": "2", "content": "<@42> you there?",
+                               "author": {"id": "u1"}}]
+        report = adapter.poll_once()
+        self.assertEqual(report["handled"], 1)
+        self.assertEqual(router.calls, [("<@42> you there?", "discord")])
+
+    def test_reply_to_bot_is_answered(self):
+        transport = FakeTransport([_msg("1", "seed")])
+        router = FakeRouter(reply="hi")
+        adapter = self._adapter(transport, router)
+        transport.messages = [{
+            "id": "2", "content": "no mention here",
+            "author": {"id": "u1"},
+            "referenced_message": {"author": {"id": "42"}}}]
+        report = adapter.poll_once()
+        self.assertEqual(report["handled"], 1)
+
+    def test_check_messages_forces_a_read_of_unaddressed(self):
+        transport = FakeTransport([_msg("1", "seed")])
+        router = FakeRouter(reply="hi")
+        adapter = self._adapter(transport, router)
+        transport.messages = [_msg("2", "no mention at all")]
+        # A normal poll ignores it; an explicit check answers it.
+        adapter.poll_once()
+        self.assertEqual(router.calls, [])
+        handled = adapter.check_messages()
+        self.assertEqual(handled, 1)
+        self.assertEqual(len(router.calls), 1)
+
+    def test_no_gate_when_require_mention_off(self):
+        transport = FakeTransport([_msg("1", "seed")])
+        router = FakeRouter(reply="hi")
+        adapter = da.DiscordAdapter(transport, router, channel_id="c1",
+                                    data_dir=self.tmp, require_mention=False)
+        adapter.poll_once()
+        transport.messages = [_msg("2", "no mention")]
+        report = adapter.poll_once()
+        self.assertEqual(report["handled"], 1)
+
+
+class TestTypingSimulation(unittest.TestCase):
+    """In the running config, replies are typed at a human pace, not pasted."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _adapter(self, transport, router, **kw):
+        kw.setdefault("typing_simulation", True)
+        adapter = da.DiscordAdapter(transport, router, channel_id="c1",
+                                    data_dir=self.tmp, batch_seconds=0.0,
+                                    **kw)
+        adapter.poll_once()
+        return adapter
+
+    def test_reply_is_not_sent_until_typing_finishes(self):
+        transport = FakeTransport([_msg("1", "seed")])
+        router = FakeRouter(reply="a considered reply")
+        adapter = self._adapter(transport, router)
+        transport.messages = [_msg("2", "hi")]
+        adapter.poll_once()
+        # Typing is in flight; nothing delivered yet, but the indicator is on.
+        self.assertEqual(transport.sent, [])
+        self.assertIn("c1", transport.typing_calls)
+        self.assertTrue(adapter.diagnostics()["pending_reply"])
+        # Let the (real, short) typing thread finish, then poll delivers it.
+        transport.messages = []  # the fake transport ignores the cursor
+        adapter._join_typing(timeout=30.0)
+        adapter.poll_once()
+        self.assertEqual(len(transport.sent), 1)
+        self.assertEqual(transport.sent[0]["content"], "a considered reply")
+
+    def test_typing_delay_is_word_scaled(self):
+        transport = FakeTransport([_msg("1", "seed")])
+        router = FakeRouter(reply=" ".join(["word"] * 50))
+        adapter = self._adapter(transport, router, typing_wpm=60.0,
+                                typing_min_seconds=0.0, typing_max_seconds=600.0)
+        transport.messages = [_msg("2", "hi")]
+        adapter.poll_once()
+        with adapter._send_lock:
+            delay = adapter._reply_in_flight["typing_seconds"]
+        # 50 words at 60 wpm is 50s; with jitter, comfortably over 30s.
+        self.assertGreater(delay, 30.0)
+
+    def test_new_message_interrupts_and_replaces_the_pending_reply(self):
+        transport = FakeTransport([_msg("1", "seed")])
+        router = FakeRouter(reply=" ".join(["word"] * 40))
+        adapter = self._adapter(transport, router, typing_wpm=10.0,
+                                typing_min_seconds=0.0, typing_max_seconds=600.0)
+        transport.messages = [_msg("2", "first thought")]
+        adapter.poll_once()  # starts typing the long reply
+        self.assertTrue(adapter.diagnostics()["pending_reply"])
+        # A second thought arrives mid-typing: the reply is abandoned and read.
+        transport.messages = [_msg("3", "and another thought")]
+        adapter.poll_once()
+        self.assertFalse(adapter.diagnostics()["pending_reply"])
+        self.assertEqual(transport.sent, [])
+        # It is re-buffered as one turn, then answered after the debounce. The
+        # first (superseded) turn still ran the router once; the final turn is
+        # the one that must carry the whole thought.
+        transport.messages = []
+        adapter._join_typing(timeout=30.0)
+        adapter.poll_once()
+        final = router.calls[-1][0]
+        self.assertIn("first thought", final)
+        self.assertIn("and another thought", final)
+
+    def test_flush_delivers_pending_on_shutdown(self):
+        transport = FakeTransport([_msg("1", "seed")])
+        router = FakeRouter(reply="bye")
+        adapter = self._adapter(transport, router)
+        transport.messages = [_msg("2", "hi")]
+        adapter.poll_once()
+        adapter.flush()
+        self.assertEqual(len(transport.sent), 1)
+
+    def test_typing_off_sends_immediately(self):
+        transport = FakeTransport([_msg("1", "seed")])
+        router = FakeRouter(reply="plain")
+        adapter = da.DiscordAdapter(transport, router, channel_id="c1",
+                                    data_dir=self.tmp, typing_simulation=False)
+        adapter.poll_once()
+        transport.messages = [_msg("2", "hi")]
+        adapter.poll_once()
+        self.assertEqual(len(transport.sent), 1)
+
+
+class TestStateShapedTiming(unittest.TestCase):
+    """Her affect scales how long her Discord actions take."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _adapter(self, provider, **kw):
+        transport = FakeTransport([_msg("1", "seed")])
+        adapter = da.DiscordAdapter(
+            transport, FakeRouter(reply="hi"), channel_id="c1",
+            data_dir=self.tmp, typing_simulation=True, batch_seconds=0.0,
+            modulation_provider=provider, **kw)
+        adapter.poll_once()
+        return adapter, transport
+
+    def test_warm_state_types_faster_and_waits_longer(self):
+        warm = {"energy": 0.95, "enthusiasm": 0.95, "pace": 0.95,
+                "interest": 0.95, "hesitation": 0.0, "_sad": 0.0}
+        low = {"energy": 0.05, "enthusiasm": 0.05, "pace": 0.05,
+               "interest": 0.05, "hesitation": 0.7, "_sad": 0.7}
+        warm_adapter, _ = self._adapter(lambda: warm)
+        low_adapter, _ = self._adapter(lambda: low)
+        self.assertLess(warm_adapter._timing()["typing_scale"],
+                        low_adapter._timing()["typing_scale"])
+        self.assertGreater(warm_adapter._timing()["patience_scale"],
+                           low_adapter._timing()["patience_scale"])
+
+    def test_scale_timing_preserves_rhythm(self):
+        adapter, _ = self._adapter(lambda: {})
+        segs = [2.0, 1.0, 3.0]
+        scaled = adapter._scale_timing(segs, 2.0)
+        self.assertEqual(scaled, [4.0, 2.0, 6.0])
+        self.assertEqual(adapter._scale_timing(segs, 1.0), segs)
+        self.assertEqual(adapter._scale_timing([], 2.0), [])
+
+    def test_provider_failure_degrades_to_neutral(self):
+        def boom():
+            raise RuntimeError("no state")
+        adapter, transport = self._adapter(boom)
+        self.assertEqual(adapter._modulation(), {})
+        self.assertEqual(adapter._timing()["typing_scale"], 1.0)
+        transport.messages = [_msg("2", "hi")]
+        adapter.poll_once()
+        self.assertTrue(adapter.diagnostics()["pending_reply"])
+
+
+class TestPresenceInAdapter(unittest.TestCase):
+    """Walking away closes the exchange and returns her to her own work."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _adapter(self, clock, **kw):
+        transport = FakeTransport([_msg("1", "seed")])
+        adapter = da.DiscordAdapter(
+            transport, FakeRouter(reply="hi"), channel_id="c1",
+            data_dir=self.tmp, typing_simulation=False, batch_seconds=0.0,
+            now_fn=clock, **kw)
+        adapter.poll_once()
+        return adapter, transport
+
+    def test_addressed_message_opens_a_live_exchange(self):
+        clock = _Clock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        adapter, transport = self._adapter(clock)
+        transport.messages = [_msg("2", "you around?")]
+        adapter.poll_once()
+        diag = adapter.diagnostics()
+        self.assertTrue(diag["exchange_open"])
+        self.assertIn(diag["presence"], (presence_mod.PRESENT,
+                                         presence_mod.LINGERING))
+
+    def test_going_quiet_closes_the_exchange(self):
+        clock = _Clock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        adapter, transport = self._adapter(clock)
+        transport.messages = [_msg("2", "you around?")]
+        adapter.poll_once()
+        # He walks away: advance past her (state-scaled) patience.
+        clock.advance(presence_mod.DEFAULT_PATIENCE_SECONDS + 10)
+        diag = adapter.diagnostics()
+        self.assertFalse(diag["exchange_open"])
+        self.assertEqual(diag["presence"], presence_mod.AWAY)
+
+    def test_a_low_state_gives_up_sooner(self):
+        clock = _Clock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        low = {"energy": 0.05, "enthusiasm": 0.05, "pace": 0.05,
+               "interest": 0.05, "hesitation": 0.7, "_sad": 0.7}
+        adapter, transport = self._adapter(clock, modulation_provider=lambda: low)
+        transport.messages = [_msg("2", "you around?")]
+        adapter.poll_once()
+        clock.advance(150.0)  # past a low state's patience, inside a warm one's
+        self.assertEqual(adapter.diagnostics()["presence"], presence_mod.AWAY)
+
+    def test_speaking_again_reopens_it(self):
+        clock = _Clock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+        adapter, transport = self._adapter(clock)
+        transport.messages = [_msg("2", "you around?")]
+        adapter.poll_once()
+        clock.advance(presence_mod.DEFAULT_PATIENCE_SECONDS + 10)
+        self.assertFalse(adapter.diagnostics()["exchange_open"])
+        transport.messages = [_msg("3", "back")]
+        adapter.poll_once()
+        self.assertTrue(adapter.diagnostics()["exchange_open"])
+
+
+class _Clock:
+    """A controllable clock for the adapter's ``now_fn``."""
+
+    def __init__(self, start):
+        self.now = start
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now = self.now + timedelta(seconds=seconds)
+
 
 class TestBuilder(unittest.TestCase):
     def test_disabled_returns_none(self):
@@ -451,6 +762,117 @@ class TestBuilder(unittest.TestCase):
     def test_missing_token_returns_none(self):
         cfg = {"discord": {"enabled": True, "channel_id": "c", "bot_token_env": "NOPE_XYZ"}}
         self.assertIsNone(da.build_discord_adapter(FakeRouter(), cfg))
+
+
+class _FakeResponse:
+    def __init__(self, status_code, *, json_body=None, headers=None):
+        self.status_code = status_code
+        self._json = json_body if json_body is not None else {}
+        self.headers = headers or {}
+
+    def json(self):
+        if isinstance(self._json, Exception):
+            raise self._json
+        return self._json
+
+
+class _StubSession:
+    """A stub standing in for ``requests.Session``.
+
+    Emits a scripted sequence of responses/exceptions; the real
+    ``DiscordTransport._request`` logic runs against it, so the retry/backoff
+    behavior is the code under test, not the stub.
+    """
+
+    def __init__(self, script):
+        self.script = list(script)
+        self.calls = 0
+
+    def request(self, method, url, *, headers=None, json=None, params=None, timeout=None):
+        self.calls += 1
+        item = self.script.pop(0) if self.script else self.script_error()
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    @staticmethod
+    def script_error():
+        raise AssertionError("stub session ran out of scripted responses")
+
+
+class TestTransportResilience(unittest.TestCase):
+    """The real transport retries transient failures with bounded backoff."""
+
+    def _transport(self, script, timeout=15.0):
+        # Patch sleep so the test never actually waits.
+        self._slept = []
+        original = da.time.sleep
+        da.time.sleep = lambda s: self._slept.append(s)
+        self.addCleanup(lambda: setattr(da.time, "sleep", original))
+        return da.DiscordTransport("tok", session=_StubSession(script),
+                                   timeout=timeout)
+
+    def test_read_timeout_is_retried_then_succeeds(self):
+        import requests
+        t = self._transport([
+            requests.exceptions.ReadTimeout("read timed out"),
+            _FakeResponse(200, json_body={"id": "m1"}),
+        ])
+        result = t.fetch_messages("c1")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["data"], {"id": "m1"})
+        # One retry happened (a sleep was taken) before the success.
+        self.assertTrue(self._slept)
+
+    def test_connection_reset_is_retried(self):
+        import requests
+        t = self._transport([
+            requests.exceptions.ConnectionError("Connection aborted"),
+            _FakeResponse(200, json_body=[]),
+        ])
+        self.assertTrue(t.fetch_messages("c1")["ok"])
+
+    def test_persistent_transport_error_gives_up_bounded(self):
+        import requests
+        t = self._transport([requests.exceptions.ReadTimeout("x")] * 10)
+        result = t.fetch_messages("c1")
+        self.assertFalse(result["ok"])
+        self.assertIn("transport", result["error"])
+        # Bounded: never more than TRANSPORT_MAX_ATTEMPTS attempts and sleeps.
+        self.assertEqual(len(self._slept), da.TRANSPORT_MAX_ATTEMPTS - 1)
+
+    def test_500_is_retried_then_succeeds(self):
+        t = self._transport([_FakeResponse(500), _FakeResponse(200, json_body={})])
+        self.assertTrue(t.send_message("c1", "hi")["ok"])
+
+    def test_400_is_not_retried(self):
+        t = self._transport([_FakeResponse(400, json_body={})])
+        result = t.send_message("c1", "hi")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], 400)
+
+    def test_429_honours_retry_after_body(self):
+        t = self._transport([
+            _FakeResponse(429, json_body={"retry_after": 0.75}),
+            _FakeResponse(200, json_body={}),
+        ])
+        self.assertTrue(t.fetch_messages("c1")["ok"])
+        self.assertTrue(self._slept)
+        self.assertAlmostEqual(self._slept[0], 0.75, places=2)
+
+    def test_429_honours_retry_after_header_as_fallback(self):
+        t = self._transport([
+            _FakeResponse(429, json_body=ValueError("no json"),
+                          headers={"Retry-After": "2"}),
+            _FakeResponse(200, json_body={}),
+        ])
+        self.assertTrue(t.fetch_messages("c1")["ok"])
+        self.assertAlmostEqual(self._slept[0], 2.0, places=2)
+
+    def test_rate_limit_sleep_is_clamped(self):
+        res = _FakeResponse(429, json_body={"retry_after": 9999})
+        self.assertLessEqual(da.DiscordTransport("t")._rate_limit_sleep(res, 0),
+                             da.RATE_LIMIT_MAX_SLEEP + 1.0)
 
 
 if __name__ == "__main__":

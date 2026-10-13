@@ -168,6 +168,17 @@ class RuntimeStateStore:
         with self._lock:
             return coerce_state(self._state)
 
+    def reload(self) -> Dict[str, Any]:
+        """Re-read the file from disk (read-only inspection across processes).
+
+        A second process (the read-only console) does not share this object's
+        memory with the running runtime, so it refreshes before reporting rather
+        than showing a snapshot taken at import time.
+        """
+        with self._lock:
+            self._state = self._load()
+            return coerce_state(self._state)
+
     def _persist(self) -> None:
         with self._lock:
             atomic_save(self.path, self._state)

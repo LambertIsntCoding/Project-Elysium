@@ -65,3 +65,41 @@ client. The console can be closed and reopened without disturbing the runtime,
 because it connects to the same running components through the shared
 application router rather than owning them. Type `menu` (or `/menu`) for the
 numbered admin menu, and `/status` for the runtime version block.
+
+### Watching a running runtime without talking to it
+
+Because a running Astra holds the single-instance lock, opening a second normal
+console against the same runtime storage cannot read stdin - you would only be
+able to send commands through Discord. To *observe* her without being able to
+chat, use the read-only inspection console:
+
+```bash
+python main.py --inspect
+```
+
+It opens the same runtime state a real run uses and shows whether the runtime is
+running (from `runtime/runtime.lock`), her autonomy/schedule state, Discord
+connection health, background tasks, affect and relationship views, unresolved
+questions, reading position, and the time sense. It is deliberately sealed:
+
+- no conversation is routed, no model is called, no Discord message is sent;
+- a mutating command (`/sleep`, `/wake`, `/autonomy pause`, `/read force`,
+  `/approve`, `/reconcile`, ...) is *refused*, with a pointer to the runtime;
+- the durable stores are re-read (`reload()`) before each command, because this
+  is a separate process and does not share the live runtime's in-memory objects;
+- it writes nothing on a populated runtime (only a first run performs the
+  one-time storage seed).
+
+Type `/help` inside it for the full list of read-only commands. The mutating
+commands themselves (`/autonomy pause|resume`, `/notifications off|on`, Mute,
+schedules) are reached through the running runtime - send them in Discord, or
+use `menu`/`/menu` in the normal console before the headless runtime starts.
+
+### Live screens refresh again
+
+The live observation screens (`menu` -> Relationships & Affect -> Relationship /
+Affect, and Diagnostics) redraw on their own cadence. This depends on
+`ChatSession._screen_poll` returning `None` on a timeout: the earlier version
+blocked on `input()` and so never refreshed on a real terminal. If a new screen
+is added, keep using this poll and pass the session's `_screen_clear` as the
+`clear` callback so frames replace themselves instead of scrolling.

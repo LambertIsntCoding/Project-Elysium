@@ -13,6 +13,7 @@ python main.py            # start the runtime + admin console (seeds runtime sta
 python main.py --supervise   # start under the supervisor (restart-on-crash, graceful redeploy)
 python main.py --status      # print the running version/commit
 python main.py --restart     # ask the supervisor to restart Astra gracefully
+python main.py --inspect     # READ-ONLY view of the running runtime (no chat)
 python -m tests           # full suite (unittest + the two script-style suites)
 python -m unittest tests.test_memory_governance -v   # one module
 python deploy.py --dry-run   # show the deploy plan (runs tests unless --skip-tests)
@@ -41,15 +42,19 @@ HTTP stub, and consolidation tests call the decision layer directly.
 | `astra/reading.py` | reading vocabulary + the reader's idle/game/load gate (pure, no I/O) |
 | `astra/library.py` | local ingestion (text/epub) + resumable reading position |
 | `astra/reader.py` | the low-priority background reader daemon |
+| `astra/text_normalize.py` | normalize presentation noise (HTML entities/tags, ligatures, invisible chars, whitespace) at the memory write path; pure + idempotent |
 | `astra/elysium.py` | application-level root command layer |
 | `astra/paths.py` | runtime/code separation: resolves the runtime root and seeds legacy state (pure, no policy) |
 | `astra/version.py` | running-vs-on-disk code version, start/deploy/restart records |
 | `astra/supervisor.py` | start/watch/restart the runtime; single-instance lock; owns no state |
 | `astra/admin.py` | admin layer: menu registry, paging, snapshot store, live screens |
+| `astra/inspect_console.py` | read-only inspection of a running runtime (`--inspect`): reuses the session's views; no chat, no model, no writes |
 | `astra/telemetry.py` | 0-100 rendering of internal state for the admin screens (display only) |
-| `astra/behavior.py` | state -> behaviour modulation (energy, initiative, pace, ...); stores nothing |
+| `astra/behavior.py` | state -> behaviour modulation (energy, initiative, pace, ...); also the state->timing projection; stores nothing |
+| `astra/presence.py` | is an exchange still live? state-scaled patience, and whether she should go back to her own work (pure, no I/O) |
 | `astra/screens.py` | live relationship/status/affect admin screens |
-| `astra/menus.py` | numbered admin menu + command routes |
+| `astra/menus.py` | numbered admin menu: every command reachable by number/word |
+| `astra/schedule_explain.py` | explain a scheduled/planned task (why/when/next) from its own records; derived, read-only (pure, no I/O) |
 | `astra/model_use.py` | when the language model may be invoked (pure config read; the model is her voice, not her) |
 | `astra/engagement.py` | adaptation to repeated non-response: a bounded threshold raise (never a mute, never a memory) |
 | `deploy.py` | non-destructive deployment: test, restart gracefully, verify version |
@@ -291,6 +296,18 @@ Top-level `memory_store.py`, `orchestrator.py`, `elysium.py`, `consolidator.py`,
   `build_prompt`, because the persistence tests assert byte-for-byte stability.
 - **`storage/*.json` is not modified by tests** (persistence tests assert
   byte-for-byte stability).
+- **Presentation noise is normalized at the write choke point, never on read.**
+  `astra/text_normalize.py` cleans HTML entities/tags, unicode ligatures and
+  fullwidth forms, zero-width/invisible characters, and wrapping whitespace from
+  memory content in `add_memory` (via `_clean_content`), so stored text is clean
+  at the source. The transform is pure and idempotent, protects fenced/inline
+  code and URLs verbatim, and collapses only wrap-induced line breaks (a real
+  paragraph or list break survives). It rewrites **content only** - never a
+  provenance/authority/identity field. Migration is explicit
+  (`preview_text_normalization` / `normalize_memory_texts`, both audited via
+  `atomic_save(..., backup=True)`) and refuses to write markup-only content down
+  to empty. Do not normalize inside `build_prompt` or `_present`: reads stay
+  byte-stable.
 - **On-disk records are compact; the read contract is not.** `atomic_save`
   writes dense JSON (no `indent`), and `_persist` runs every record through
   `compact_record`, which drops fields a reader can derive or default
@@ -354,6 +371,15 @@ Top-level `memory_store.py`, `orchestrator.py`, `elysium.py`, `consolidator.py`,
   byte-for-byte read guarantees for no meaningful gain.
 - **Elysium is not a personality.** It is an application-level command route;
   an invocation must never reach `build_prompt()` or `query_gemma()`.
+- **The status view is derived from the records, never optimistic.**
+  `astra/schedule_explain.py` is the single bridge from a scheduled/planned task
+  to the admin's why/when/next explanation (`/schedules`). It reads only fields
+  that already exist on the task and its schedule spec, so it cannot drift from
+  the queue and is never a second source of truth. An overdue occurrence is
+  stated per its `catch-up` policy (run/skip/coalesce) rather than implying a run
+  the policy would refuse; a failed task reports retry eligibility from its own
+  `attempts`/`max_attempts`; a blocked task surfaces its reason. Keep it pure and
+  read-only - do not let a status view mutate a task or call the model.
 - The model proposes; the application decides. Classification heuristics live in
   `astra/memory.py`, not in the prompt.
 - **Internal state is a cause of behaviour, not a topic.** `astra/generation.py`
@@ -615,13 +641,14 @@ conversation, provenance/authority/read-only, reading-not-autobiography, the
 journal, working memory, reading concentration/pace, and personal-state honesty
 (never reconstructing a missing or contradictory fact). The anti-invention rules
 have their own suite, `tests/test_personal_state.py` (17 cases). Tests assert
-behaviour and authority boundaries, not prompt strings. Full suite: 935 tests
+behaviour and authority boundaries, not prompt strings. Full suite: 955 tests
 (the live affect path adds `tests/test_live_affect.py`, 30 cases; the
 emotion-memory cases add `tests/test_experience_affect.py::TestEmotionColour`;
 the grounded-outreach wiring adds `tests/test_outreach.py`, 22 cases; the
 non-response adaptation, effective affect decay and honest reading outcomes add
 `tests/test_engagement.py`, 30 cases; the plans-as-intentions view adds
-`tests/test_intentions.py`, 25 cases).
+`tests/test_intentions.py`, 25 cases; the read-only inspection console adds
+`tests/test_inspect_console.py`, 10 cases).
 
 ### Reading progress is measured in words
 
@@ -779,6 +806,52 @@ The invariants:
   (`astra/menus.py` + `astra/admin.py`); live screens (`astra/screens.py`) render
   relationship/status/affect continuously with a bounded rolling snapshot buffer
   (`SnapshotStore`, never an unbounded log).
+- **The admin menu is the discoverable face of the whole command surface.** Every
+  command is reachable by number or word (`astra/menus.py` registers one screen
+  per area; `astra/admin.py` numbers and word-aliases the top level, including a
+  per-word alias so "AUTOMATION / SCHEDULER" answers to `automation` and
+  `scheduler`). A screen never re-implements a command: it calls the *same*
+  `ApplicationRouter.handle` the console and Discord use, so behaviour cannot
+  drift. `COMMAND_CATALOG` is the static reference (`ALL COMMANDS` screen) and is
+  asserted against the live tree and the console's handler list. When a command
+  is added to the router or the console, add it to a screen and the catalog - a
+  gap is a regression, not a stylistic choice. The read-only inspect console
+  (`--inspect`) stays deliberately narrowed: it omits mutating commands.
+- **The live screens actually refresh, and the loop must not block.**
+  `ChatSession._screen_poll(timeout)` returns a keypress *or* ``None`` on
+  timeout; ``_screen_poll_posix`` uses cbreak + ``select``, ``_screen_poll_windows``
+  uses ``msvcrt.kbhit`` in a bounded wait, and a non-tty returns ``None`` at once.
+  `LiveScreen.run` redraws on ``None`` (via the optional ``clear`` callback,
+  `ChatSession._screen_clear`, so a frame replaces itself instead of scrolling).
+  The earlier implementation called the blocking ``input_fn`` directly, so on a
+  real terminal the poll never returned ``None`` and the refresh branch was dead:
+  the page rendered once and then looked frozen. Keep the poll non-blocking and
+  keep a non-tty short-circuit so tests stay deterministic.
+- **There is a read-only inspection console for a running runtime.**
+  `python main.py --inspect` (`astra/inspect_console.py`) opens a second process
+  against the *live* runtime's state so Roum can watch what Astra is doing and
+  how she is feeling **without** being able to chat or change anything. It is
+  deliberately narrow and must stay so:
+  - it never routes a conversation, never calls the model, and never sends a
+    Discord message; a mutating command (`/sleep`, `/wake`, `/autonomy pause`,
+    `/read force`, `/approve`, ...) is *refused* with a pointer to the runtime,
+    not executed;
+  - it does not call ``router.handle`` (whose entry point records a human message
+    as a side effect); it calls the controller's report methods and the router's
+    read-only text builders directly, and wraps the session's own ``_display_*``
+    views by swapping ``output_fn``;
+  - it re-reads the durable stores before each command via ``reload()``
+    (``TripleMemoryStore``, the runtime/task/ledger/notification/proactive/
+    proposal/delivery stores), because a separate process does not share the live
+    runtime's in-memory objects. ``reload()`` is read-only and never persists;
+  - it builds a session exactly as a real run does (``build_session`` writes
+    nothing on a populated runtime) but never calls ``run()``, so it takes no
+    lock, starts no thread, and opens no transport. It writes exactly one file -
+    the one-time storage seed - and only on a first run; a populated runtime is
+    only ever read.
+  - `DiscordHealthStore` (`discord_health.json`) is a tiny best-effort record the
+    live adapter writes (throttled) so the console can show whether Discord is
+    connected and when it last was, without the console opening a connection.
 - **Affect is displayed at 0-100 but stored normalized.** `astra/telemetry.py`
   renders the existing `0.0..1.0` accumulators as integers on a 0-100 scale with
   direction and a supplemental qualitative band. This is *display only*: no
@@ -802,7 +875,7 @@ The invariants:
   it". None of this affects whether an interpretation is true.
 
 New tests: `tests/test_infrastructure.py` (12) and `tests/test_behavior_admin.py`
-(23). Full suite: 630 tests.
+(29, including the full-command-surface menu coverage). Full suite: 1064 tests.
 
 
 ## Autonomous operation, scheduling, and proactive Discord
@@ -836,6 +909,70 @@ operator guide is `docs/autonomous_operation.md`. Structural invariants:
   retried against the recipient. Destinations are restricted to the configured
   channel; mentions are limited to a single authorised user via
   `allowed_mentions` (never `@everyone`/roles).
+- **She answers when addressed, not whenever the channel moves.** With
+  `discord.require_mention` (default true) `DiscordAdapter._addressed` only
+  buffers a message that replies to one of her own messages or @-mentions her
+  (`astra/discord_behavior.is_addressed`, matched on `<@id>`/`<@!id>` or
+  `@display_name`), so she is not perpetually paying attention to the chat.
+  `/check-messages` (`poll_once(force=True)`, and the optional
+  `check_on_cycle`/`check_interval_seconds`) is the explicit "she looks on
+  purpose" path. The constructor default is off so transport tests are
+  unaffected; only `build_discord_adapter` turns it on.
+- **She types a reply; she does not paste it.** With `discord.typing_simulation`
+  each reply is planned by `discord_behavior.typing_plan`, which is deliberately
+  not a flat `words / wpm`: the message picks its own tempo
+  (`TEMPO_WPM_LOW`..`TEMPO_WPM_HIGH`), its structure perturbs the total
+  (`_TYPING_NOISE`: long words, digits, non-latin words, paragraph breaks,
+  hesitations), sentence ends add a small pause, and the result is split into
+  human bursts by `typing_segments` with a reserved before-send beat
+  (`BEFORE_SEND_SECONDS`). The message is *planned* into `_reply_in_flight` and
+  sent from the poll loop only once typing (and the before-send beat) has
+  finished, so a message that arrives mid-typing interrupts it: the pending reply
+  is abandoned and its source messages are re-buffered *with* the new one, so she
+  answers the whole thought instead of the first fragment. A split long reply
+  paces its parts rather than dumping them. Off by default in the constructor; on
+  in the builder.
+- **How long an action takes is a consequence of her state, not a constant.**
+  `behavior.timing_modifiers` projects the same modulation onto timings
+  (`typing_scale`, `read_scale`, `patience_scale`, bounded). A warm/engaged state
+  types a little brisker and waits longer for a reply; a flat/weary/sad one is
+  slower to answer and gives up sooner. The adapter reads it live through
+  `modulation_provider` (built in `build_discord_adapter` from
+  `orchestrator.current_modulation`, a pure read) and scales the typing segments
+  and the before-send beat. `None`/a provider error degrades to neutral timing;
+  the adapter never writes affect.
+- **She notices when Roum walks away.** `astra/presence.py` is the single pure
+  decision: a live exchange stays open (`PRESENT`/`LINGERING`) until the gap
+  since Roum last addressed her passes her state-scaled patience, then it closes
+  (`AWAY`) and she goes back to her own work. The patience is
+  `presence_base_patience` scaled by `timing_modifiers.patience_scale`, so the
+  same elapsed time can be "still here" for a warm state and "gone quiet" for a
+  low one. The adapter tracks `_last_exchange` on each addressed message and, once
+  `AWAY`, falls back to a slow message-check (`away_poll_seconds`) instead of
+  hovering; the moment he speaks again the exchange reopens. Presence is a
+  *behavioural* signal only - it never renders a prompt block, because the gap to
+  `last_present()` still points at the previous turn while a new one is being
+  assembled, so a "he has gone quiet" note would fire exactly as he returns.
+- **A routed human message marks Roum present.** `ApplicationRouter._handle_locked`
+  calls `controller.touch()` for every message (CLI and Discord), so the runtime
+  knows he is here without a state flip; `mark_present` still records the gap,
+  and a prompt build never calls either.
+- **A reply and a ping are one decision, and only for emphasis.** Astra
+  reply-attaches only when her response carries the `reply_policy.EMPHASIS_MARKER`
+  prefix; when it does, `_answer_batch` *also* pings that message's author
+  (a reply without a ping is easily missed), and when it does not, no reference
+  and no mention are sent. Coupling the two in code is what stops an accidental
+  ping or a bare reply-attach.
+- **A transient transport failure is retried in-place, bounded.** A read
+  timeout, a dropped connection, or a 5xx is a *transient* condition, so
+  `DiscordTransport._request` retries it up to `TRANSPORT_MAX_ATTEMPTS` times
+  with a short bounded backoff before reporting a failure - so one network blip
+  does not fail a poll or burn a proactive send attempt against
+  `PROACTIVE_MAX_ATTEMPTS`. A 4xx (auth/permission/not-found) is a definite
+  answer and is returned at once, never retried. A 429 honours the structured
+  `retry_after` *or* the `Retry-After` header, clamped to
+  `RATE_LIMIT_MAX_SLEEP`. Only the final failure is logged at warning; a
+  retried blip is info, so a flapping link is not log-spam.
 - **Time arithmetic is pure and DST-correct.** `astra/schedules.py` owns
   recurrence, windows, quiet periods, deadlines, expiry and catch-up policy;
   `zoneinfo` resolves IANA zones (fixed-offset fallback, honestly). Nothing
@@ -916,9 +1053,12 @@ operator guide is `docs/autonomous_operation.md`. Structural invariants:
 
 New tests: `tests/test_schedules.py`, `tests/test_schedule_runtime.py`,
 `tests/test_activity.py`, `tests/test_autonomy.py`, `tests/test_notifications.py`,
-`tests/test_reply_policy.py`, `tests/test_machine.py`,
+`tests/test_reply_policy.py`, `tests/test_discord_behavior.py`,
+`tests/test_presence.py`, `tests/test_machine.py`,
 `tests/test_affect_propagation.py`, `tests/test_power_runtime.py`,
-`tests/test_proposals.py`, plus the new outbound-lifecycle, batching and
-reply/ping cases in `tests/test_discord_adapter.py` and the visibility/control
-cases in `tests/test_application.py`. `python -m unittest discover -s tests -t .`
-now runs 838 tests, all passing (plus the script-style suites via `python -m tests`).
+`tests/test_proposals.py`, plus the new outbound-lifecycle, batching,
+addressing-gate, typing-simulation, interrupt-and-read, state-shaped timing,
+presence and reply/ping cases in
+`tests/test_discord_adapter.py` and the visibility/control cases in
+`tests/test_application.py`. `python -m unittest discover -s tests -t .`
+now runs 1016 tests, all passing (plus the script-style suites via `python -m tests`).

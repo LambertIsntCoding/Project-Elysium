@@ -183,9 +183,40 @@ class TestAutonomyCommands(unittest.TestCase):
 
         session.orchestrator.query_gemma = explode
         for command in ("/autonomy", "/notifications", "/discord", "/schedules",
-                        "/autonomy now"):
+                        "/reader", "/normalize-text", "/autonomy now"):
             out = session.router.handle(command)["text"]
             self.assertIsInstance(out, str)
+
+    def test_schedule_report_is_derived_from_task_records(self):
+        session = self._session()
+        controller = session.controller
+        spec = {"mode": "daily", "at": "03:00", "timezone": "UTC",
+                "catch_up": "run", "dedupe_key": "x"}
+        from astra.tasks import BackgroundTask, ORIGIN_SCHEDULE
+        task = BackgroundTask(kind="memory_review", origin=ORIGIN_SCHEDULE,
+                              schedule=spec, dedupe_key="x",
+                              due_at="2099-01-01T03:00:00+00:00")
+        controller.task_store.enqueue(task)
+        out = session.router.handle("/schedules")["text"]
+        self.assertIn("why:", out)
+        self.assertIn(task.kind, out)
+
+    def test_normalize_text_preview_does_not_rewrite(self):
+        session = self._session()
+        store = session.orchestrator.store
+        store.add_memory("roum", "clean", "explicit_fact", "user_statement")
+        store.memories["roum"][0]["content"] = "noisy &amp; text"
+        out = session.router.handle("/normalize-text")["text"]
+        self.assertIn("preview", out.lower())
+        self.assertEqual(store.memories["roum"][0]["content"], "noisy &amp; text")
+
+    def test_reader_health_reports_without_model(self):
+        session = self._session()
+        session.orchestrator.query_gemma = lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("reader health must not call the model"))
+        out = session.router.handle("/reader")["text"]
+        self.assertIsInstance(out, str)
+        self.assertTrue(out.strip())
 
     def test_pause_activity_does_not_pause_notifications(self):
         session = self._session()

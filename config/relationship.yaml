@@ -23,8 +23,12 @@ boundaries:
 # Each entry is a case-insensitive regex matched against running process names,
 # and a process that matches *ignore* is never treated as busy.
 #
-#   busy         - a running match stands the reader down (treated like load:
-#                  it does not claim the GPU, but it does stop reading).
+#   busy         - a running match stands the reader down by default (treated
+#                  like load). It is a *workload conflict*, not a verdict: on a
+#                  measurably calm machine the reader may still proceed.
+#   hard         - an absolute prohibition. A running match stops reading even
+#                  on a calm machine; it is never overridden. Use this for a
+#                  task you truly never want interrupted (e.g. a live call).
 #   ignore       - never counts as busy, even if it matches a built-in game
 #                  pattern (e.g. a launcher you keep open).
 #   always_ignore - the machine's own housekeeping, blocked outright.
@@ -61,3 +65,7 @@ background_processes:
     - "steam"
     - "smartscreen"
     - "qtscreen"
+  # Absolute prohibitions: a running match stops background reading even on a
+  # calm machine. Empty by default - the "busy" list above is a preference, not
+  # a prohibition.
+  hard: []

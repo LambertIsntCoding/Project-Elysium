@@ -272,6 +272,11 @@ class TaskStore:
                 out.append(task)
         return out
 
+    def reload(self) -> None:
+        """Re-read from disk, for a separate read-only inspection process."""
+        with self._lock:
+            self._tasks = self._load()
+
     def _persist(self) -> None:
         with self._lock:
             atomic_save(self.path, {
@@ -416,6 +421,11 @@ class TaskLedger:
         raw = load_json(self.path, dict, dict)
         items = raw.get("entries") if isinstance(raw, dict) else None
         return [dict(e) for e in items or [] if isinstance(e, dict)]
+
+    def reload(self) -> None:
+        """Re-read from disk, for a separate read-only inspection process."""
+        with self._lock:
+            self._entries = self._load()
 
     def _persist(self) -> None:
         with self._lock:

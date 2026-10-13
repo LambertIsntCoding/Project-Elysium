@@ -201,9 +201,34 @@ discord:
   poll_seconds: 2.0
   # Inbound debounce: wait this long after the last message before answering, so
   # a thought sent in several lines is read as one turn (not answered line by
-  # line). `max_batch` answers early if that many messages arrive.
-  batch_seconds: 3.0
+  # line). `max_batch` answers early if that many messages arrive. Six seconds
+  # is deliberately unhurried: it gives a person time to finish a several-line
+  # thought instead of being answered piece by piece.
+  batch_seconds: 6.0
   max_batch: 8
+  # Only answer a message that is actually addressed to her - an @-mention or a
+  # reply to one of her messages. Otherwise she is not watching the channel and
+  # stays quiet until she checks her messages or is pinged. This is the single
+  # fix for "she should not perpetually pay attention to the chat".
+  require_mention: true
+  # Her display name, so "@Astra" also counts as addressing her (leave empty to
+  # rely on the mention id and reply references only).
+  bot_name: "Astra"
+  # Reply at a human typing pace: the delay is words / typing_wpm minutes with a
+  # little variation, delivered in bursts with small pauses. She does not paste
+  # a wall of text instantly.
+  typing_simulation: true
+  typing_wpm: 45.0
+  # Presence: how long (seconds, at a neutral state) an exchange stays open
+  # before she treats Roum as having stepped away and returns to her own work.
+  # Her current affect scales this - an engaged/warm state waits longer, a flat
+  # or weary one gives up sooner (see astra.presence / behavior.timing_modifiers).
+  presence_base_patience: 300.0
+  # Optional low-frequency autonomous check: even without a ping, look at the
+  # channel once per check_interval_seconds and answer. 0 = never (she relies on
+  # being pinged or told to check). Set e.g. 1800 for a check every 30 minutes.
+  check_on_cycle: false
+  check_interval_seconds: 0
   # Optional: restrict who may be answered (Discord user ids). Empty = any
   # non-bot author in the channel.
   allowed_author_ids: []

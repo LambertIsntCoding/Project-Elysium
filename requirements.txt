@@ -1,0 +1,9 @@
+# Astra runtime dependencies (third-party only; everything else is stdlib).
+#
+# The test suite and the model backend need no network: Ollama is reached over
+# loopback and tests stub it. These packages are imported at module load, so a
+# missing one stops Astra (and most of the suite) from starting.
+
+PyYAML>=6.0          # astra/memory.py, astra/orchestrator.py: config/*.yaml
+requests>=2.25       # astra/discord_adapter.py, astra/elysium.py: REST transport
+psutil>=5.8          # optional: richer process/idle detection; degrades cleanly

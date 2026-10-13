@@ -64,16 +64,23 @@ IDLE_MODEL_FAILED = "model_unavailable"  # the local model could not be reached
 IDLE_HELD = "held"                       # no model call was permitted this cycle
 IDLE_FORCED = "forced"                   # Roum forced a cycle: the gate was bypassed
 IDLE_NOT_CONCENTRATING = "not_concentrating"  # too scattered/weary to read well
+IDLE_HARD_PROHIBITED = "hard_prohibited"  # a user-set absolute exclusion is running
 
 # The reasons that are genuine *interruptions* (as opposed to "fine to read" or
 # "nothing to read"). Only these are worth telling Astra about in her prompt.
 _PAUSE_REASONS = (IDLE_USER_ACTIVE, IDLE_GAME_RUNNING, IDLE_MACHINE_BUSY,
-                  IDLE_NOT_CONCENTRATING)
+                  IDLE_NOT_CONCENTRATING, IDLE_HARD_PROHIBITED)
 
 # Default thresholds. Kept as module constants so the behaviour is auditable and
 # tunable, exactly like the memory heuristics in ``astra.memory``.
 DEFAULT_IDLE_SECONDS = 90.0        # how long Roum must be quiet before reading
 DEFAULT_LOAD_CEILING = 0.75        # CPU load fraction above which we stand down
+# Headroom for overriding an overridable "busy" application. This is
+# deliberately *lower* than the load ceiling: it is not "the machine is idle",
+# it is "the machine has enough spare to justify a little background reading
+# despite a nominally busy application". Only used when the busy signal is
+# overridable (no game, no hard prohibition).
+DEFAULT_HEADROOM_CEILING = 0.45
 DEFAULT_CHUNK_CHARS = 3500         # max characters of a work per model call
 DEFAULT_CHUNKS_PER_CYCLE = 1       # bounded work per wake
 DEFAULT_MIN_CHUNK_CHARS = 200      # ignore trailing fragments shorter than this
@@ -342,13 +349,29 @@ class ProcessPolicy:
     Pure data plus deterministic matching: given the same process list it always
     decides the same way, so the reader's wakefulness stays explainable. Nothing
     here is stored; it is rebuilt from config each session.
+
+    Three severities, from most to least absolute:
+
+    * **game** (built-in patterns) - claims the GPU; never overridden.
+    * **hard** (``hard`` config list) - a prohibition the user set; never
+      overridden, even when the machine is calm.
+    * **busy** (``busy`` config list) - a *workload conflict*, not a verdict.
+      It is the default answer to "the machine is busy", but the reader may
+      override it when the machine is measurably calm (see
+      :func:`should_read`), because a running editor or render is not proof the
+      computer cannot spare a little background work.
+
+    ``always_ignore`` names are skipped first, so a trusted task never blocks
+    reading even if it matches a game or busy pattern.
     """
 
     def __init__(self, *, busy: Iterable[str] = (), ignore: Iterable[str] = (),
-                 always_ignore: Iterable[str] = DEFAULT_ALWAYS_IGNORED) -> None:
+                 always_ignore: Iterable[str] = DEFAULT_ALWAYS_IGNORED,
+                 hard: Iterable[str] = ()) -> None:
         self.busy = _compile_patterns(busy)
         self.ignore = _compile_patterns(ignore)
         self.always_ignore = _compile_patterns(always_ignore)
+        self.hard = _compile_patterns(hard)
 
     @classmethod
     def from_config(cls, config: Any) -> "ProcessPolicy":
@@ -358,30 +381,60 @@ class ProcessPolicy:
             busy=cfg.get("busy") or (),
             ignore=cfg.get("ignore") or (),
             always_ignore=cfg.get("always_ignore", DEFAULT_ALWAYS_IGNORED),
+            hard=cfg.get("hard") or cfg.get("prohibited") or (),
         )
 
     def _ignored(self, text: str) -> bool:
         return any(p.search(text) for p in (*self.always_ignore, *self.ignore))
 
-    def classify(self, process_names: Iterable[str]) -> Tuple[Optional[str], Optional[str]]:
-        """Split the running processes into ``(game, busy)``, ignoring the trusted.
+    def classify_ex(self, process_names: Iterable[str]) -> Dict[str, Optional[str]]:
+        """Split processes into ``{game, hard, busy}`` (first match of each).
 
-        A game is a built-in pattern; a busy task is a configured pattern. An
-        ignored name is skipped first, so a task you trust never blocks reading.
-        A name matching both counts as a game (the higher-severity, GPU-claiming
-        case). Returns ``None`` for either when nothing matched.
+        An ignored name is skipped first. A name matching more than one severity
+        is recorded at the *most absolute* level it matches (game > hard > busy),
+        because that is the answer that must win.
         """
-        game: Optional[str] = None
-        busy: Optional[str] = None
+        out: Dict[str, Optional[str]] = {"game": None, "hard": None, "busy": None}
         for name in process_names or ():
             text = str(name or "").strip()
             if not text or self._ignored(text):
                 continue
             if any(p.search(text) for p in _GAME_PATTERNS):
-                game = game or text
+                out["game"] = out["game"] or text
+            elif any(p.search(text) for p in self.hard):
+                out["hard"] = out["hard"] or text
             elif any(p.search(text) for p in self.busy):
-                busy = busy or text
-        return game, busy
+                out["busy"] = out["busy"] or text
+        return out
+
+    def classify(self, process_names: Iterable[str]) -> Tuple[Optional[str], Optional[str]]:
+        """Split the running processes into ``(game, busy)``, ignoring the trusted.
+
+        A game is a built-in pattern; a busy task is a configured pattern (either
+        the overridable ``busy`` list or the absolute ``hard`` list). An ignored
+        name is skipped first, so a task you trust never blocks reading. A name
+        matching both counts as a game (the higher-severity, GPU-claiming case).
+        Returns ``None`` for either when nothing matched.
+        """
+        found = self.classify_ex(process_names)
+        return found["game"], (found["busy"] or found["hard"])
+
+    def busy_severity(self, process_names: Iterable[str]) -> Dict[str, Any]:
+        """Classify and say whether the busy signal is overridable.
+
+        ``overridable`` is True only when the *only* thing standing in the way is
+        an overridable ``busy`` workload (no game, no hard prohibition). This is
+        what lets the reader proceed on a calm machine without weakening a real
+        restriction.
+        """
+        found = self.classify_ex(process_names)
+        blocked = found["game"] or found["hard"]
+        return {
+            "game": found["game"],
+            "hard": found["hard"],
+            "busy": found["busy"],
+            "overridable": bool(found["busy"]) and not blocked,
+        }
 
     def busy_process(self, process_names: Iterable[str]) -> Optional[str]:
         """The first process that should make reading stand down, or ``None``.
@@ -402,6 +455,7 @@ class ProcessPolicy:
             "busy": [p.pattern for p in self.busy],
             "ignore": [p.pattern for p in self.ignore],
             "always_ignore": [p.pattern for p in self.always_ignore],
+            "hard": [p.pattern for p in self.hard],
         }
 
 
@@ -442,6 +496,24 @@ def machine_busy(*, cpu_load: Optional[float],
         return False
 
 
+def _calm_enough(calm_load: Optional[float],
+                 ceiling: float = DEFAULT_HEADROOM_CEILING) -> bool:
+    """True only when the machine is *measurably* calm (headroom to proceed).
+
+    ``None`` (unmeasurable) is deliberately False: without a real reading we do
+    not assume the machine is free, so an overridable busy signal stands. This
+    is the conservative side of "do not treat an application as proof the
+    computer is unavailable" - it also refuses to treat the *absence* of a
+    measurement as proof that it is available.
+    """
+    if calm_load is None:
+        return False
+    try:
+        return float(calm_load) <= float(ceiling)
+    except (TypeError, ValueError):
+        return False
+
+
 def should_read(*, enabled: bool = True, seconds_since_input: Optional[float] = None,
                 game: Optional[str] = None, gpu_busy: bool = False,
                 machine_busy_flag: bool = False, cpu_load: Optional[float] = None,
@@ -450,7 +522,11 @@ def should_read(*, enabled: bool = True, seconds_since_input: Optional[float] = 
                 has_work: bool = True, force: bool = False,
                 concentration: Optional[float] = None,
                 weary: Optional[float] = None,
-                frustration: Optional[float] = None) -> Tuple[bool, str]:
+                frustration: Optional[float] = None,
+                busy_overridable: bool = False,
+                hard_prohibited: bool = False,
+                calm_load: Optional[float] = None,
+                headroom_ceiling: float = DEFAULT_HEADROOM_CEILING) -> Tuple[bool, str]:
     """Whether the reader may run now, and the single reason for the decision.
 
     Pure and deterministic: given the same observable conditions it always
@@ -461,11 +537,20 @@ def should_read(*, enabled: bool = True, seconds_since_input: Optional[float] = 
     reader down (``IDLE_NOT_CONCENTRATING``), because reading is not free and a
     distracted pass produces noise rather than understanding.
 
+    A configured **busy** application is a workload *preference*, not proof the
+    machine is unavailable. When ``busy_overridable`` is set (only a busy
+    workload is running - no game, no hard prohibition) and the machine is
+    measurably calm (``calm_load`` at or below ``headroom_ceiling``), the reader
+    may proceed: a running editor or render is not a reason to never read. A
+    **hard** prohibition or a game is never overridden, and with no measurement
+    (``calm_load`` is ``None``) the busy preference stands, so an unmeasurable
+    machine is treated conservatively rather than assumed free.
+
     ``force`` is the explicit override: Roum asked for a cycle now, so the
     courtesy conditions (idle, load, a busy task, concentration) are bypassed.
     The hard stops are kept even under force - reading switched off, a running
-    game, and nothing to read - because those are about not fighting the
-    machine, not about politeness.
+    game, a hard prohibition, and nothing to read - because those are about not
+    fighting the machine or a user-set exclusion, not about politeness.
     """
     if not enabled:
         return False, IDLE_DISABLED
@@ -473,11 +558,17 @@ def should_read(*, enabled: bool = True, seconds_since_input: Optional[float] = 
         return False, IDLE_GAME_RUNNING
     if gpu_busy:
         return False, IDLE_GAME_RUNNING
+    if hard_prohibited:
+        return False, IDLE_HARD_PROHIBITED
     if force:
         return (True, IDLE_FORCED) if has_work else (False, IDLE_NO_WORK)
     if is_user_active(seconds_since_input=seconds_since_input, idle_threshold=idle_threshold):
         return False, IDLE_USER_ACTIVE
-    if machine_busy_flag:
+    # A busy workload stands the reader down unless it is the *only* obstacle and
+    # the machine has measurable headroom. A load ceiling breach is absolute too
+    # (the machine is genuinely loaded, whatever application caused it).
+    if machine_busy_flag and not (busy_overridable and _calm_enough(
+            calm_load, headroom_ceiling)):
         return False, IDLE_MACHINE_BUSY
     if machine_busy(cpu_load=cpu_load, ceiling=load_ceiling):
         return False, IDLE_MACHINE_BUSY
@@ -496,7 +587,11 @@ def pause_reason(*, enabled: bool = True, seconds_since_input: Optional[float] =
                  load_ceiling: float = DEFAULT_LOAD_CEILING,
                  force: bool = False, concentration: Optional[float] = None,
                  weary: Optional[float] = None,
-                 frustration: Optional[float] = None) -> Optional[str]:
+                 frustration: Optional[float] = None,
+                 busy_overridable: bool = False,
+                 hard_prohibited: bool = False,
+                 calm_load: Optional[float] = None,
+                 headroom_ceiling: float = DEFAULT_HEADROOM_CEILING) -> Optional[str]:
     """Why reading should *stop* mid-cycle, or ``None`` if it may continue.
 
     The same conditions as :func:`should_read`, without the "is there work"
@@ -505,26 +600,29 @@ def pause_reason(*, enabled: bool = True, seconds_since_input: Optional[float] =
 
     Under ``force`` the courtesy conditions (idle, load, a busy task,
     concentration) are ignored between chunks too - otherwise forcing against a
-    busy task would start a cycle and immediately read nothing. A game is still a
-    hard stop: a forced cycle never fights the GPU, it just declines to wait for
-    idle.
+    busy task would start a cycle and immediately read nothing. A game or a hard
+    prohibition is still a stop: a forced cycle never fights the GPU or a
+    user-set exclusion, it just declines to wait for idle.
     """
     if force:
-        return IDLE_GAME_RUNNING if (game or gpu_busy) else None
+        return (IDLE_GAME_RUNNING if (game or gpu_busy)
+                else IDLE_HARD_PROHIBITED if hard_prohibited else None)
     _, reason = should_read(
         enabled=enabled, seconds_since_input=seconds_since_input, game=game,
         gpu_busy=gpu_busy, machine_busy_flag=machine_busy_flag, cpu_load=cpu_load,
         idle_threshold=idle_threshold, load_ceiling=load_ceiling, has_work=True,
         concentration=concentration, weary=weary, frustration=frustration,
+        busy_overridable=busy_overridable, hard_prohibited=hard_prohibited,
+        calm_load=calm_load, headroom_ceiling=headroom_ceiling,
     )
     return None if reason == IDLE_OK else reason
 
 
 def interruption_priority(reason: Optional[str]) -> int:
     """Order pause reasons so the most important one is reported."""
-    order = {IDLE_DISABLED: 0, IDLE_GAME_RUNNING: 1, IDLE_USER_ACTIVE: 2,
-             IDLE_MACHINE_BUSY: 3, IDLE_NOT_CONCENTRATING: 4, IDLE_NO_WORK: 5,
-             IDLE_FORCED: 6}
+    order = {IDLE_DISABLED: 0, IDLE_GAME_RUNNING: 1, IDLE_HARD_PROHIBITED: 2,
+             IDLE_USER_ACTIVE: 3, IDLE_MACHINE_BUSY: 4, IDLE_NOT_CONCENTRATING: 5,
+             IDLE_NO_WORK: 6, IDLE_FORCED: 7}
     return order.get(reason or "", 9)
 
 
@@ -846,7 +944,8 @@ def diagnostics(state: Any, *, enabled: bool = True, reason: str = IDLE_NO_WORK,
                 game: Optional[str] = None, busy: Optional[str] = None,
                 policy: Optional[Dict[str, Any]] = None,
                 work_queue: Optional[List[str]] = None,
-                last_cycle: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                last_cycle: Optional[Dict[str, Any]] = None,
+                signals: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The reader's whole situation: what, how far, and why it is (not) running."""
     state = coerce_state(state)
     return {
@@ -855,6 +954,7 @@ def diagnostics(state: Any, *, enabled: bool = True, reason: str = IDLE_NO_WORK,
         "game": game or None,
         "busy": busy or None,
         "policy": dict(policy or {}),
+        "signals": dict(signals or {}),
         "work_id": state.get("work_id") or None,
         "title": state.get("title") or None,
         "status": state.get("status"),
@@ -874,16 +974,32 @@ def diagnostics(state: Any, *, enabled: bool = True, reason: str = IDLE_NO_WORK,
 def format_diagnostics(state: Any, *, enabled: bool = True, reason: str = IDLE_NO_WORK,
                        game: Optional[str] = None, busy: Optional[str] = None,
                        work_queue: Optional[List[str]] = None,
-                       last_cycle: Optional[Dict[str, Any]] = None) -> str:
+                       last_cycle: Optional[Dict[str, Any]] = None,
+                       signals: Optional[Dict[str, Any]] = None) -> str:
     d = diagnostics(state, enabled=enabled, reason=reason, game=game, busy=busy,
-                    work_queue=work_queue, last_cycle=last_cycle)
+                    work_queue=work_queue, last_cycle=last_cycle, signals=signals)
     lines = ["=== BACKGROUND READING ==="]
     lines.append(f"Enabled: {d['enabled']}")
     lines.append(f"State: {d['reason']}")
     if d["game"]:
         lines.append(f"Paused for game: {d['game']}")
     if d["busy"]:
-        lines.append(f"Paused for busy task: {d['busy']}")
+        # Say plainly whether the busy signal is absolute or could be overridden,
+        # so a standing-down reader is never a mystery.
+        sev = (d.get("signals") or {}).get("busy_severity")
+        if sev == "hard":
+            lines.append(f"Paused for hard prohibition: {d['busy']} (never overridden)")
+        else:
+            lines.append(f"Paused for busy task: {d['busy']} "
+                         "(a workload; may proceed on a calm machine)")
+    sig = d.get("signals") or {}
+    if sig:
+        cpu = sig.get("cpu_load")
+        lines.append(
+            "Resources: "
+            f"cpu={'?' if cpu is None else f'{float(cpu) * 100:.0f}%'} "
+            f"overridable_busy={sig.get('busy_overridable')} "
+            f"headroom_ok={sig.get('headroom_ok')}")
     if d["work_id"]:
         lines.append(f"Current: {d['title'] or d['work_id']} [{d['status']}]")
         total_words = int(d["total_words"] or 0)
@@ -927,8 +1043,9 @@ __all__ = [
     "SOURCE_FORMAT_TEXT", "SOURCE_FORMAT_EPUB",
     "IDLE_OK", "IDLE_USER_ACTIVE", "IDLE_GAME_RUNNING", "IDLE_MACHINE_BUSY",
     "IDLE_NO_WORK", "IDLE_DISABLED", "IDLE_WORK_FINISHED", "IDLE_MODEL_FAILED",
-    "IDLE_HELD", "IDLE_FORCED", "IDLE_NOT_CONCENTRATING",
+    "IDLE_HELD", "IDLE_FORCED", "IDLE_NOT_CONCENTRATING", "IDLE_HARD_PROHIBITED",
     "DEFAULT_IDLE_SECONDS", "DEFAULT_LOAD_CEILING", "DEFAULT_CHUNK_CHARS",
+    "DEFAULT_HEADROOM_CEILING",
     "DEFAULT_CHUNKS_PER_CYCLE", "DEFAULT_MIN_CHUNK_CHARS",
     "DEFAULT_ALWAYS_IGNORED", "ProcessPolicy",
     "WEARY_CEILING", "DEFAULT_PACE_CHUNKS",
