@@ -32,7 +32,7 @@ from . import (activity, autonomy, engagement as engagement_mod,
                proactive_compose, proposals as proposal_mod,
                reading, resources as resources_mod, runtime_state,
                schedule_explain, schedules as sched,
-               tasks as task_mod)
+               tasks as task_mod, update as update_mod)
 from . import schedule_runtime
 from .scheduler import Scheduler
 from .tasks import (BackgroundTask, KIND_APP_MAINTENANCE,
@@ -1134,6 +1134,72 @@ class RuntimeController:
     def pending_decisions_text(self, limit: int = 8) -> str:
         return self.decisions.render_open(limit)
 
+    # -- self-update (pull the code, restart into it) --------------------
+    def update_report(self, *, fetch: bool = True,
+                      git_runner: Optional[Callable[..., Any]] = None) -> str:
+        """Whether the checkout can be updated, without changing anything."""
+        return update_mod.update_report(
+            fetch=fetch, git_runner=git_runner, runtime_dir=self.data_dir)
+
+    def apply_update(self, *, mode: str = "ff-only", restart: bool = True,
+                     wait: bool = True,
+                     git_runner: Optional[Callable[..., Any]] = None) -> str:
+        """Pull the latest code and (when a supervisor is running) restart into it.
+
+        The engine only ever fast-forwards a clean tree and leaves the checkout
+        untouched on any failure, so a failed update is not a destructive event.
+        The restart is the runtime's own graceful flush path, which is what keeps
+        downtime to a single flush.
+        """
+        engine = update_mod.UpdateEngine(
+            git_runner=git_runner, runtime_dir=self.data_dir)
+        result = engine.pull(mode=mode, restart=restart, wait=wait)
+        return self._format_update(result)
+
+    def apply_update_from_runtime(self, *, mode: str = "ff-only") -> str:
+        """``/update apply`` issued *by the running runtime itself*.
+
+        The runtime cannot wait for its own restart - the reply must be produced
+        before the control watcher tears the process down - so it does not block
+        on verification; it requests the restart and answers at once. The
+        supervisor performs the graceful restart on the next watcher tick.
+        """
+        return self.apply_update(mode=mode, restart=True, wait=False)
+
+    def _format_update(self, result: Dict[str, Any]) -> str:
+        reason = result.get("reason")
+        if result.get("updated"):
+            lines = [f"Updated code: {result.get('previous_commit') or '?'} -> "
+                     f"{result.get('new_commit') or '?'} ({result.get('mode')})."]
+            if result.get("restart_requested") and result.get("verified_start"):
+                lines.append("Astra restarted into the new code; state was flushed "
+                             "gracefully.")
+            elif result.get("restart_requested"):
+                lines.append("Restart requested; the runtime will pick up the new "
+                             "code as it comes back.")
+            else:
+                lines.append("No running supervisor was detected, so the new code "
+                             "is on disk but not yet live. Start it with: "
+                             "python main.py --supervise")
+            return "\n".join(lines)
+        if reason == "up-to-date":
+            return "Already up to date; nothing to pull."
+        if reason == "dirty-tree":
+            dirty = result.get("dirty") or []
+            lines = ["Refusing to update: the checkout has uncommitted changes "
+                     "that a pull could clobber."]
+            for line in dirty[:8]:
+                lines.append(f"  {line}")
+            lines.append("Commit or stash them, then try again.")
+            return "\n".join(lines)
+        if reason == "fetch-failed":
+            return ("Could not reach the remote to fetch: "
+                    f"{result.get('error') or 'unknown error'}")
+        if reason == "merge-failed":
+            return ("The pull could not be applied cleanly (the branch may have "
+                    f"diverged): {result.get('error') or 'unknown error'}")
+        return f"Update did not complete ({reason or 'unknown reason'})."
+
 
 class ApplicationRouter:
     """The single authority every frontend calls to handle a message."""
@@ -1177,6 +1243,22 @@ class ApplicationRouter:
         """Handle one message from any transport. Returns a structured result."""
         with self._lock:
             return self._handle_locked(text, source=source)
+
+    def handle_control(self, text: str, *, source: str = "inspect") -> Dict[str, Any]:
+        """Handle a command submitted by the read-only console (control channel).
+
+        This deliberately routes *commands only* - it never treats the text as
+        conversation and never records a human message/presence side effect, so
+        an inspection-issued command cannot masquerade as Roum talking to her.
+        It uses the same ``_handle_command`` dispatch as every other transport,
+        so a command behaves identically however it was asked.
+        """
+        text = str(text or "").strip()
+        if not text.startswith("/"):
+            return {"text": "  (the read-only console forwards commands only)",
+                    "handled": True, "source": source}
+        with self._lock:
+            return self._handle_command(text, source=source)
 
     def _handle_locked(self, text: str, *, source: str) -> Dict[str, Any]:
         text = str(text or "").strip()
@@ -1274,6 +1356,10 @@ class ApplicationRouter:
             return {"text": controller.resource_report(), "handled": True,
                     "source": source}
 
+        if command in ("/update", "/pull"):
+            return {"text": self._update_command(parts[1:]), "handled": True,
+                    "source": source}
+
         if command == "/schedules":
             return {"text": self._schedules_text(), "handled": True, "source": source}
 
@@ -1296,6 +1382,14 @@ class ApplicationRouter:
         # works identically from Discord, which cannot "print").
         return {"text": self._capture(lambda: self.session._handle_slash(text)),
                 "handled": True, "source": source}
+
+    def _update_command(self, args: List[str]) -> str:
+        """``/update`` - check for, or apply, a code update.
+
+        Delegates to :func:`astra.update.command_text`, the same parser the CLI
+        console uses, so the interactive and Discord surfaces cannot drift.
+        """
+        return update_mod.command_text(self.controller, args)
 
     def _check_messages_command(self) -> str:
         """The explicit "check my Discord messages" action.

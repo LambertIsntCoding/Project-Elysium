@@ -27,16 +27,11 @@ import os
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from astra import paths, version  # noqa: E402
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def run_tests(*, python: Optional[str] = None) -> bool:
@@ -50,18 +45,14 @@ def run_tests(*, python: Optional[str] = None) -> bool:
 def request_restart() -> bool:
     """Ask the supervisor to restart the runtime gracefully.
 
-    Returns False when no supervisor appears to be running (no control dir / no
-    lock), so the caller can fall back to a manual start.
+    Returns False when the control directory cannot be written, so the caller
+    can fall back to a manual start. The mechanism lives in
+    :mod:`astra.supervisor` so deploy, self-update and ``main.py --restart`` all
+    use the same control file.
     """
-    control = paths.control_dir()
-    os.makedirs(control, exist_ok=True)
-    try:
-        with open(os.path.join(control, "restart.request"), "w",
-                  encoding="utf-8") as handle:
-            handle.write(_now())
-        return True
-    except OSError:
-        return False
+    from astra import supervisor
+
+    return supervisor.request_restart()
 
 
 def wait_for_start(*, previous_started: str, timeout: float = 60.0,

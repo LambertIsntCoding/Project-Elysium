@@ -62,43 +62,53 @@ def runtime_root(explicit: Optional[str] = None) -> str:
 
 
 def storage_dir(explicit: Optional[str] = None) -> str:
-    """The runtime storage directory (memories, affect, relationships, ...)."""
+    """The runtime storage directory (memories, affect, relationships, ...).
+
+    Unlike the other subdirectory helpers below, an explicit ``explicit`` here is
+    the *storage directory itself* (callers such as ``resolve_storage_dir`` and
+    the seeding path pass a storage dir directly). With no argument it is
+    ``<runtime_root>/storage``.
+    """
     if explicit:
         return os.path.abspath(explicit)
     return os.path.join(runtime_root(), "storage")
 
 
 def logs_dir(explicit: Optional[str] = None) -> str:
-    if explicit:
-        return os.path.abspath(explicit)
-    return os.path.join(runtime_root(), "logs")
+    """``<runtime_root>/logs``. An explicit argument is a *runtime root*."""
+    return os.path.join(runtime_root(explicit), "logs")
 
 
 def snapshots_dir(explicit: Optional[str] = None) -> str:
-    if explicit:
-        return os.path.abspath(explicit)
-    return os.path.join(runtime_root(), "snapshots")
+    """``<runtime_root>/snapshots``. An explicit argument is a *runtime root*."""
+    return os.path.join(runtime_root(explicit), "snapshots")
 
 
 def deploy_dir(explicit: Optional[str] = None) -> str:
-    """Where the deployment system records the currently-running version."""
-    if explicit:
-        return os.path.abspath(explicit)
-    return os.path.join(runtime_root(), "deploy")
+    """Where the deployment system records the currently-running version.
+
+    ``<runtime_root>/deploy``. An explicit argument is a *runtime root*.
+    """
+    return os.path.join(runtime_root(explicit), "deploy")
 
 
 def control_dir(explicit: Optional[str] = None) -> str:
-    """Where the admin/supervisor leave control requests for the runtime."""
-    if explicit:
-        return os.path.abspath(explicit)
-    return os.path.join(runtime_root(), "control")
+    """Where the admin/supervisor leave control requests for the runtime.
+
+    ``<runtime_root>/control``. An explicit argument is a *runtime root*, so the
+    supervisor, the self-update engine and the inspection console all agree on
+    where a control file lives regardless of how the runtime root was resolved.
+    """
+    return os.path.join(runtime_root(explicit), "control")
 
 
 def lock_path(explicit: Optional[str] = None) -> str:
-    """The single-instance lock file for the runtime process."""
-    if explicit:
-        return os.path.abspath(explicit)
-    return os.path.join(runtime_root(), "runtime.lock")
+    """The single-instance lock file for the runtime process.
+
+    ``<runtime_root>/runtime.lock``. An explicit argument is a *runtime root*;
+    pass a full path to ``SingleInstanceLock(path=...)`` to override entirely.
+    """
+    return os.path.join(runtime_root(explicit), "runtime.lock")
 
 
 def ensure_runtime_dirs() -> str:

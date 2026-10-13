@@ -86,6 +86,7 @@ Proposals / files
 
 Session / system
   /status                                  runtime status
+  /update [apply|reset|check]              pull the latest code + restart
   /debug <message>                         prompt diagnostics (dev)
   /menu | /admin                           this numbered menu
   /help                                    command help
@@ -641,6 +642,11 @@ def _screen_diagnostics(context: MenuContext) -> MenuNode:
         MenuItem("4", "Reader health (state, machine, gate reason)",
                  aliases=("reader", "reading-health"),
                  action=_run(ctx_session(context), "_display_reader_health")),
+        MenuItem("5", "Check for a code update", aliases=("update", "pull", "upgrade"),
+                 action=lambda ctx: _router_text(ctx, "/update")),
+        MenuItem("6", "Apply code update (pull + graceful restart)",
+                 aliases=("update-apply", "pull-now", "upgrade-now"),
+                 action=lambda ctx: _router_text(ctx, "/update apply")),
     ]
     return node
 

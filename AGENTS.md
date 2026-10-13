@@ -13,7 +13,8 @@ python main.py            # start the runtime + admin console (seeds runtime sta
 python main.py --supervise   # start under the supervisor (restart-on-crash, graceful redeploy)
 python main.py --status      # print the running version/commit
 python main.py --restart     # ask the supervisor to restart Astra gracefully
-python main.py --inspect     # READ-ONLY view of the running runtime (no chat)
+python main.py --inspect     # inspect the running runtime; commands run on it (no chat)
+python main.py --update      # pull the latest code and restart into it
 python -m tests           # full suite (unittest + the two script-style suites)
 python -m unittest tests.test_memory_governance -v   # one module
 python deploy.py --dry-run   # show the deploy plan (runs tests unless --skip-tests)
@@ -48,7 +49,9 @@ HTTP stub, and consolidation tests call the decision layer directly.
 | `astra/version.py` | running-vs-on-disk code version, start/deploy/restart records |
 | `astra/supervisor.py` | start/watch/restart the runtime; single-instance lock; owns no state |
 | `astra/admin.py` | admin layer: menu registry, paging, snapshot store, live screens |
-| `astra/inspect_console.py` | read-only inspection of a running runtime (`--inspect`): reuses the session's views; no chat, no model, no writes |
+| `astra/inspect_console.py` | inspection of a running runtime (`--inspect`): forwards commands over the control channel when one is live, else honest read-only views; no chat, no model |
+| `astra/control.py` | the filesystem command channel between a separate console and the running runtime (requests/results, atomic, consumed once) |
+| `astra/update.py` | the self-update ("pull") engine: clean-tree check, fetch, fast-forward/reset, graceful restart |
 | `astra/telemetry.py` | 0-100 rendering of internal state for the admin screens (display only) |
 | `astra/behavior.py` | state -> behaviour modulation (energy, initiative, pace, ...); also the state->timing projection; stores nothing |
 | `astra/presence.py` | is an exchange still live? state-scaled patience, and whether she should go back to her own work (pure, no I/O) |
@@ -649,9 +652,11 @@ emotion-memory cases add `tests/test_experience_affect.py::TestEmotionColour`;
 the grounded-outreach wiring adds `tests/test_outreach.py`, 22 cases; the
 non-response adaptation, effective affect decay and honest reading outcomes add
 `tests/test_engagement.py`, 30 cases; the plans-as-intentions view adds
-`tests/test_intentions.py`, 25 cases; the read-only inspection console adds
-`tests/test_inspect_console.py`, 19 cases, including that it shows the library
-without the reader daemon and renders the live screens read-only).
+`tests/test_intentions.py`, 25 cases; the inspection console adds
+`tests/test_inspect_console.py`, 28 cases, including that it shows the library
+without the reader daemon, renders the live screens read-only, and forwards every
+command to a running runtime over the control channel; the self-update engine and
+control channel add `tests/test_update.py`, 21 cases).
 
 ### Reading progress is measured in words
 
@@ -818,8 +823,9 @@ The invariants:
   drift. `COMMAND_CATALOG` is the static reference (`ALL COMMANDS` screen) and is
   asserted against the live tree and the console's handler list. When a command
   is added to the router or the console, add it to a screen and the catalog - a
-  gap is a regression, not a stylistic choice. The read-only inspect console
-  (`--inspect`) stays deliberately narrowed: it omits mutating commands.
+  gap is a regression, not a stylistic choice. The inspect console
+  (`--inspect`) reaches the whole command surface by forwarding to the running
+  runtime (see below); with no runtime up it offers the read-only views only.
 - **The live screens actually refresh, and the loop must not block.**
   `ChatSession._screen_poll(timeout)` returns a keypress *or* ``None`` on
   timeout; ``_screen_poll_posix`` uses cbreak + ``select``, ``_screen_poll_windows``
@@ -830,28 +836,34 @@ The invariants:
   real terminal the poll never returned ``None`` and the refresh branch was dead:
   the page rendered once and then looked frozen. Keep the poll non-blocking and
   keep a non-tty short-circuit so tests stay deterministic.
-- **There is a read-only inspection console for a running runtime.**
+- **There is an inspection console for a running runtime, and it can drive her.**
   `python main.py --inspect` (`astra/inspect_console.py`) opens a second process
   against the *live* runtime's state so Roum can watch what Astra is doing and
-  how she is feeling **without** being able to chat or change anything. It is
-  deliberately narrow and must stay so:
-  - it never routes a conversation, never calls the model, and never sends a
-    Discord message; a mutating command (`/sleep`, `/wake`, `/autonomy pause`,
-    `/read force`, `/approve`, ...) is *refused* with a pointer to the runtime,
-    not executed;
-  - it does not call ``router.handle`` (whose entry point records a human message
-    as a side effect); it calls the controller's report methods and the router's
-    read-only text builders directly, and wraps the session's own ``_display_*``
-    views by swapping ``output_fn``;
-  - it re-reads the durable stores before each command via ``reload()``
-    (``TripleMemoryStore``, the runtime/task/ledger/notification/proactive/
-    proposal/delivery stores), because a separate process does not share the live
-    runtime's in-memory objects. ``reload()`` is read-only and never persists;
-  - it builds a session exactly as a real run does (``build_session`` writes
-    nothing on a populated runtime) but never calls ``run()``, so it takes no
-    lock, starts no thread, and opens no transport. It writes exactly one file -
-    the one-time storage seed - and only on a first run; a populated runtime is
-    only ever read.
+  how she is feeling. How it behaves depends on whether a runtime is running:
+  - **A runtime is running.** Every command - mutating ones included - is
+    forwarded over a small filesystem *control channel* (`astra/control.py`) and
+    executed by the running runtime through its own `ApplicationRouter`. The
+    console is a genuine remote control, so the whole command surface is
+    available and usable, and behaviour cannot drift from the CLI or Discord.
+    Conversation is still never routed: `ApplicationRouter.handle_control`
+    accepts commands only and never records a human message/presence side effect,
+    so an inspect-issued command cannot masquerade as Roum talking to her.
+  - **No runtime is running.** Nothing can be acted on, so it falls back to
+    honest read-only views and *refuses* a mutating command (`/sleep`, `/wake`,
+    `/autonomy pause`, `/read force`, `/approve`, ...) with a pointer to the
+    runtime, not silently doing nothing.
+  - the **control channel is a mailbox, not a socket.** The runtime already
+    coordinates through `runtime/control/`, so no listening port is added. A
+    request carries only the command text and a source tag; a result carries only
+    the text the runtime produced. Both are written atomically and consumed once,
+    so a restart mid-request leaves at most one stale file, which the console
+    reports honestly rather than hanging. The runtime side runs in the existing
+    control-watcher thread (`ChatSession._install_control_watcher`); the console
+    side polls with a bounded timeout.
+  - in both modes it never calls the model directly and never opens Discord; on a
+    populated runtime it writes nothing (only a first run performs the one-time
+    storage seed). It builds a session exactly as a real run does but never calls
+    ``run()``, so it takes no lock, starts no thread, and opens no transport.
   - `DiscordHealthStore` (`discord_health.json`) is a tiny best-effort record the
     live adapter writes (throttled) so the console can show whether Discord is
     connected and when it last was, without the console opening a connection.
@@ -873,6 +885,23 @@ The invariants:
     console wraps the store so a capture is *refused* (``_ReadOnlySnapshots``),
     never written. There is no refresh loop here - it is a single read-only
     frame; continuous refresh is the running runtime's job.
+- **Astra can update her own code with minimal downtime.** `astra/update.py` is
+  the "pull command": it brings the checkout up to date with its remote and
+  promotes the new code to the live runtime, reusing the *existing*
+  graceful-restart machinery rather than inventing a second one. It is reachable
+  from `main.py --update [--update-mode reset]` and `/update [apply|reset|check]`
+  (CLI, Discord, the admin menu, and the `--inspect` console), all sharing one
+  parser (`update.command_text`). Two guarantees, unchanged from `deploy.py`:
+  runtime state is never touched (the running process is only asked to restart
+  through its own flush path, so the downtime window is that flush), and nothing
+  is destructive (a clean tracked tree is required before anything is fetched; a
+  failed fetch/pull leaves the checkout as it was; a diverged branch is refused
+  under `ff-only` rather than merged). When the command is issued *by the running
+  runtime itself* (`/update apply` on the CLI or Discord) the runtime does not
+  block waiting for its own restart - it answers first, then the control watcher
+  restarts on its next tick (`apply_update_from_runtime`); a separate process may
+  wait for and verify the fresh start. The Git command is injected, so the whole
+  flow is testable without a network or a repository.
 - **Affect is displayed at 0-100 but stored normalized.** `astra/telemetry.py`
   renders the existing `0.0..1.0` accumulators as integers on a 0-100 scale with
   direction and a supplemental qualitative band. This is *display only*: no
@@ -895,8 +924,9 @@ The invariants:
   information (work + significant tokens), never "next to the thought that made
   it". None of this affects whether an interpretation is true.
 
-New tests: `tests/test_infrastructure.py` (12) and `tests/test_behavior_admin.py`
-(29, including the full-command-surface menu coverage). Full suite: 1076 tests.
+New tests: `tests/test_infrastructure.py` (12), `tests/test_behavior_admin.py`
+(29, including the full-command-surface menu coverage), and `tests/test_update.py`
+(21, the self-update engine and control channel). Full suite: 1148 tests.
 
 
 ## Autonomous operation, scheduling, and proactive Discord

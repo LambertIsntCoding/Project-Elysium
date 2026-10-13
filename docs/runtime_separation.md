@@ -66,12 +66,12 @@ because it connects to the same running components through the shared
 application router rather than owning them. Type `menu` (or `/menu`) for the
 numbered admin menu, and `/status` for the runtime version block.
 
-### Watching a running runtime without talking to it
+### Watching and driving a running runtime
 
 Because a running Astra holds the single-instance lock, opening a second normal
 console against the same runtime storage cannot read stdin - you would only be
-able to send commands through Discord. To *observe* her without being able to
-chat, use the read-only inspection console:
+able to send commands through Discord. The inspection console is the supported
+way to watch *and* drive her from a separate process:
 
 ```bash
 python main.py --inspect
@@ -80,20 +80,67 @@ python main.py --inspect
 It opens the same runtime state a real run uses and shows whether the runtime is
 running (from `runtime/runtime.lock`), her autonomy/schedule state, Discord
 connection health, background tasks, affect and relationship views, unresolved
-questions, reading position, and the time sense. It is deliberately sealed:
+questions, reading position, and the time sense. How it behaves depends on
+whether a runtime is running:
 
-- no conversation is routed, no model is called, no Discord message is sent;
-- a mutating command (`/sleep`, `/wake`, `/autonomy pause`, `/read force`,
-  `/approve`, `/reconcile`, ...) is *refused*, with a pointer to the runtime;
-- the durable stores are re-read (`reload()`) before each command, because this
-  is a separate process and does not share the live runtime's in-memory objects;
-- it writes nothing on a populated runtime (only a first run performs the
-  one-time storage seed).
+- **A runtime is running.** Every command - including mutating ones such as
+  `/sleep`, `/autonomy pause` or `/update apply` - is forwarded over a small
+  filesystem *control channel* (`astra/control.py`) and executed by the running
+  runtime through its own `ApplicationRouter`. The console is a genuine remote
+  control, so the whole command surface is available and usable, and behaviour
+  cannot drift from the CLI or Discord. Conversation is still never routed: only
+  commands are forwarded, and a command issued this way never records a human
+  message or presence side effect.
+- **No runtime is running.** Nothing can be acted on, so it falls back to honest
+  read-only views: the same `ChatSession` display methods and `RuntimeController`
+  reports the live runtime uses, re-read from the durable stores before each
+  command. A command that would change state is *refused* with a pointer to the
+  runtime rather than silently doing nothing.
 
-Type `/help` inside it for the full list of read-only commands. The mutating
-commands themselves (`/autonomy pause|resume`, `/notifications off|on`, Mute,
-schedules) are reached through the running runtime - send them in Discord, or
-use `menu`/`/menu` in the normal console before the headless runtime starts.
+In both modes the console never calls the model directly and never opens
+Discord; on a populated runtime it writes nothing (only a first run performs the
+one-time storage seed). Type `/help` inside it for the command list.
+
+The control channel is deliberately a filesystem mailbox, not a socket: the
+runtime already coordinates through `runtime/control/`, so this adds no
+listening port. A request carries only the command text and a source tag; a
+result carries only the text the runtime produced. Both are written atomically
+and consumed once, so a restart mid-request leaves at most one stale file, which
+the console reports honestly rather than hanging. The runtime side runs in the
+existing control-watcher thread (`ChatSession._install_control_watcher`).
+
+### Updating the code with minimal downtime
+
+`astra/update.py` is the "pull command": it brings the checkout up to date with
+its remote and promotes the new code to the live runtime, reusing the existing
+graceful-restart machinery rather than inventing a second one. It is reachable
+four ways, all sharing one implementation:
+
+```bash
+python main.py --update              # check + pull (fast-forward) + restart
+python main.py --update --update-mode reset   # hard-reset to the remote
+```
+
+- `/update` (CLI session, Discord, admin menu, and the `--inspect` console)
+  reports whether the checkout is behind its remote;
+- `/update apply` pulls (fast-forward) and restarts;
+- `/update reset` hard-resets the checkout to the remote, then restarts.
+
+Two guarantees, unchanged from `deploy.py`:
+
+- **Runtime state is untouched.** Updating never copies, moves or edits the
+  runtime tree; the running process is only asked to restart through its own
+  flush path (`ChatSession.close` -> store flush -> drain consolidation), so the
+  downtime window is that flush, typically well under a second.
+- **Nothing is destructive.** The working tree must be clean (tracked files)
+  before anything is fetched; a failed fetch/pull leaves the checkout exactly as
+  it was, and a diverged branch is refused under `ff-only` rather than merged.
+
+When the command is issued *by the running runtime itself* (`/update apply` on
+the CLI or Discord), the runtime does not block waiting for its own restart - it
+answers first, then the control watcher performs the graceful restart on its next
+tick. When issued from a separate process (`--update`, or `--inspect` forwarding
+to the runtime), the caller can wait for and verify the fresh start.
 
 ### Live screens refresh again
 

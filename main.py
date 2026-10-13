@@ -175,6 +175,7 @@ HELP_TEXT = """
     /autonomy [pause|resume|now]  Pause/resume activity; or one bounded wake
     /notifications [pause|resume|mute|unmute]  Control proactive messages
     /discord                  Discord connectivity and delivery status
+    /update [apply|reset]     Pull the latest code and restart into it
     /help                     Show this list
     /debug <message>          Memory retrieval diagnostics for a message
     /exit                     Save session and exit
@@ -941,22 +942,51 @@ class ChatSession:
             self._console_handler_ref = None
 
     def _install_control_watcher(self) -> None:
-        """Watch for a supervisor restart/stop request and flush before exiting.
+        """Watch for supervisor requests and console commands, flushing on exit.
 
         A console process is often blocked waiting for input, so a SIGTERM is
         not guaranteed to reach a Python handler (Windows terminates the process
-        outright). This small daemon thread is the reliable path: when the
-        supervisor leaves a control file, the runtime flushes through its normal
-        ``close()`` first and only then exits, so an intentional restart never
-        costs a completed turn. Started on a real run only, never in a test.
+        outright). This small daemon thread is the reliable path:
+
+        * a ``stop.request``/``restart.request`` file makes the runtime flush
+          through its normal ``close()`` and only then exit, so an intentional
+          restart never costs a completed turn;
+        * a command submitted over the filesystem control channel (see
+          :mod:`astra.control`) is answered *through the runtime's own router*,
+          so the read-only ``--inspect`` console can drive every command without
+          being able to chat or hold the state itself.
+
+        Started on a real run only, never in a test.
         """
         import threading
 
+        from astra import control as control_mod
+
         control = paths.control_dir()
+
+        def _serve_commands() -> None:
+            router = getattr(self, "router", None)
+            for request in control_mod.take_pending():
+                request_id = str(request.get("id") or "")
+                text = str(request.get("text") or "")
+                if not request_id:
+                    continue
+                try:
+                    if router is not None:
+                        result = router.handle_control(
+                            text, source=str(request.get("source") or "inspect"))
+                        answer = str(result.get("text") or "")
+                        ok = True
+                    else:
+                        answer, ok = "  (no router attached)", False
+                except Exception as exc:  # a bad command must not kill the runtime
+                    answer, ok = f"  (command failed: {exc})", False
+                control_mod.write_result(request_id, answer, ok=ok)
 
         def _watch() -> None:
             while True:
                 try:
+                    _serve_commands()
                     if os.path.exists(os.path.join(control, "stop.request")) or \
                             os.path.exists(os.path.join(control, "restart.request")):
                         self._emit("\n[Supervisor requested a restart; saving state...]")
@@ -1093,6 +1123,13 @@ class ChatSession:
             self._display_normalize_text(parts[1:])
         elif command in ("/reader", "/reader-health"):
             self._display_reader_health()
+        elif command in ("/update", "/pull"):
+            from astra import update as update_mod
+
+            if self.controller is None:
+                self._emit("  (no runtime controller attached; cannot update code)")
+            else:
+                self._emit(update_mod.command_text(self.controller, parts[1:]))
         else:
             self._emit(f"Unknown command: {command}. Type /help for options.")
 
@@ -2185,13 +2222,17 @@ def build_session(
 
 
 def _run_inspect(*, config_dir: str) -> None:
-    """Run the read-only inspection console against the live runtime's state.
+    """Run the inspection console against the live runtime's state.
 
     It builds a session the same way a real run does so it can reuse the
     session's own display methods and the controller's reports - but it never
     calls ``run()``: no lock is taken (the live runtime keeps it), no background
-    thread starts, no model is called, and no Discord transport is opened. It
-    therefore cannot talk to Astra or mutate her state.
+    thread starts, no model is called, and no Discord transport is opened.
+
+    When a runtime *is* running, commands are forwarded to it over the control
+    channel and executed there, so the full command surface is available. When
+    none is running, it degrades to honest read-only views and refuses commands
+    that would change state.
     """
     from astra import inspect_console, paths
 
@@ -2199,9 +2240,10 @@ def _run_inspect(*, config_dir: str) -> None:
     session = build_session(config_dir=config_dir, think_only=True,
                             enable_reader=False)
     inspector = inspect_console.Inspector(
-        session, storage_dir=storage, config_dir=config_dir)
+        session, storage_dir=storage, config_dir=config_dir,
+        runtime_dir=paths.runtime_root())
     print(inspector.snapshot())
-    print("\nType /help for read-only inspection commands, or exit to leave.")
+    print("\nType /help for commands, or exit to leave.")
     while True:
         try:
             line = input("\nInspect > ").strip()
@@ -2246,6 +2288,12 @@ def _cli_parser() -> Any:
                         help="ask a running supervisor to stop Astra gracefully")
     parser.add_argument("--status", action="store_true",
                         help="print the running runtime's version/status and exit")
+    parser.add_argument("--update", action="store_true",
+                        help="pull the latest code from the remote and restart the "
+                             "runtime into it (a check is printed if already current)")
+    parser.add_argument("--update-mode", default="ff-only",
+                        choices=("ff-only", "reset"),
+                        help="how to apply the update: ff-only (default) or reset")
     parser.add_argument("--headless", action="store_true",
                         help="run the background runtime only (no interactive console)")
     parser.add_argument("--inspect", action="store_true",
@@ -2278,6 +2326,26 @@ def main(argv: Optional[List[str]] = None) -> None:
         else:
             sup.request_stop()
             print("stop requested; the supervisor will stop Astra gracefully.")
+        return
+
+    if args.update:
+        from astra import update as update_mod
+
+        engine = update_mod.UpdateEngine(runtime_dir=args.runtime_dir)
+        result = engine.pull(mode=args.update_mode, restart=True, wait=True)
+        if result.get("updated"):
+            print(f"updated: {result.get('previous_commit')} -> "
+                  f"{result.get('new_commit')} ({result.get('mode')})")
+            if result.get("verified_start"):
+                print("runtime restarted into the new code (state flushed gracefully).")
+            else:
+                print("new code is on disk; restart the runtime to run it "
+                      "(python main.py --supervise).")
+        else:
+            print(f"not updated: {result.get('reason')}")
+            if result.get("dirty"):
+                for line in result["dirty"][:8]:
+                    print(f"  {line}")
         return
 
     if args.supervisor_only:

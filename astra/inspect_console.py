@@ -1,33 +1,39 @@
-"""Read-only inspection console for a *running* Astra runtime.
+"""Inspection console for a *running* Astra runtime.
 
 The persistent runtime owns Astra's state and holds the single-instance lock,
-so it cannot be opened a second time. This console is the supported way to
-watch what is actually happening - what she is doing in the background, how she
-is feeling, what she has attempted, what she plans next - from a separate
-process, **without** being able to talk to her or mutate anything.
+so it cannot be opened a second time. This console is the supported way to watch
+what is actually happening - and to *drive* it - from a separate process.
 
-It is deliberately narrow:
+How it behaves depends on whether a runtime is running:
 
-- it never routes a conversational turn, never calls the model, and never sends
-  a Discord message;
-- it holds no authority of its own - every view is read through the same
-  ``ChatSession`` display methods and ``RuntimeController`` reports the live
-  runtime uses, so nothing is duplicated and nothing can drift;
-- it re-reads the durable stores before each command (``reload()``), because a
-  separate process does not share the live runtime's in-memory objects;
-- it writes nothing. The single exception is the one-time runtime-storage seed
-  that a first run performs (an existing runtime's state is never re-seeded), so
-  a populated runtime is only ever read.
+* **A runtime is running.** Every command (including mutating ones such as
+  ``/sleep``, ``/autonomy pause`` or ``/update apply``) is forwarded over a
+  narrow filesystem *control channel* (:mod:`astra.control`) and executed by the
+  running runtime through its own ``ApplicationRouter``. There is no second
+  implementation here: the console is a genuine remote control, so the whole
+  command surface is available and usable, and behaviour cannot drift from the
+  CLI or Discord. Conversation is still never routed - only commands are.
+* **No runtime is running.** Nothing can be acted on, so the console falls back
+  to honest read-only views: the same ``ChatSession`` display methods and
+  ``RuntimeController`` reports the live runtime uses, re-read from the durable
+  stores before each command. A command that would change state is refused with
+  a pointer to the runtime rather than silently doing nothing.
 
-A command that cannot be served read-only is refused rather than silently
-carrying out its side effect.
+In both modes the console itself holds no authority over Astra's state: it never
+builds a second store, never calls the model directly, and never opens Discord.
 """
 from __future__ import annotations
 
 import os
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from . import control as control_mod
 from . import paths
+
+# How long to wait for the running runtime to answer a forwarded command. The
+# runtime's control watcher runs on a ~1s cadence, so this is generous; a
+# timeout is reported honestly rather than hanging the console.
+CONTROL_TIMEOUT_SECONDS = 30.0
 
 # Commands offered by the *runtime* (ApplicationRouter), served read-only by
 # calling the controller's report methods and the router's text builders
@@ -39,7 +45,7 @@ from . import paths
 ROUTER_INSPECT_COMMANDS: Tuple[str, ...] = (
     "/status", "/tasks", "/schedules", "/scheduler", "/autonomy", "/notifications",
     "/proactive", "/discord", "/power", "/resources", "/proposals", "/decisions",
-    "/sleep-log", "/reader", "/normalize-text",
+    "/sleep-log", "/reader", "/normalize-text", "/update",
 )
 
 # Session display methods that are pure reads. Each is looked up on the session
@@ -75,6 +81,8 @@ MUTATING_COMMANDS = {
     "/notifications mute": "the runtime", "/notifications unmute": "the runtime",
     "/proactive mute": "the runtime", "/proactive unmute": "the runtime",
     "/normalize-text apply": "the runtime",
+    "/update apply": "the runtime", "/update reset": "the runtime",
+    "/pull apply": "the runtime", "/pull reset": "the runtime",
 }
 
 EXIT_WORDS = {"exit", "quit", "q", ":q", "/exit", "/quit"}
@@ -109,15 +117,22 @@ class _ReadOnlySnapshots:
 
 
 class Inspector:
-    """A read-only façade over a live session's own inspection surfaces."""
+    """A façade over a live session: a remote control, or a read-only view.
 
-    def __init__(self, session: Any, *, storage_dir: str, config_dir: str) -> None:
+    When a runtime is running, commands are forwarded to it over the control
+    channel and executed by the runtime itself. When none is running, the
+    console degrades to honest read-only views of the on-disk state.
+    """
+
+    def __init__(self, session: Any, *, storage_dir: str, config_dir: str,
+                 runtime_dir: Optional[str] = None) -> None:
         self.session = session
         self.controller = getattr(session, "controller", None)
         self.orchestrator = getattr(session, "orchestrator", None)
         self.storage_dir = storage_dir
         self.config_dir = config_dir
-        self.lock_path = paths.lock_path()
+        self.runtime_dir = runtime_dir
+        self.lock_path = paths.lock_path(runtime_dir)
         self._live: Optional[Dict[str, Any]] = None
 
     # -- commands --------------------------------------------------------
@@ -186,15 +201,38 @@ class Inspector:
                 running = False
         return {"running": running, "pid": pid, "lock_path": self.lock_path}
 
+    def runtime_listening(self) -> bool:
+        """Whether a runtime is running and can receive forwarded commands."""
+        return bool(self.runtime_status().get("running"))
+
+    def _forward(self, text: str, *,
+                 timeout: float = CONTROL_TIMEOUT_SECONDS) -> Optional[str]:
+        """Send a command to the running runtime and return its answer.
+
+        ``None`` means the runtime did not answer in time (or is not listening),
+        so the caller can fall back to a read-only view or report honestly.
+        """
+        request_id = control_mod.submit(text, source="inspect",
+                                        runtime_dir=self.runtime_dir)
+        result = control_mod.wait_for_result(
+            request_id, timeout=timeout, runtime_dir=self.runtime_dir)
+        if result is None:
+            return None
+        return str(result.get("text") or "")
+
     def snapshot(self) -> str:
         """A truthful, plain-text overview of the live runtime's state."""
         self.refresh()
         rt = self.runtime_status()
-        lines = ["=" * 58, "  ASTRA - READ-ONLY INSPECTION", "=" * 58]
-        lines.append(
-            f"  runtime: {'RUNNING' if rt['running'] else 'not detected'}"
-            + (f" (pid {rt['pid']})" if rt["pid"] else "")
-            + "  -  this console cannot talk to her or change anything")
+        lines = ["=" * 58, "  ASTRA - INSPECTION CONSOLE", "=" * 58]
+        if rt["running"]:
+            lines.append(
+                f"  runtime: RUNNING (pid {rt['pid']})  -  commands are executed "
+                "by the running runtime")
+        else:
+            lines.append(
+                "  runtime: not detected  -  read-only view of the state on disk; "
+                "start the runtime to act on her")
         controller = self.controller
         if controller is None:
             lines.append("  (persistent runtime not attached)")
@@ -238,23 +276,32 @@ class Inspector:
 
     # -- dispatch --------------------------------------------------------
     def help_text(self) -> str:
-        lines = ["=" * 58, "  INSPECTION COMMANDS (read-only)", "=" * 58]
+        if self.runtime_listening():
+            lines = ["=" * 58, "  INSPECTION CONSOLE (commands run on the runtime)",
+                     "=" * 58]
+            lines.append("  A runtime is running, so every command is forwarded to")
+            lines.append("  it and executed there - the same behaviour as the CLI or")
+            lines.append("  Discord. Conversation is still never routed.")
+        else:
+            lines = ["=" * 58, "  INSPECTION CONSOLE (read-only; no runtime running)",
+                     "=" * 58]
+            lines.append("  No runtime is running, so only read-only views are")
+            lines.append("  available. Start the runtime (python main.py --supervise)")
+            lines.append("  to act on her.")
         lines.append("  /report              Full status snapshot (runtime, autonomy,")
         lines.append("                       Discord, schedules, affect, ...)")
         lines.append("  /menu                The same overview, as a table of sections")
         lines.append("  /live [screen]       Read-only frame of the live screens")
         lines.append("                       (status | relationship | affect; default all)")
-        lines.append("  Inspection reports:")
+        lines.append("  Reports:")
         for command in ROUTER_INSPECT_COMMANDS:
             lines.append(f"    {command}")
         lines.append("  Memory / self / affect views:")
         for command, _ in SESSION_VIEW_METHODS:
             lines.append(f"    {command} [arg]")
+        lines.append("  Any other /command is forwarded to the runtime exactly as the")
+        lines.append("  console does (mutating commands included, when a runtime is up).")
         lines.append("  exit                 Leave the inspection console")
-        lines.append("")
-        lines.append("  Read-only: conversations, the model, and messages are never")
-        lines.append("  sent. To act on Astra, use the running runtime (Discord, or")
-        lines.append("  stop the runtime and reopen the normal console).")
         return "\n".join(lines)
 
     def _read_only_commands(self) -> Dict[str, Callable[[], str]]:
@@ -290,6 +337,7 @@ class Inspector:
         commands["/scheduler"] = lambda: self._scheduler_text()
         commands["/reader"] = controller.reader_health_report
         commands["/normalize-text"] = lambda: controller.normalize_text_report(apply=False)
+        commands["/update"] = lambda: controller.update_report(fetch=False)
         return commands
 
     def _scheduler_text(self) -> str:
@@ -344,31 +392,49 @@ class Inspector:
         return header + "\n\n" + "\n\n".join(blocks) if blocks else header
 
     def handle(self, line: str) -> str:
-        """Resolve one input line to its read-only view. Returns the text."""
+        """Resolve one input line: forward to the runtime, or view read-only."""
         text = str(line or "").strip()
         if not text:
             return ""
         tokens = text.split()
-        command = tokens[0].lower()
-        # Accept a bare word ("status") as an alias for the slash form.
-        if not command.startswith("/"):
-            command = "/" + command
-            tokens = [command, *tokens[1:]]
+        first = tokens[0].lower()
+        # Accept a bare word ("status") as an alias for the slash form, but only
+        # when it names a real command: a plain sentence must never be mangled
+        # into a bogus command, and conversation is never routed at all.
+        command = first if first.startswith("/") else "/" + first
+
+        # Console-local meta commands (never forwarded): they are about the
+        # console itself, and /report & /live are read-only composites.
         if command in ("/help", "/?"):
             return self.help_text()
-        if command == "/report":
-            return self.snapshot()
-        if command == "/menu":
+        if command == "/report" or command == "/menu":
             return self.snapshot()
         if command == "/live":
             name = tokens[1].lower() if len(tokens) > 1 else None
             return self.live_text(name)
 
+        if not text.startswith("/") and command not in set(self.available_commands()):
+            return ("  (the console runs commands only - conversation is never "
+                    "sent. Type /help for the options.)")
+        # Preserve the original spacing/quoting so a quoted path survives.
+        forward_text = text if text.startswith("/") else command + text[len(tokens[0]):]
+
+        # When a runtime is running, the whole command surface is available:
+        # forward the command to it and let the runtime execute it through its
+        # own router, so there is exactly one implementation of every command.
+        if self.runtime_listening():
+            answer = self._forward(forward_text)
+            if answer is not None:
+                return answer
+            return ("  (the running runtime did not answer in time; it may be busy "
+                    "or restarting - try again in a moment)")
+
+        # No runtime: only honest read-only views, with mutating commands refused.
         refused = self._mutating(command, tokens)
         if refused:
-            return (f"  [{refused}] changes Astra's state and is not available in "
-                    "the read-only console.\n  Use the running runtime (Discord) "
-                    "to act on her.")
+            return (f"  [{refused}] changes Astra's state and is not available "
+                    "without a running runtime.\n  Start the runtime "
+                    "(python main.py --supervise) to act on her.")
 
         handler = self._read_only_commands().get(command)
         if handler is not None:
@@ -382,7 +448,7 @@ class Inspector:
             return self._call_view(method_name, tokens[1:])
 
         return (f"Unknown inspection command: {command}. "
-                "Type /help for the read-only options.")
+                "Type /help for the options.")
 
     def _call_view(self, method_name: str, args: List[str]) -> str:
         method = getattr(self.session, method_name, None)

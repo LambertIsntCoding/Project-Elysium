@@ -49,6 +49,38 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def request_restart(runtime_dir: Optional[str] = None) -> bool:
+    """Leave a graceful-restart request for the supervisor. Returns success.
+
+    This is the *one* place the control file is written, shared by ``deploy.py``,
+    the self-update engine and ``main.py --restart``, so the mechanism cannot
+    drift between callers. The runtime's own control watcher consumes it and
+    flushes before exiting.
+    """
+    control = paths.control_dir(runtime_dir)
+    os.makedirs(control, exist_ok=True)
+    try:
+        with open(os.path.join(control, RESTART_REQUEST), "w",
+                  encoding="utf-8") as handle:
+            handle.write(_now())
+        return True
+    except OSError:
+        return False
+
+
+def request_stop(runtime_dir: Optional[str] = None) -> bool:
+    """Leave a graceful-stop request for the supervisor. Returns success."""
+    control = paths.control_dir(runtime_dir)
+    os.makedirs(control, exist_ok=True)
+    try:
+        with open(os.path.join(control, STOP_REQUEST), "w",
+                  encoding="utf-8") as handle:
+            handle.write(_now())
+        return True
+    except OSError:
+        return False
+
+
 class SingleInstanceLock:
     """A best-effort single-instance lock built from an exclusive-create file.
 
@@ -303,4 +335,5 @@ class RuntimeSupervisor:
             lock.release()
 
 
-__all__ = ["RuntimeSupervisor", "SingleInstanceLock", "RESTART_REQUEST", "STOP_REQUEST"]
+__all__ = ["RuntimeSupervisor", "SingleInstanceLock", "RESTART_REQUEST",
+           "STOP_REQUEST", "request_restart", "request_stop"]

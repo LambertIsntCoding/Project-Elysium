@@ -52,8 +52,8 @@ class _InspectFixture(unittest.TestCase):
 class TestInspectSnapshot(_InspectFixture):
     def test_snapshot_has_expected_sections_and_disclaims_chat(self):
         text = self.inspector.snapshot()
-        self.assertIn("READ-ONLY INSPECTION", text)
-        self.assertIn("cannot talk to her or change anything", text)
+        self.assertIn("INSPECTION CONSOLE", text)
+        self.assertIn("read-only view of the state on disk", text)
         self.assertIn("Autonomy:", text)
         self.assertIn("Discord:", text)
 
@@ -97,19 +97,21 @@ class TestInspectIsReadOnly(_InspectFixture):
                    if before.get(p) != after.get(p)}
         self.assertEqual(changed, set(), f"inspection wrote files: {changed}")
 
-    def test_mutating_commands_are_refused(self):
+    def test_mutating_commands_are_refused_without_a_runtime(self):
+        # No runtime is listening in this fixture, so mutating commands are
+        # refused rather than silently doing nothing.
         for command in ("/sleep", "/wake", "/autonomy pause", "/autonomy resume",
                         "/notifications mute", "/proactive unmute", "/read force",
                         "/approve abc", "/reconcile"):
             text = self.inspector.handle(command)
-            self.assertIn("not available in the read-only console", text)
+            self.assertIn("without a running runtime", text)
 
     def test_conversation_is_never_routed(self):
         # A plain sentence must not become a turn: the session's conversational
         # path and the model call both fail loudly if reached.
         self.session.handle = lambda *a, **k: self.fail("conversation was routed")
         text = self.inspector.handle("hello Astra, how are you?")
-        self.assertIn("Unknown inspection command", text)
+        self.assertIn("commands only", text)
 
     def test_router_entry_point_is_not_used(self):
         # The router's handle() records a human message as a side effect; the
@@ -168,6 +170,85 @@ class TestInspectShowsReadingAndLibrary(_InspectFixture):
         changed = {p for p in set(before) | set(after)
                    if before.get(p) != after.get(p)}
         self.assertEqual(changed, set(), f"inspection wrote files: {changed}")
+
+
+class TestInspectForwardsToRuntime(_InspectFixture):
+    """With a runtime running, the console is a remote control for every command.
+
+    A tiny in-process "runtime" stands in for the live process: it holds the
+    single-instance lock and serves the control channel through the session's own
+    router, exactly as ``ChatSession._install_control_watcher`` does. That proves
+    the console reaches the *real* command implementation rather than a copy.
+    """
+
+    def setUp(self):
+        super().setUp()
+        import threading
+        import time
+
+        from astra import control
+        self.control = control
+        # A lock naming our own pid makes ``runtime_listening`` read as running.
+        self.lock = os.path.join(self.tmp, "runtime.lock")
+        with open(self.lock, "w", encoding="utf-8") as handle:
+            handle.write(str(os.getpid()))
+        self.runtime_dir = self.tmp
+        self._stop = threading.Event()
+
+        def _serve():
+            while not self._stop.is_set():
+                for request in control.take_pending(runtime_dir=self.runtime_dir):
+                    result = self.session.router.handle_control(
+                        request["text"], source=request.get("source", "inspect"))
+                    control.write_result(request["id"], result.get("text", ""),
+                                         ok=True, runtime_dir=self.runtime_dir)
+                time.sleep(0.02)
+
+        self._thread = threading.Thread(target=_serve, daemon=True)
+        self._thread.start()
+        self.inspector = inspect_console.Inspector(
+            self.session, storage_dir=self.storage, config_dir=self.config,
+            runtime_dir=self.runtime_dir)
+
+    def tearDown(self):
+        self._stop.set()
+        super().tearDown()
+
+    def test_runtime_is_seen_as_listening(self):
+        self.assertTrue(self.inspector.runtime_listening())
+
+    def test_read_only_command_is_answered_by_the_runtime(self):
+        text = self.inspector.handle("/status")
+        self.assertIn("Astra is active", text)
+
+    def test_mutating_command_is_executed_by_the_runtime(self):
+        # /sleep is refused when no runtime runs, but with one running it is
+        # forwarded and actually executed.
+        text = self.inspector.handle("/sleep")
+        self.assertIn("sleep", text.lower())
+        self.assertTrue(self.session.controller.sleeping())
+
+    def test_update_check_is_forwarded(self):
+        text = self.inspector.handle("/update")
+        self.assertIn("CODE UPDATE", text)
+
+    def test_unknown_command_is_forwarded_and_reported(self):
+        text = self.inspector.handle("/definitely-not-a-command")
+        self.assertTrue(text.strip())
+
+    def test_conversation_is_still_never_routed(self):
+        text = self.inspector.handle("hello Astra")
+        self.assertIn("commands only", text)
+
+    def test_help_reflects_the_running_state(self):
+        self.assertIn("commands run on the runtime", self.inspector.help_text())
+
+    def test_update_is_listed_among_available_commands(self):
+        self.assertIn("/update", self.inspector.available_commands())
+
+    def test_bare_word_command_is_accepted_and_forwarded(self):
+        # "status" (no slash) names a real command, so it is forwarded.
+        self.assertIn("Astra is active", self.inspector.handle("status"))
 
 
 class TestInspectLiveScreens(_InspectFixture):
