@@ -42,7 +42,7 @@ import os
 import random
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 import requests
@@ -78,6 +78,38 @@ DELIVERY_LOG_LIMIT = 200
 TRANSPORT_MAX_ATTEMPTS = 3
 # Ceiling on a server-provided Retry-After (seconds); never sleep past this.
 RATE_LIMIT_MAX_SLEEP = 10.0
+
+# ---- Durable inbound-message lifecycle ---------------------------------
+INBOX_VERSION = 1
+# Bounded record cap; only *terminal* records are pruned once past it, so a
+# pending or deferred message is never silently dropped to make room.
+INBOX_MAX_RECORDS = 500
+# Excerpt kept for the journal. Short on purpose: it is enough to recognise a
+# message, and it keeps private content out of an ever-growing file.
+INBOX_EXCERPT_CHARS = 160
+# Conceptual states of a message's life. Not a new subsystem - a single record
+# on disk so "she received it" is a fact that survives a restart.
+MSG_RECEIVED = "received"      # registered; not yet triaged
+MSG_PENDING = "pending"        # awaiting a reply (buffered/being answered)
+MSG_DEFERRED = "deferred"      # intentionally postponed, with a revisit condition
+MSG_RESPONDED = "responded"    # a reply was delivered
+MSG_DISMISSED = "dismissed"    # intentionally not answered, with a reason
+MSG_FAILED = "failed"          # processing or delivery failed
+# Terminal states are not retried and may be pruned to bound the file.
+INBOX_TERMINAL = frozenset({MSG_RESPONDED, MSG_DISMISSED})
+# A deferred message is retried at most this many times before it is retired,
+# so a message that can never be answered does not retry forever.
+DEFER_MAX_ATTEMPTS = 3
+# Default revisit delay for a message deferred because she is occupied.
+DEFER_REVISIT_SECONDS = 900.0
+# A message younger than this is assumed to be handled by the live turn, so the
+# recovery pass does not re-offer it mid-answer. Keeps recovery idempotent in the
+# presence of the debounce window.
+RECOVER_MIN_AGE_SECONDS = 30.0
+# How many recent messages a reconciliation fetch looks at (bounded), and how
+# old a recovered message may be to still be answered.
+RECONCILE_LIMIT = 50
+RECONCILE_MAX_AGE_SECONDS = 86400.0
 
 
 def _now() -> str:
@@ -458,6 +490,180 @@ class DiscordHealthStore:
             atomic_save(self.path, self._state)
 
 
+class MessageInbox:
+    """A durable, bounded record of every message Astra has actually seen.
+
+    The cursor in :class:`DiscordState` answers one question ("what is the newest
+    id I have looked past?") and nothing else. That is enough to avoid
+    reprocessing history, but it means a message that was fetched while she was
+    busy, then stepped over by a later poll, leaves *no trace at all* - there is
+    nothing to reconcile against and nothing for the inspection console to show.
+    This store is the missing per-message record.
+
+    Each record carries a stable identity (the Discord message id), a lifecycle
+    state (:data:`MSG_RECEIVED` .. :data:`MSG_FAILED`), timestamps, and - only
+    when a decision was made - a reason and a revisit condition. Writes are
+    idempotent by id: recording the same message twice does not create a second
+    record, and a recovered message cannot be answered twice because the record
+    that marks it ``responded`` is what idempotency checks against.
+
+    Bounded: only terminal records are pruned once past
+    :data:`INBOX_MAX_RECORDS`, oldest first, so a pending or deferred message is
+    never dropped to make room. Read-only callers (the inspection console) must
+    use :meth:`snapshot`, which never mutates.
+    """
+
+    def __init__(self, data_dir: str = "./storage") -> None:
+        self.data_dir = data_dir
+        self.path = os.path.join(data_dir, "discord_inbox.json")
+        self._lock = threading.RLock()
+        self._state = self._load()
+
+    def _load(self) -> Dict[str, Any]:
+        raw = load_json(self.path, dict, dict)
+        raw = raw if isinstance(raw, dict) else {}
+        records = raw.get("records") or {}
+        return {
+            "version": INBOX_VERSION,
+            "records": {str(k): dict(v) for k, v in records.items()
+                        if isinstance(v, dict)},
+        }
+
+    def _persist(self) -> None:
+        atomic_save(self.path, self._state)
+
+    def reload(self) -> None:
+        """Re-read from disk, for a separate read-only inspection process."""
+        with self._lock:
+            self._state = self._load()
+
+    def flush(self) -> None:
+        self._persist()
+
+    # -- writes ----------------------------------------------------------
+    def receive(self, message_id: Any, *, content: str = "", author_id: Any = None,
+                channel_id: Any = None, addressed: bool = False) -> Optional[Dict[str, Any]]:
+        """Register a message as *received*. Idempotent by message id.
+
+        Returns the (existing or new) record, or ``None`` when there is no id.
+        A message already on record is left untouched - re-seeing it during a
+        reconciliation pass must not reset a decision already made.
+        """
+        mid = str(message_id or "").strip()
+        if not mid:
+            return None
+        with self._lock:
+            records = self._state.setdefault("records", {})
+            existing = records.get(mid)
+            if isinstance(existing, dict):
+                return dict(existing)
+            record = {
+                "id": mid,
+                "state": MSG_RECEIVED,
+                "addressed": bool(addressed),
+                "author_id": str(author_id) if author_id else None,
+                "channel_id": str(channel_id) if channel_id else None,
+                # The actual text, bounded, is what a deferred/recovered message
+                # needs to be answered later; the short excerpt is only for a
+                # diagnostic display and is derived on read.
+                "content": str(content or "")[:MAX_MESSAGE_CHARS],
+                "received_at": _now(),
+                "updated_at": _now(),
+                "attempts": 0,
+            }
+            records[mid] = record
+            self._prune()
+            self._persist()
+            return dict(record)
+
+    def mark(self, message_id: Any, state: str, *, reason: str = "",
+             revisit_at: Optional[str] = None, bump_attempt: bool = False) -> None:
+        """Advance a record's lifecycle state. No-op for an unknown id."""
+        mid = str(message_id or "").strip()
+        if not mid:
+            return
+        with self._lock:
+            record = self._state.get("records", {}).get(mid)
+            if not isinstance(record, dict):
+                return
+            record["state"] = state
+            record["updated_at"] = _now()
+            if reason:
+                record["reason"] = str(reason)[:200]
+            if revisit_at:
+                record["revisit_at"] = revisit_at
+            else:
+                record.pop("revisit_at", None)
+            if bump_attempt:
+                record["attempts"] = int(record.get("attempts") or 0) + 1
+            self._prune()
+            self._persist()
+
+    def _prune(self) -> None:
+        """Bound the file by dropping the oldest *terminal* records only."""
+        records = self._state.get("records", {})
+        if len(records) <= INBOX_MAX_RECORDS:
+            return
+        terminal = [(mid, rec) for mid, rec in records.items()
+                    if rec.get("state") in INBOX_TERMINAL]
+        terminal.sort(key=lambda kv: str(kv[1].get("updated_at") or ""))
+        while len(records) > INBOX_MAX_RECORDS and terminal:
+            mid, _ = terminal.pop(0)
+            records.pop(mid, None)
+
+    # -- reads -----------------------------------------------------------
+    def get(self, message_id: Any) -> Dict[str, Any]:
+        with self._lock:
+            return dict(self._state.get("records", {}).get(str(message_id or "")) or {})
+
+    def state_of(self, message_id: Any) -> Optional[str]:
+        return self.get(message_id).get("state")
+
+    def unresolved(self) -> List[Dict[str, Any]]:
+        """Records that still need attention (received/pending/deferred/failed)."""
+        with self._lock:
+            return [dict(rec) for rec in self._state.get("records", {}).values()
+                    if rec.get("state") not in INBOX_TERMINAL]
+
+    def snapshot(self) -> Dict[str, Any]:
+        """A read-only summary for diagnostics/screens. Never mutates."""
+        with self._lock:
+            records = list(self._state.get("records", {}).values())
+        counts: Dict[str, int] = {}
+        for rec in records:
+            key = str(rec.get("state") or "unknown")
+            counts[key] = counts.get(key, 0) + 1
+        pending = [rec for rec in records
+                   if rec.get("state") in (MSG_RECEIVED, MSG_PENDING,
+                                            MSG_DEFERRED, MSG_FAILED)]
+        pending.sort(key=lambda rec: str(rec.get("received_at") or ""))
+        oldest = pending[0] if pending else None
+        oldest_age = None
+        if oldest is not None:
+            try:
+                stamp = datetime.fromisoformat(str(oldest.get("received_at")))
+                if stamp.tzinfo is None:
+                    stamp = stamp.replace(tzinfo=timezone.utc)
+                oldest_age = max(0.0, (datetime.now(timezone.utc) - stamp).total_seconds())
+            except (TypeError, ValueError):
+                oldest_age = None
+        last_received = max((str(rec.get("received_at") or "") for rec in records),
+                            default="") or None
+        last_processed = max(
+            (str(rec.get("updated_at") or "") for rec in records
+             if rec.get("state") in INBOX_TERMINAL), default="") or None
+        return {
+            "total": len(records),
+            "counts": counts,
+            "pending": len(pending),
+            "oldest_pending_at": oldest.get("received_at") if oldest else None,
+            "oldest_pending_age_seconds": oldest_age,
+            "last_received_at": last_received,
+            "last_processed_at": last_processed,
+            "deferred": counts.get(MSG_DEFERRED, 0),
+        }
+
+
 class DiscordAdapter:
     """Polls a channel, routes inbound messages, and delivers proactive output.
     Inbound enhancements: batching, typing indicator, reply-only-on-emphasis,
@@ -481,6 +687,8 @@ class DiscordAdapter:
                  typing_simulation: bool = False,
                  check_on_cycle: bool = False,
                  check_interval_seconds: float = 0.0,
+                 reconcile_on_error: bool = True,
+                 defer_revisit_seconds: float = DEFER_REVISIT_SECONDS,
                  modulation_provider: Optional[Callable[[], Dict[str, Any]]] = None,
                  presence_base_patience: float = presence_mod.DEFAULT_PATIENCE_SECONDS,
                  stop_event: Optional[threading.Event] = None,
@@ -493,6 +701,21 @@ class DiscordAdapter:
         self.allowed_author_ids = {str(a) for a in (allowed_author_ids or [])}
         self.state = DiscordState(data_dir=data_dir)
         self.deliveries = DiscordDeliveryStore(data_dir=data_dir)
+        # The durable per-message record: what she has actually seen, its
+        # lifecycle state, and (when deferred) why. This is what makes "she
+        # received it" a fact on disk rather than a transient in-memory buffer.
+        self.inbox = MessageInbox(data_dir=data_dir)
+        # A reconciliation fetch (bounded history replay) runs on the first pass
+        # after the cursor was lost or an outage ended, so a message missed while
+        # she was busy is recovered rather than skipped.
+        self.reconcile_on_error = bool(reconcile_on_error)
+        self.defer_revisit_seconds = max(0.0, float(defer_revisit_seconds))
+        # Deferred messages that came due are re-offered to the batch here, and
+        # a poll may opportunistically retry one unresolved message per cycle so
+        # a message never starves behind a long task. Bounded, idempotent.
+        self._reconcile_needed = False
+        self._last_reconcile_at: Optional[str] = None
+        self._last_reconcile_error: Optional[str] = None
         self.poll_seconds = max(0.5, float(poll_seconds))
         self.batch_seconds = max(0.0, float(batch_seconds))
         self.max_batch = max(1, int(max_batch))
@@ -779,6 +1002,16 @@ class DiscordAdapter:
                     self._batch = list(source) + self._batch
                     if self._batch_since is None:
                         self._batch_since = now or self._now()
+                # Durable mirror: record the abandoned messages as deferred so a
+                # restart between now and the re-answer still recovers them.
+                for mid in (pending.get("source_ids") or []):
+                    try:
+                        self.inbox.mark(str(mid), MSG_DEFERRED,
+                                        reason="reply superseded by a new message",
+                                        revisit_at=(now or self._now()).isoformat(),
+                                        bump_attempt=True)
+                    except Exception:
+                        pass
                 log.debug("Discord: reply abandoned, new message arrived")
 
     def _flush_pending(self) -> int:
@@ -817,13 +1050,18 @@ class DiscordAdapter:
             pending["channel"], pending["content"],
             reference=pending.get("reference"),
             mention_user_id=pending.get("mention"))
+        source_ids = [str(x) for x in (pending.get("source_ids") or [])
+                      if pending.get("source_ids")]
         if result.get("ok"):
             self._inc_delivered()
+            self._retire_batch(source_ids, MSG_RESPONDED)
             if self.record_inbound_delivery and pending.get("wants_reply"):
                 self.deliveries.note_delivered(f"reply:{pending['last_id']}")
             return 1
         self._inc_failed()
         self.last_error = result.get("error")
+        self._retire_batch(source_ids, MSG_FAILED,
+                           reason=str(result.get("error") or "send failed")[:200])
         log.warning("Failed to send Discord reply: %s", result.get("error"))
         return 0
 
@@ -953,24 +1191,49 @@ class DiscordAdapter:
     # -- inbound ---------------------------------------------------------
     def poll_once(self, *, now: Optional[datetime] = None,
                   force: bool = False) -> Dict[str, Any]:
-        """Fetch new messages, buffer them, and answer a completed batch.
+        """Fetch new messages, record them durably, and answer a completed batch.
 
-        On the first poll with no stored cursor, existing channel contents are
-        treated as a baseline: they are recorded but *not* answered. Delivery
-        failures are counted and surfaced, never recorded as successes.
+        Every fetched, non-bot, authorised message is written to the durable
+        inbox *before* any decision is made about it, so "she received this" is a
+        fact on disk that survives a restart even if she never gets to answer it.
+        A transport error arms a bounded reconciliation pass so messages missed
+        during an outage are recovered on the next successful poll.
+
+        The cursor (:class:`DiscordState`) still short-circuits the common case,
+        but a lost/corrupt cursor no longer *silently* skips the backlog: on such
+        a first pass the recent history is replayed through the inbox as
+        seen-but-unaddressed, and any message actually addressed to her is
+        recovered and answered.
 
         ``force`` answers any buffered batch regardless of whether it addressed
-        Astra; it is the "she is checking her messages" path. A normal poll only
-        buffers messages that are actually addressed to her (mention or reply)
-        when ``require_mention`` is set, so she is not watching the channel.
+        Astra; it is the "she is checking her messages" path.
         """
         now = now or self._now()
         first_run = not self.state.last_message_id
+        # A lost cursor on a runtime that has run before (the inbox has records)
+        # is a real loss, not a fresh baseline: reconcile so an addressed message
+        # that arrived while the cursor was missing is recovered, not skipped.
+        if first_run and not self._reconcile_needed:
+            try:
+                if self.inbox.snapshot().get("total"):
+                    self._reconcile_needed = True
+            except Exception:
+                pass
+        reconcile = self._reconcile_needed
+        # On a reconciliation pass, ignore the stored cursor and refetch a bounded
+        # window of recent history; otherwise use the cursor normally.
+        after = None if reconcile else (self.state.last_message_id or None)
         fetched = self.transport.fetch_messages(
-            self.channel_id, after=self.state.last_message_id or None, limit=20)
+            self.channel_id, after=after,
+            limit=(RECONCILE_LIMIT if reconcile else 20))
         if not fetched.get("ok"):
             self.last_error = fetched.get("error")
             self._consecutive_errors += 1
+            # Arm reconciliation so the messages that arrive during the outage
+            # are recovered when it ends - a failed fetch must never be the
+            # reason a message is silently lost.
+            if self.reconcile_on_error:
+                self._reconcile_needed = True
             self._record_health(ok=False, error=self.last_error)
             return {"ok": False, "error": fetched.get("error"), "handled": 0}
 
@@ -981,10 +1244,22 @@ class DiscordAdapter:
         messages = fetched.get("data") or []
         # Discord returns newest-first; process oldest-first.
         messages = list(reversed(messages))
-        if first_run:
+        if first_run and not reconcile:
+            # A genuine fresh baseline: existing channel contents predate this
+            # runtime, so record them but do not answer them. Recovery still
+            # runs, so a restart with a pending message answers it promptly.
             for message in messages:
                 self.state.set_last_message_id(str(message.get("id") or ""))
-            return {"ok": True, "handled": 0, "error": None, "baselined": len(messages)}
+            self._recover_unresolved(now)
+            flushed = self._flush_pending()
+            answered = self._maybe_flush_batch(now) + flushed
+            return {"ok": True, "handled": answered, "accepted": 0,
+                    "buffered": len(self._batch), "error": None,
+                    "baselined": len(messages)}
+        if reconcile:
+            self._last_reconcile_at = _now()
+            self._last_reconcile_error = None
+            self._reconcile_needed = False
 
         accepted = 0
         interrupted = False
@@ -1003,14 +1278,50 @@ class DiscordAdapter:
                 continue
             if not self._author_allowed(author):
                 continue
-            # The addressed gate: unless she is explicitly checking her
-            # messages, a line not directed at her does not summon her.
-            if not force and not self._addressed(message):
+            addressed = bool(force or self._addressed(message))
+            # During a reconciliation pass every seen message is recorded (it is
+            # the audit trail for the recovery); on a normal poll only a message
+            # that is hers to answer earns a record, so the inbox does not fill
+            # with ordinary channel chatter.
+            if not addressed and not reconcile:
                 continue
+            record = self.inbox.receive(
+                message_id, content=content,
+                author_id=author.get("id"),
+                channel_id=str(message.get("channel_id") or self.channel_id),
+                addressed=addressed)
+            if record is None:
+                continue
+            state = record.get("state")
+            if not addressed:
+                # Seen (during reconciliation) but not addressed to her: a
+                # durable note, nothing to do.
+                if state == MSG_RECEIVED:
+                    self.inbox.mark(message_id, MSG_DISMISSED,
+                                    reason="not addressed to Astra")
+                continue
+            if state in INBOX_TERMINAL:
+                # Already answered or dismissed on a prior pass: never answer a
+                # message twice, however it is re-fetched.
+                continue
+            if reconcile:
+                # A recovery pass must not resurrect an ancient message as if it
+                # just arrived: a mention older than the reconciliation window is
+                # recorded (so it is visible) but not answered.
+                age = self._record_age_seconds(record, now)
+                if age is not None and age > RECONCILE_MAX_AGE_SECONDS:
+                    self.inbox.mark(message_id, MSG_DISMISSED,
+                                    reason="recovered message older than window")
+                    continue
             # Roum is addressing her: a live exchange is (re)opened, so the poll
             # loop watches closely for the rest of the thought. It closes again
             # (state-scaled) once he has gone quiet.
             self._note_exchange(now)
+            if state not in (MSG_RECEIVED, MSG_PENDING):
+                # A previously deferred message came back around (or a recovered
+                # one): it is buffered again, not treated as brand new.
+                log.debug("Discord: re-buffering %s message %s", state, message_id)
+            self.inbox.mark(message_id, MSG_PENDING)
             # A new addressed message arrived: stop any in-flight typing and read
             # it before replying, so she does not talk over the new thought.
             interrupted = True
@@ -1027,13 +1338,131 @@ class DiscordAdapter:
         if interrupted:
             self._interrupt_typing()
 
+        # Bring any deferred message whose revisit time has passed - or any
+        # unresolved message left over from a restart - back into the batch, so a
+        # deferral or a crash can never let a message starve indefinitely.
+        self._recover_unresolved(now)
+
         # A finished typing simulation's reply is sent first (it was planned
         # before this batch), then a newly-complete batch is answered. Both are
         # non-blocking: a still-typing reply is left for a later poll.
         flushed = self._flush_pending()
         answered = self._maybe_flush_batch(now) + flushed
         return {"ok": True, "handled": answered, "accepted": accepted,
-                "buffered": len(self._batch), "error": None}
+                "buffered": len(self._batch), "error": None,
+                "reconciled": reconcile, "baselined": first_run}
+
+    def _in_flight_source_ids(self) -> set:
+        """Message ids that are currently being answered (must not re-offer)."""
+        ids = set()
+        with self._send_lock:
+            pending = self._reply_in_flight
+            if isinstance(pending, dict):
+                ids.update(str(x) for x in (pending.get("source_ids") or []))
+        return ids
+
+    def _recover_unresolved(self, now: datetime) -> None:
+        """Re-buffer unresolved messages that are not currently in flight.
+
+        Covers three cases with one idempotent pass:
+
+        * a ``deferred`` message whose revisit time has passed (an intentional
+          postponement coming due);
+        * a ``pending``/``received`` message left over from a restart (the
+          in-memory batch does not survive a crash, but the inbox does) - so a
+          mention she saw but had not answered is recovered;
+        * a ``failed`` message, retried on a bounded schedule.
+
+        A message that has exhausted :data:`DEFER_MAX_ATTEMPTS` is retired as
+        ``failed`` rather than retried forever. A deferred message is recovered
+        exactly when its revisit time passes; any other unresolved record is only
+        re-offered once it is older than a small grace period, so the pass never
+        double-answers a message the live turn is still handling.
+        """
+        buffered_ids = {str(m.get("id")) for m in self._batch}
+        in_flight = self._in_flight_source_ids()
+        for record in self.inbox.unresolved():
+            mid = str(record.get("id") or "")
+            if not mid or mid in buffered_ids or mid in in_flight:
+                continue
+            state = record.get("state")
+            # A deferred message is recovered exactly when its revisit condition
+            # is met - the grace window does not apply, because the deferral was
+            # an explicit decision to come back to it.
+            if state == MSG_DEFERRED:
+                revisit = record.get("revisit_at")
+                if revisit:
+                    try:
+                        stamp = datetime.fromisoformat(str(revisit))
+                        if stamp.tzinfo is None:
+                            stamp = stamp.replace(tzinfo=timezone.utc)
+                        if now < stamp:
+                            continue
+                    except (TypeError, ValueError):
+                        pass
+            else:
+                # A ``received``/``pending``/``failed`` record (restart residue or
+                # a delivery failure) is only re-offered once it is old enough
+                # that the live turn is definitely not still handling it, so the
+                # recovery pass never double-answers a fresh message.
+                age = self._record_age_seconds(record, now)
+                if age is not None and age < RECOVER_MIN_AGE_SECONDS:
+                    continue
+            if int(record.get("attempts") or 0) >= DEFER_MAX_ATTEMPTS:
+                self.inbox.mark(mid, MSG_FAILED,
+                                reason="retry limit reached")
+                continue
+            self.inbox.mark(mid, MSG_PENDING, bump_attempt=True)
+            self._batch.append({
+                "id": mid,
+                "content": str(record.get("content") or ""),
+                "channel": str(record.get("channel_id") or self.channel_id),
+                "author_id": record.get("author_id"),
+                "recovered": True,
+            })
+            log.debug("Discord: re-buffering %s message %s", state or "?", mid)
+            if self._batch_since is None:
+                self._batch_since = now
+
+    @staticmethod
+    def _record_age_seconds(record: Dict[str, Any], now: datetime) -> Optional[float]:
+        try:
+            stamp = datetime.fromisoformat(str(record.get("received_at")))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            return max(0.0, (now - stamp).total_seconds())
+        except (TypeError, ValueError):
+            return None
+
+    def defer(self, message_id: Any, *, reason: str = "",
+              revisit_seconds: Optional[float] = None) -> None:
+        """Record an *intentional* deferral of a message with a revisit time.
+
+        Called when she is deliberately postponing a reply while occupied. The
+        message stays in the inbox as ``deferred`` (never dropped), and the poll
+        loop will re-offer it once the revisit time passes.
+        """
+        mid = str(message_id or "").strip()
+        if not mid:
+            return
+        # Never defer a message that was already answered: an intentional
+        # postponement applies only to one still awaiting a reply.
+        if self.inbox.state_of(mid) in INBOX_TERMINAL:
+            return
+        delay = (self.defer_revisit_seconds if revisit_seconds is None
+                 else max(0.0, float(revisit_seconds)))
+        # Express the revisit instant on the adapter's own clock, so it is
+        # comparable with the ``now`` a poll compares it against.
+        revisit_at = (self._now() + timedelta(seconds=delay)).isoformat()
+        self.inbox.mark(mid, MSG_DEFERRED, reason=reason or "occupied",
+                        revisit_at=revisit_at, bump_attempt=True)
+        # Drop it from the live batch: it is no longer waiting to be answered now.
+        self._batch = [m for m in self._batch if m.get("id") != mid]
+
+    def reconcile(self) -> Dict[str, Any]:
+        """Force a bounded reconciliation pass now (recover missed messages)."""
+        self._reconcile_needed = True
+        return self.poll_once(force=False)
 
     def _maybe_flush_batch(self, now: datetime) -> int:
         """Answer the buffered batch once it is complete (quiet for the debounce)."""
@@ -1047,7 +1476,11 @@ class DiscordAdapter:
             return 0
         since = self._batch_since or now
         elapsed = (now - since).total_seconds()
-        ready = elapsed >= self.batch_seconds or len(self._batch) >= self.max_batch
+        # A recovered/deferred message is a complete, already-waiting thought:
+        # it does not need the debounce that exists to gather a fresh burst.
+        recovered = any(m.get("recovered") for m in self._batch)
+        ready = (elapsed >= self.batch_seconds or len(self._batch) >= self.max_batch
+                 or recovered)
         if not ready:
             return 0
         return self._answer_batch()
@@ -1062,14 +1495,27 @@ class DiscordAdapter:
         # batch somehow spans channels, answer in the last message's channel.
         reply_channel = batch[-1]["channel"]
         combined = "\n".join(m["content"].strip() for m in batch if m["content"].strip())
+        source_ids = [m["id"] for m in batch if m.get("id")]
         if not combined.strip():
+            self._retire_batch(source_ids, MSG_DISMISSED, reason="empty batch")
             return 0
         last = batch[-1]
 
         self.transport.send_typing(reply_channel)
-        result = self.router.handle(combined, source="discord")
+        try:
+            result = self.router.handle(combined, source="discord")
+        except Exception as exc:
+            # A generation error is a real failure, not silence: record it so the
+            # message can be retried from the inbox rather than lost.
+            self.last_error = f"generation failed: {exc}"
+            log.exception("Discord: generation failed")
+            self._retire_batch(source_ids, MSG_FAILED, reason=str(exc)[:200])
+            return 0
         reply = result.get("text") or ""
         if not reply.strip():
+            # She produced no reply: record the decision honestly (a dismissal
+            # with a reason), never a fabricated "read and chose not to".
+            self._retire_batch(source_ids, MSG_DISMISSED, reason="no reply produced")
             return 0
 
         # Reply-attach only when the response asks for emphasis *and* we are
@@ -1106,6 +1552,7 @@ class DiscordAdapter:
                     "channel": reply_channel, "content": clean,
                     "reference": reference, "mention": mention,
                     "wants_reply": wants_reply, "last_id": last["id"],
+                    "source_ids": source_ids,
                     "before_send": before_send,
                     "typing_seconds": round(sum(segments) + before_send, 3),
                     "source_batch": list(batch),
@@ -1117,14 +1564,32 @@ class DiscordAdapter:
                                 mention_user_id=mention)
         if sent.get("ok"):
             self._inc_delivered()
+            self._retire_batch(source_ids, MSG_RESPONDED)
             if self.record_inbound_delivery and wants_reply:
                 self.deliveries.note_delivered(f"reply:{last['id']}")
         else:
             # A transport failure is a failure, not a delivered message.
             self._inc_failed()
             self.last_error = sent.get("error")
+            self._retire_batch(source_ids, MSG_FAILED,
+                               reason=str(sent.get("error") or "send failed")[:200])
             log.warning("Failed to send Discord reply: %s", sent.get("error"))
         return len(batch)
+
+    def _retire_batch(self, source_ids: List[str], state: str,
+                      *, reason: str = "") -> None:
+        """Advance every source message of a finished batch to a terminal state.
+
+        Best-effort: inbox bookkeeping must never break the reply path. A failed
+        delivery is recorded as ``failed`` (retryable via reconciliation), a
+        delivered one as ``responded`` (never answered twice), and a message she
+        chose not to answer as ``dismissed`` with the reason.
+        """
+        for mid in source_ids:
+            try:
+                self.inbox.mark(mid, state, reason=reason)
+            except Exception:
+                pass
 
     def check_messages(self) -> int:
         """Explicitly check the channel: fetch and answer anything unhandled.
@@ -1151,6 +1616,10 @@ class DiscordAdapter:
         """Deliver any pending typing and answer any buffered batch (shutdown)."""
         self._join_typing(timeout=5.0)
         flushed = self._flush_pending()
+        try:
+            self.inbox.flush()
+        except Exception:
+            pass
         return flushed + self._answer_batch()
 
     def run(self) -> None:
@@ -1182,9 +1651,11 @@ class DiscordAdapter:
                 log.warning("Discord: %d consecutive errors, backing off %.1fs",
                             self._consecutive_errors, backoff)
                 self._stop.wait(backoff)
-            elif self._batch or self._pending():
-                # Work pending: poll no slower than the debounce so it is
-                # delivered as soon as the person stops typing.
+            elif self._batch or self._pending() or self._has_unresolved():
+                # Work pending (a buffering batch, a reply being typed, or a
+                # message still awaiting an answer): poll no slower than the
+                # debounce so it is delivered - or recovered - promptly. A
+                # pending message must never fall into the slow away-poll.
                 self._stop.wait(min(self.poll_seconds, max(0.5, self.batch_seconds)))
             else:
                 # Presence: while Roum is here (or before any exchange, so a
@@ -1201,14 +1672,32 @@ class DiscordAdapter:
         with self._send_lock:
             return self._reply_in_flight is not None
 
+    def _has_unresolved(self) -> bool:
+        """Whether any message is still awaiting an answer (durable backlog)."""
+        try:
+            return bool(self.inbox.unresolved())
+        except Exception:
+            return False
+
     # -- diagnostics -----------------------------------------------------
     def diagnostics(self) -> Dict[str, Any]:
-        """A truthful transport/delivery snapshot for the admin views."""
+        """A truthful transport/delivery snapshot for the admin views.
+
+        Read-only: it reads the inbox's ``snapshot`` (which never mutates) and
+        the live in-memory counters, and reports the durable facts a separate
+        inspection process needs - connection, last received/processed, pending
+        backlog and its age, the last handler/delivery error, and whether a
+        reconciliation pass is running or has failed.
+        """
         connected = self.last_fetch_ok_at is not None and self.last_error is None
         try:
             presence = self._presence()
         except Exception:
             presence = {}
+        try:
+            inbox = self.inbox.snapshot()
+        except Exception:
+            inbox = {}
         return {
             "channel_id": self.channel_id,
             "connected": connected,
@@ -1223,6 +1712,16 @@ class DiscordAdapter:
             "pending_reply": self._pending(),
             "typing": self._typing_in_flight(),
             "require_mention": self.require_mention,
+            # Incoming-message lifecycle (durable).
+            "inbox": inbox,
+            "last_received_at": inbox.get("last_received_at"),
+            "last_processed_at": inbox.get("last_processed_at"),
+            "pending_messages": inbox.get("pending", 0),
+            "oldest_pending_age_seconds": inbox.get("oldest_pending_age_seconds"),
+            # Reconciliation state.
+            "reconcile_needed": bool(self._reconcile_needed),
+            "last_reconcile_at": self._last_reconcile_at,
+            "last_reconcile_error": self._last_reconcile_error,
             "presence": presence.get("mode"),
             "exchange_open": bool(self._exchange_open),
             "patience_seconds": presence.get("patience"),

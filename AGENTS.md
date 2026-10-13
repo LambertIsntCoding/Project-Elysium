@@ -478,7 +478,8 @@ Top-level `memory_store.py`, `orchestrator.py`, `elysium.py`, `consolidator.py`,
   is a validated no-op. Do not call `record_experience` per turn, do not add
   `experience` as a consolidator classification, and do not route affect
   through the consolidator: the consolidator still decides only durable memory.
-  Decay is documented as a known limitation below.
+  Decay is lazy on the read path and folded on the maintenance path - see the
+  decay note below.
 - **Her own state modulates the reaction; the reaction is not a fixed
   classifier.** `evaluate_turn` takes the current state and scales each event's
   magnitude through `_reactivity`, so the same words do not land identically
@@ -505,17 +506,19 @@ Top-level `memory_store.py`, `orchestrator.py`, `elysium.py`, `consolidator.py`,
   checked *last*, so a real event always wins: a repeated joke is still a joke,
   not a rut. History is session scratch (`ChatSession._recent_user_turns`), not
   memory, and is passed in as pure input - the evaluator never reads it itself.
-- **Affect decay is lazy, and that is a known limitation for a live state.**
-  `_decay` only runs when the *next* event fires, so a state written on the last
-  turn and then read by `build_prompt` is shown at its last-written magnitude
-  however much time has passed; only a following event ages it. That is correct
-  for the sparse experience path (the state is frozen on disk and aged when next
-  used) but means a live state can look stale across a long gap. The rate is
-  also fast (`AFFECT_DECAY_PER_DAY = 0.15`, ~full decay in under a week). Do not
+- **Affect decay is lazy on the read path, and folded on the maintenance
+  path.** `_decay` runs when the *next* event fires, and every read goes through
+  `effective_state` (a pure, aged copy), so building a prompt or displaying the
+  state never compounds decay and a state written on the last turn and then read
+  is shown at its current (aged) magnitude. The residual gap was the *persisted*
+  record: a state that is never touched again sits on disk at its last-written
+  magnitude. `TripleMemoryStore.fold_affect_decay` (via `affect.fold_decay`,
+  which stamps the decay so the result is persistable) closes it on the explicit
+  maintenance path (`_handle_memory`), so the record on disk and the live view
+  agree instead of looking frozen high. It is a no-op when nothing moved. The
+  rate is `AFFECT_DECAY_PER_DAY = 0.15` (~full decay in under a week). Do not
   "fix" this by decaying inside `build_prompt` - prompt building must stay
-  read-only and byte-stable. A minimal, non-breaking option if it ever matters:
-  add an opt-in read-time aged view (a derived copy, not a write) and/or a
-  separate slower rate for the live accumulator; neither is done here.
+  read-only and byte-stable; the fold is a deliberate, explicit write.
 - **A memory's emotion is tied to it at recall, not stored on it.** An
   experience's kind *is* its emotional colour (`affect.memory_colour`: `happy`
   -> "glad", `read` -> "absorbed", `traumatic` -> "painful"), and the colour map
@@ -955,6 +958,47 @@ New tests: `tests/test_infrastructure.py` (12), `tests/test_behavior_admin.py`
 (29, including the full-command-surface menu coverage), and `tests/test_update.py`
 (21, the self-update engine and control channel). Full suite: 1155 tests.
 
+### Affect is a dynamic, temporally-correct state (audit)
+
+An audit found the affect accumulator behaved like a *pure integrator*: every
+event added its full delta, so a work read to the end (hundreds of `discovered`
+events) pinned dimensions at 1.0, and the displayed state looked frozen high
+during activity rather than genuinely high. The fixes keep the architecture and
+add four disciplines:
+
+- **Diminishing returns (`affect._bump`).** A positive move lands fully up to
+  `AFFECT_SATURATION_KNEE` and then has diminishing returns toward
+  `AFFECT_SATURATION`, so a value near the ceiling cannot be pinned there by
+  repetition while a moderate state stays fully dynamic.
+- **Repetition weighting (`record_event`).** Once past
+  `AFFECT_REPETITION_ALLOWANCE` occurrences of a kind, the event's scale is
+  discounted toward `AFFECT_REPETITION_FLOOR`, so the first event lands fully and
+  the hundredth lands a fraction. Configurable under `config/affect.yaml`
+  `dynamics`.
+- **Anticipation has a source.** `EXPERIENCE_READ` now raises `anticipation`, so
+  the forward pull the affect->outreach link reads is real and not a dimension
+  that could only ever decrease.
+- **The persisted record is brought current.** `affect.fold_decay` /
+  `TripleMemoryStore.fold_affect_decay` apply elapsed-time decay to the *stored*
+  record on the maintenance path, so the on-disk state and the effective (aged)
+  read agree instead of the record sitting frozen; `affect.diagnostics` reports
+  persistent vs effective and `screens` shows the distinction.
+
+Affect is now a *cause* in two more decisions, both read-only projections: the
+`ActivityPlanner` scales each candidate's importance by the state's effort bias
+and weights the reading candidate by anticipation, and a failed/blocked outcome
+feeds a non-durable `live_failure` event back through `apply_live_affect_event`
+(watermark-gated so a restart does not replay history). A config that is present
+but unparsable is surfaced in `diagnostics` (`config_error`) rather than silently
+falling back to defaults. Tests: `tests/test_affect_audit.py` (18 cases).
+Full suite: 1220 tests.
+
+The incoming-message lifecycle adds `tests/test_discord_inbox.py` (24 cases:
+durable receipts, restart recovery, idempotency, error reconciliation, the
+lost-cursor case, deferral/revisit, honest outcomes, diagnostics, bounded
+pruning, and the admin report) and the affect/speech contract adds
+`tests/test_speech_consistency.py` (18 cases).
+
 
 ## Autonomous operation, scheduling, and proactive Discord
 
@@ -1098,6 +1142,55 @@ operator guide is `docs/autonomous_operation.md`. Structural invariants:
 - **Inbound batching.** The adapter debounces a burst of messages
   (`batch_seconds`/`max_batch`) so a thought sent in several lines is read as one
   turn and answered once, rather than answered line by line.
+- **Every message she sees is a durable fact, not a transient buffer.**
+  `astra/discord_adapter.MessageInbox` (`discord_inbox.json`, bounded by
+  `INBOX_MAX_RECORDS`, only *terminal* records pruned) records each message the
+  adapter actually receives, with a lifecycle state (`received` -> `pending` ->
+  `responded`/`dismissed`/`failed`, or `deferred`), timestamps, and - only after
+  a decision - a reason and a revisit condition. The cursor in `DiscordState`
+  only answers "what is the newest id I looked past?"; on its own it let a
+  message that arrived while she was busy be stepped over by a later poll and
+  leave **no trace**, so it could neither be answered later nor be shown in the
+  inspection console. Writes are idempotent by message id, so a message that is
+  re-fetched (a reconciliation pass, a duplicate delivery) is never answered
+  twice - the record that marks it `responded` is what idempotency checks
+  against. Do not answer a message from the in-memory batch alone; the durable
+  record is the source of truth.
+- **A lost cursor reconciles; it never silently baselines the backlog away.**
+  A transport error arms `reconcile_needed`, so the next successful poll ignores
+  the cursor and re-feeds a *bounded* window (`RECONCILE_LIMIT`) of recent
+  history through the inbox. A first pass with an empty cursor but a non-empty
+  inbox (the corrupt-cursor case) is treated as the same kind of loss and also
+  reconciles - an addressed message in the window is answered, an ordinary one
+  is recorded `dismissed`, and one older than `RECONCILE_MAX_AGE_SECONDS` is
+  recorded but not resurrected as if it just arrived. A genuinely fresh baseline
+  (no cursor *and* no inbox) still records nothing and answers nothing.
+- **A deferral comes due; it is not a way to drop a message.**
+  `DiscordAdapter.defer(message_id, reason=..., revisit_seconds=...)` marks a
+  message `deferred` with a revisit time on the adapter's own clock;
+  `_recover_unresolved` re-buffers it when that time passes (and a
+  `pending`/`received`/`failed` record left over from a restart once it is past
+  `RECOVER_MIN_AGE_SECONDS`, so a crash does not lose a mention the inbox still
+  holds). A recovered/deferred message bypasses the debounce - it is already a
+  complete thought - but every message is retried at most `DEFER_MAX_ATTEMPTS`
+  times before it is retired as `failed`, so nothing retries forever. A message
+  that was already answered (`responded`/`dismissed`) can never be deferred or
+  re-offered. When Roum is mid-thought the abandoned typing is mirrored to the
+  inbox as `deferred`, so a restart between the interruption and the re-answer
+  still recovers it.
+- **Outcomes are recorded honestly.** `_answer_batch`/`_deliver_pending` write
+  `responded` only on a delivered reply, `failed` on a generation error or a
+  transport failure (retryable), and `dismissed` with a reason when she
+  produced no reply - never a fabricated "read and chose not to". The poll loop
+  polls promptly while any message is unresolved (`_has_unresolved`), so a
+  pending message cannot fall into the slow away-poll.
+- **The inspection console shows the lifecycle and re-reads it.** The adapter's
+  `diagnostics()` reports `last_received_at`/`last_processed_at`,
+  `pending_messages` and `oldest_pending_age_seconds`, `deferred`, and the
+  reconciliation state, read from the inbox's `snapshot()` (which never
+  mutates); `RuntimeController.discord_report` renders them and
+  `InspectConsole.refresh` re-reads the adapter's durable stores (cursor,
+  deliveries, inbox, health) so a separate process mirrors the runtime.
 - **Emotions are a cause of behaviour, not a report.** `astra/behavior.py`
   derives a modulation from the current affect; that modulation feeds *what
   actually happens*: the scheduler's injected `intensity` provider admits only

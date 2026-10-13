@@ -2702,6 +2702,36 @@ class TripleMemoryStore:
         stored = affect.load_state_from_memories(self.get_memories("self", status=None))
         return affect.effective_state(stored)
 
+    def fold_affect_decay(self) -> Dict[str, Any]:
+        """Fold elapsed-time decay into the *persisted* affect accumulator.
+
+        The read paths use :func:`current_affect` (a pure, aged copy), so a state
+        that is never touched again sits frozen on disk at its last-written
+        magnitude. This is the explicit maintenance step that brings it current:
+        it ages the stored state once from its own ``last_updated`` and writes it
+        back, so the display and the decision path agree and the record does not
+        look permanently stuck high. It is a no-op when there is no accumulator,
+        when no meaningful interval has passed, or when nothing actually moved -
+        so an idle sweep does not churn the store.
+
+        Returns the effective (now-current) state.
+        """
+        with self._lock:
+            existing = self._affect_record()
+            if existing is None:
+                return affect.effective_state(None)
+            stored = existing.get("affect_state") or {}
+            folded = affect.fold_decay(stored)
+            # Only write when a component actually moved, so a no-op sweep does
+            # not re-serialise the record (and never invents a change).
+            moved = any(
+                abs(float(folded.get(name) or 0.0) - float(stored.get(name) or 0.0)) > 1e-9
+                for name in affect.AFFECT_COMPONENTS
+            )
+            if moved:
+                self._write_affect_state(folded)
+            return affect.effective_state(folded)
+
     # ---- persistent questions & revisable understanding (Slice 2) ------
     # These are thin conveniences over ``add_memory``/``update_memory``: the
     # record is an ordinary memory, so it inherits evidence, decay, dormancy,

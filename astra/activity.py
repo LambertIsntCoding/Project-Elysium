@@ -120,8 +120,8 @@ class ActivityPlanner:
         self.affect_provider = affect_provider
 
     # -- state-driven bias -----------------------------------------------
-    def _bias(self) -> Dict[str, Any]:
-        """Astra's current activity bias, derived from her affect (read-only)."""
+    def _affect_state(self) -> Dict[str, Any]:
+        """Astra's current experiential affect as a plain dict (read-only)."""
         state: Any = None
         if self.affect_provider is not None:
             try:
@@ -133,6 +133,11 @@ class ActivityPlanner:
                 state = self.store.current_affect()
             except Exception:
                 state = None
+        return state if isinstance(state, dict) else {}
+
+    def _bias(self) -> Dict[str, Any]:
+        """Astra's current activity bias, derived from her affect (read-only)."""
+        state = self._affect_state()
         modulation = behavior.from_affect(state) if state else behavior.from_affect({})
         return behavior.activity_bias(modulation)
 
@@ -286,6 +291,7 @@ class ActivityPlanner:
             "lane": lane,
             "reason": reason,
             "importance": round(max(0.0, min(1.0, importance)), 4),
+            "base": base,
             "score": round(base + 0.4 * importance, 4),
             "priority": task_mod.DEFAULT_PRIORITY.get(kind, 25),
             "scope": scope,
@@ -305,6 +311,7 @@ class ActivityPlanner:
         live_total = sum(live.values())
         recent = self._recently_run_kinds()
         bias = self._bias()
+        state = self._affect_state()
 
         candidates = [c for c in self.candidates() if c["kind"] in self.enabled_kinds]
         proposals: List[Dict[str, Any]] = []
@@ -321,6 +328,19 @@ class ActivityPlanner:
         effective_max = self.max_new if take_on >= 0.5 else min(
             self.max_new, 1 if take_on >= 0.25 else 0)
         prefer_light = bool(bias.get("prefer_light"))
+        # Her state also sets the *order*: how much effort she can bring weights
+        # each candidate's importance, so a flat/weary state quietly moves
+        # maintenance ahead of deep investigative work rather than only starting
+        # fewer things. Bounded (0.75..1.25) and neutral at a mid state, so a
+        # calm state changes nothing. The lane base is never scaled, so the lanes
+        # stay balanced; only the importance term within a lane moves.
+        effort = float(bias.get("effort", 0.5))
+        effort_scale = max(0.75, min(1.25, 0.75 + 0.5 * effort))
+        # Forward pull: a work being read toward its end is more worth continuing
+        # when anticipation is high, less when it is flat. This is the affect ->
+        # reading link made real in selection (not just in the reader's pace).
+        anticipation = max(0.0, min(1.0, float(state.get("anticipation") or 0.0)))
+        reading_scale = 0.85 + 0.3 * anticipation
 
         # Balance: prefer lanes that have not run in the recent ledger; a kind
         # that just ran is de-prioritised so she does not fixate on it. A low
@@ -336,6 +356,10 @@ class ActivityPlanner:
                 skipped.append({"kind": cand["kind"], "reason": "already queued"})
                 continue
             cand = dict(cand)
+            scale = effort_scale * (reading_scale if cand["lane"] == LANE_LEARNING else 1.0)
+            scaled_importance = max(0.0, min(1.0, float(cand["importance"]) * scale))
+            cand["importance"] = round(scaled_importance, 4)
+            cand["score"] = round(cand["base"] + 0.4 * scaled_importance, 4)
             cand["score"] = round(cand["score"] - 0.15 * min(3, recent.get(cand["kind"], 0)), 4)
             if prefer_light:
                 # A low state's willingness is toward light work: nudge the score
@@ -347,8 +371,11 @@ class ActivityPlanner:
                 cand["bias_note"] = str(bias["note"])
             proposals.append(cand)
 
-        if prefer_light:
-            proposals.sort(key=lambda c: c.get("score", 0.0), reverse=True)
+        # Rank by the (state-scaled) score so selection is deterministic and her
+        # state's effect on the *order* is real. Ties fall back to priority then
+        # kind so the order is stable across runs.
+        proposals.sort(key=lambda c: (-c.get("score", 0.0),
+                                      -c.get("priority", 0), c.get("kind", "")))
         if not proposals:
             reason = "no evidenced activity to add"
             if effective_max == 0 and self.max_new > 0:

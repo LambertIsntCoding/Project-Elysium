@@ -39,24 +39,36 @@ from typing import Any, Dict, List, Optional
 _CONFIG_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config")
 _affect_config: Optional[Dict[str, Any]] = None
 _config_loaded = False
+# Set when affect.yaml is present but unparsable, so a broken config is visible
+# (diagnostics) instead of silently falling back to the hardcoded defaults.
+_config_error = ""
 
 
 def _load_affect_config() -> Dict[str, Any]:
-    """Load affect configuration from YAML, with hardcoded defaults."""
-    global _affect_config, _config_loaded
+    """Load affect configuration from YAML, with hardcoded defaults.
+
+    A config that is present but *unparsable* is recorded in ``_config_error``
+    (surfaced by :func:`diagnostics`) rather than failing silently - so a broken
+    YAML file does not quietly drop every tuned value back to the hardcoded
+    defaults without anyone noticing.
+    """
+    global _affect_config, _config_loaded, _config_error
     if _config_loaded:
         return _affect_config or {}
     _config_loaded = True
     path = os.path.join(_CONFIG_DIR, "affect.yaml")
     if not os.path.isfile(path):
         _affect_config = {}
+        _config_error = ""
         return _affect_config
     try:
         import yaml
         with open(path, "r", encoding="utf-8") as fh:
             _affect_config = yaml.safe_load(fh) or {}
-    except Exception:
+        _config_error = ""
+    except Exception as exc:
         _affect_config = {}
+        _config_error = str(exc)
     return _affect_config
 
 
@@ -72,9 +84,10 @@ def reload_affect_config() -> None:
     import, so they are rebuilt here too - otherwise a reload would report new
     config while the runtime kept the old tables.
     """
-    global _affect_config, _config_loaded, _KIND_DELTAS, _EMOTION_INFLUENCE, _COLOURS
+    global _affect_config, _config_loaded, _config_error, _KIND_DELTAS, _EMOTION_INFLUENCE, _COLOURS
     _affect_config = None
     _config_loaded = False
+    _config_error = ""
     _KIND_DELTAS = _build_kind_deltas()
     _EMOTION_INFLUENCE = _build_emotion_influence()
     _COLOURS = _build_colour_map()
@@ -140,7 +153,13 @@ LIVE_REPETITION = "live_repetition"
 # scale the nudge (see ``record_event``). Loaded from config/affect.yaml with
 # hardcoded defaults.
 _KIND_DELTAS_DEFAULTS: Dict[str, Dict[str, float]] = {
-    EXPERIENCE_READ: {"engagement": 0.08, "concentration": 0.06, "curiosity": 0.04},
+    EXPERIENCE_READ: {"engagement": 0.08, "concentration": 0.06, "curiosity": 0.04,
+                      # A work being read toward its end is a forward pull: the
+                      # ``completed`` event then relieves it. Without a source
+                      # that *raises* anticipation it was a dead dimension (only
+                      # ever decreased), and the affect->outreach link that reads
+                      # it could never fire.
+                      "anticipation": 0.03},
     EXPERIENCE_COMPLETED: {"engagement": 0.10, "anticipation": -0.08,
                            "frustration": -0.15, "emotional_investment": 0.06,
                            "happy": 0.08, "weary": -0.05},
@@ -257,6 +276,7 @@ def _apply_influence(state: Dict[str, Any], source: str,
         if target in state:
             ripple = delta * weight * (0.3 + 0.7 * current)
             _bump(state, target, ripple)
+
 
 # The kinds below can also be *felt directly*, without a durable experience: an
 # ordinary live turn may carry an affective charge - humour, a sharp remark, a
@@ -413,6 +433,48 @@ AFFECT_MIN_INTERVAL_DAYS = _decay_setting("min_interval_days", 0.5)
 # Below this every component is treated as "no particular condition".
 AFFECT_NEUTRAL_EPSILON = _decay_setting("neutral_epsilon", 0.02)
 
+
+# ---------------------------------------------------------------------------
+# Dynamics: diminishing returns and repetition weighting.
+#
+# Without these, the accumulator is a pure integrator: every event adds its full
+# delta, so a work read to the end (hundreds of ``discovered`` events) pins
+# dimensions at 1.0 permanently, and a repeated event has exactly N times the
+# effect of one. That is what made the displayed state appear frozen high during
+# activity - it was saturated, not dynamic.
+#
+# Two mechanisms, both read from ``config/affect.yaml`` ``dynamics``:
+#
+# * **Diminishing returns** - a positive delta lands fully up to
+#   ``AFFECT_SATURATION_KNEE`` and then has diminishing returns toward
+#   ``AFFECT_SATURATION``. A value near the ceiling moves much less, an already
+#   strong dimension cannot be pinned at the extreme by repetition, and a
+#   moderate state still moves fully (so the live reactivity layer still shows).
+# * **Repetition weighting** - once past ``AFFECT_REPETITION_ALLOWANCE``
+#   occurrences, the event's scale is discounted toward ``AFFECT_REPETITION_FLOOR``:
+#   the first discovery lands fully, the hundredth lands a fraction. Repeated
+#   events no longer distort the result.
+#
+# Both are gentle by default and configurable; a single ordinary event is barely
+# affected, which keeps a real event landing.
+# ---------------------------------------------------------------------------
+def _dynamics_setting(key: str, default: float) -> float:
+    val = _config_section("dynamics").get(key)
+    return float(val) if val is not None else default
+
+
+AFFECT_SATURATION = _dynamics_setting("saturation", 1.0)
+# Diminishing returns apply only *above* this knee: below it a positive move
+# lands fully, so a moderate state stays dynamic (and reactivity still shows),
+# while a value near the ceiling cannot be pinned there by repetition.
+AFFECT_SATURATION_KNEE = _dynamics_setting("knee", 0.6)
+AFFECT_REPETITION_FLOOR = _dynamics_setting("repetition_floor", 0.35)
+# The first few occurrences of a kind are not "repetition": the discount only
+# begins after this allowance, so a handful of ordinary events land fully and
+# the discount targets a genuine flood (hundreds of the same event).
+AFFECT_REPETITION_ALLOWANCE = _dynamics_setting("repetition_allowance", 2)
+AFFECT_REPETITION_SLOPE = _dynamics_setting("repetition_slope", 0.03)
+
 _MIN, _MAX = 0.0, 1.0
 
 
@@ -465,8 +527,27 @@ def _coerce_state(raw: Any) -> Dict[str, Any]:
     return state
 
 
-def _bump(state: Dict[str, Any], component: str, delta: float) -> None:
-    state[component] = round(_clamp(_clamp(state.get(component)) + delta), 4)
+def _bump(state: Dict[str, Any], component: str, delta: float) -> float:
+    """Move a component by ``delta`` with a soft ceiling, returning the move.
+
+    A positive delta lands fully up to ``AFFECT_SATURATION_KNEE`` and then has
+    diminishing returns above it (``headroom / (saturation - knee)``), so a value
+    near the ceiling moves much less and an already-strong dimension cannot be
+    pinned at the extreme by repetition - the first event lands fully, the
+    fiftieth barely moves it. Keeping the region below the knee linear preserves
+    the reactivity the live layer relies on (a moderate state still moves a lot).
+    A negative delta is applied linearly (relief and decay stay crisp), clamped
+    at the floor. The applied delta is returned so the influence matrix ripples
+    by what actually moved, not by the nominal amount.
+    """
+    current = _clamp(state.get(component))
+    applied = delta
+    if delta > 0.0 and current > AFFECT_SATURATION_KNEE:
+        span = max(1e-6, AFFECT_SATURATION - AFFECT_SATURATION_KNEE)
+        headroom = max(0.0, AFFECT_SATURATION - current)
+        applied = delta * min(1.0, headroom / span)
+    state[component] = round(_clamp(current + applied), 4)
+    return applied
 
 
 def _decay(state: Dict[str, Any], now: Optional[datetime] = None) -> None:
@@ -516,6 +597,30 @@ def effective_state(state: Any, *, now: Optional[datetime] = None) -> Dict[str, 
     _decay(view, now=now)
     # _decay may stamp a new timestamp; keep the view faithful to the record.
     view["last_updated"] = stored.get("last_updated", "")
+    return view
+
+
+def fold_decay(state: Any, *, now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Return the stored state with elapsed-time decay *folded into it*.
+
+    Distinct from :func:`effective_state` (which keeps the original timestamp so
+    the next event still ages from the same point): this stamps the decay so the
+    result can be *persisted*. It is used by the explicit maintenance path, where
+    the runtime advances the accumulator once and writes it back - so a state
+    that would otherwise sit frozen on disk is brought current, and the display
+    and the decision path agree. Pure with respect to its input (returns a copy);
+    the caller decides whether to persist it.
+    """
+    stored = _coerce_state(state)
+    view = dict(stored)
+    view["event_counts"] = dict(stored.get("event_counts") or {})
+    last = _parse_ts(stored.get("last_updated"))
+    if last is None:
+        return view
+    now = now or datetime.now(timezone.utc)
+    if now <= last:
+        return view
+    _decay(view, now=now)
     return view
 
 
@@ -652,6 +757,11 @@ def record_event(state: Any, kind: str, *, intensity: float = 0.5,
     known experience kind moves anything; an unknown kind is a no-op, so a
     caller that drifts cannot perturb the state with arbitrary input.
 
+    Two dynamics keep the state honest rather than a pure integrator: each
+    positive move has diminishing returns (``_bump``), and the event's scale is
+    discounted by how often that kind has already been felt (repetition
+    weighting), so a run of the same event cannot pin a dimension.
+
     After the base delta is applied, the emotion influence matrix lets each
     valence emotion that changed ripple into the other emotions (e.g. a bump
     in ``happy`` also nudges ``calm`` up and ``sad`` down).
@@ -663,14 +773,23 @@ def record_event(state: Any, kind: str, *, intensity: float = 0.5,
     if deltas is None:
         return state
 
-    scale = 0.6 + 0.7 * _clamp(intensity) + 0.5 * _clamp(significance)
-    # Track emotion deltas for the influence matrix.
+    # Repetition weighting: an event's influence is discounted by how often that
+    # kind has already been felt, once past a small allowance. The first few of a
+    # kind land fully (they are ordinary, not repetition); a flood of the same
+    # event (hundreds of ``discovered`` while reading) is discounted toward the
+    # floor, so it cannot pin a dimension. The count is the *prior* count.
+    prior = int((state.get("event_counts") or {}).get(resolved, 0))
+    excess = max(0, prior - AFFECT_REPETITION_ALLOWANCE)
+    repetition = max(AFFECT_REPETITION_FLOOR, 1.0 / (1.0 + AFFECT_REPETITION_SLOPE * excess))
+    scale = (0.6 + 0.7 * _clamp(intensity) + 0.5 * _clamp(significance)) * repetition
+    # Track the *applied* emotion deltas so the influence matrix ripples by what
+    # actually moved (saturation already shrank the move), not by the nominal
+    # amount - otherwise a saturated emotion would still ripple at full strength.
     emotion_deltas: Dict[str, float] = {}
     for component, base in deltas.items():
-        scaled = base * scale
-        _bump(state, component, scaled)
+        applied = _bump(state, component, base * scale)
         if component in EMOTION_COMPONENTS:
-            emotion_deltas[component] = scaled
+            emotion_deltas[component] = applied
 
     # Apply the influence matrix: each emotion that changed ripples into others.
     for emotion, delta in emotion_deltas.items():
@@ -970,17 +1089,30 @@ def load_state_from_memories(memories: List[Dict[str, Any]]) -> Dict[str, Any]:
 def diagnostics(state: Any) -> Dict[str, Any]:
     """The diagnostic view: components plus why the state last moved.
 
-    Includes the emotion influence matrix and configuration source so
-    developers can verify the system is wired correctly.
+    Reports the *effective* (aged) values as the primary components - that is
+    what the prompt and the decision layers actually see - and also the
+    *persistent* (as-stored) values, so a display can show the difference
+    between what is on disk and what is live. ``decayed`` is True when the two
+    differ (the read-time aging moved something), which is the honest signal
+    that the stored record is older than "now". Includes the emotion influence
+    matrix and configuration source so developers can verify the wiring.
     """
-    state = effective_state(state)
-    out = {name: round(_clamp(state.get(name)), 4) for name in AFFECT_COMPONENTS}
+    stored = _coerce_state(state)
+    effective = effective_state(stored)
+    out = {name: round(_clamp(effective.get(name)), 4) for name in AFFECT_COMPONENTS}
+    persistent = {name: round(_clamp(stored.get(name)), 4) for name in AFFECT_COMPONENTS}
+    decayed = any(abs(effective.get(n, 0.0) - persistent.get(n, 0.0)) > 1e-9
+                  for n in AFFECT_COMPONENTS)
     out.update({
-        "neutral": is_neutral(state),
-        "event_counts": dict(state.get("event_counts", {})),
-        "reason": str(state.get("last_reason", "") or ""),
+        "neutral": is_neutral(effective),
+        "event_counts": dict(effective.get("event_counts", {})),
+        "reason": str(effective.get("last_reason", "") or ""),
+        "persistent": persistent,
+        "persistent_last_updated": stored.get("last_updated", ""),
+        "decayed": decayed,
         "emotion_influence": {k: dict(v) for k, v in _EMOTION_INFLUENCE.items()},
         "config_loaded": _config_loaded,
+        "config_error": _config_error,
         "config_source": os.path.join(_CONFIG_DIR, "affect.yaml"),
     })
     return out
@@ -1022,6 +1154,7 @@ __all__ = [
     "LIVE_EVENT_MIN_SCORE",
     "is_neutral",
     "effective_state",
+    "fold_decay",
     "record_event",
     "evaluate_turn",
     "resolve_kind",

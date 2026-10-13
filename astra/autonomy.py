@@ -115,6 +115,12 @@ class AutonomyDriver:
         self.candidate_provider: Optional[Callable[[], List[Dict[str, Any]]]] = None
         self.relevance_provider: Optional[Callable[[], float]] = None
         self.composer: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None
+        # Optional hook that folds a *problem* outcome (a failure/block/miss) into
+        # the affect state. Injected by the application so the driver itself never
+        # imports affect or the store: this is a one-directional signal, and the
+        # store stays the single write authority. It must never affect whether a
+        # notification is sent.
+        self.outcome_affect_hook: Optional[Callable[[Dict[str, Any]], None]] = None
 
     # -- pause/unpause (independent of notifications) --------------------
     @property
@@ -227,6 +233,17 @@ class AutonomyDriver:
                 # ledger still records it for inspection.
                 continue
             considered += 1
+            # A genuine setback is felt before any notification decision, so her
+            # state reflects the outcome regardless of whether it is worth a
+            # message. The hook is affect-only and cannot change delivery. It is
+            # gated on the watermark being established so the first pass after a
+            # restart does not replay the whole ledger's history as fresh
+            # frustration - only outcomes that happen *now* are felt.
+            if self.outcome_affect_hook is not None and since is not None:
+                try:
+                    self.outcome_affect_hook(entry)
+                except Exception:
+                    pass
             outcome = self._outcome_from_entry(entry)
             if outcome is None:
                 continue

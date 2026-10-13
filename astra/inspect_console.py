@@ -197,6 +197,16 @@ class Inspector:
                 obj = getattr(owner, attr, None)
                 if obj is not None and callable(getattr(obj, "reload", None)):
                     obj.reload()
+        # The Discord adapter is a *separate* process's transport; in this
+        # inspection process it only mirrors the on-disk facts, so its durable
+        # stores (the cursor, the delivery bookkeeping, the inbox, the health
+        # record) must be re-read for the view to reflect what the runtime saw.
+        discord = getattr(getattr(self, "session", None), "discord", None)
+        if discord is not None:
+            for attr in ("state", "deliveries", "inbox", "_health"):
+                obj = getattr(discord, attr, None)
+                if obj is not None and callable(getattr(obj, "reload", None)):
+                    obj.reload()
 
     def runtime_status(self) -> Dict[str, Any]:
         """Whether a runtime appears to be running, from the lock file."""

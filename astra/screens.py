@@ -254,6 +254,19 @@ def affect_render(session: Any, store: Optional[SnapshotStore] = None) -> List[s
 
     last_updated = state.get("last_updated") if isinstance(state, dict) else ""
     lines.append(f"  last moved: {last_updated or '(never)'}")
+    # The values above are the *effective* (aged) view. If the persisted record
+    # is older, say so and show it, so the display is not mistaken for what is
+    # on disk - the maintenance pass folds this decay in, but a read here must
+    # stay read-only and honest.
+    if diag.get("decayed"):
+        persistent = diag.get("persistent") or {}
+        stale = ", ".join(
+            f"{telemetry.AFFECT_NAMES.get(k, k)} {telemetry.to_scale(persistent.get(k))}"
+            for k in affect_mod.AFFECT_COMPONENTS
+            if abs(float(persistent.get(k) or 0.0)
+                   - float(diag.get(k) or 0.0)) > 1e-9)
+        if stale:
+            lines.append(f"  on disk (older): {stale}")
     lines.append(f"  last cause: {diag.get('reason') or '(none recorded)'}")
     counts = diag.get("event_counts") or {}
     if counts:
@@ -277,6 +290,8 @@ def affect_snapshot(session: Any) -> Dict[str, Any]:
         "captured_at": _now(),
         "values": values,
         "values_scaled": {k: telemetry.to_scale(v) for k, v in values.items()},
+        "persistent": diag.get("persistent") or {},
+        "decayed": bool(diag.get("decayed")),
         "neutral": diag.get("neutral"),
         "reason": diag.get("reason"),
         "last_updated": state.get("last_updated") if isinstance(state, dict) else "",

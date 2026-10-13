@@ -26,7 +26,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-from . import (activity, autonomy, engagement as engagement_mod,
+from . import (activity, affect as affect_mod, autonomy,
+               engagement as engagement_mod,
                file_organizer, filesystem, intentions, machine as machine_mod,
                model_use, notifications as notify_mod, prepared_context, proactive,
                proactive_compose, proposals as proposal_mod,
@@ -258,6 +259,11 @@ class RuntimeController:
         # read-only views over the *existing* store; neither stores anything.
         self.autonomy.candidate_provider = self._grounded_candidates
         self.autonomy.relevance_provider = self._outreach_relevance
+        # A real setback in her own work is a genuine affective event: an
+        # autonomous failure/block reaches the temporary affect state through the
+        # store's validated accumulator (never a durable experience, never a
+        # relational change). The store is the application's own authority here.
+        self.autonomy.outcome_affect_hook = self._record_outcome_affect
         self._notifier: Optional[Callable[..., Dict[str, Any]]] = None
 
         self.poll_seconds = max(1.0, float(poll_seconds))
@@ -297,6 +303,34 @@ class RuntimeController:
             return self.machine.snapshot()
         except Exception:
             return {}
+
+    def _record_outcome_affect(self, entry: Dict[str, Any]) -> None:
+        """Fold a *problem* background outcome into the temporary affect state.
+
+        A failed, blocked, missed or expired piece of her own work is a real
+        setback, so it registers as a mild frustration event - through the
+        store's validated accumulator, so it can never become a durable
+        experience or touch the relational state. Ordinary completion is not an
+        affective event (it is not a surprise), so only problems are folded, and
+        only when the store supports the accumulator. Best-effort and never
+        fatal: a store without the path simply records nothing.
+        """
+        status = str(entry.get("status") or "")
+        if status not in (task_mod.FAILED, task_mod.BLOCKED,
+                          task_mod.MISSED, task_mod.EXPIRED):
+            return
+        apply_event = getattr(self.store, "apply_live_affect_event", None)
+        if not callable(apply_event):
+            return
+        try:
+            apply_event({
+                "kind": affect_mod.LIVE_FAILURE,
+                "intensity": 0.6,
+                "significance": 0.5,
+                "reason": f"{entry.get('kind') or 'work'} {status}",
+            })
+        except Exception:
+            pass
 
     def _machine_ready_for_work(self) -> bool:
         """Whether the computer is warm and settled enough to do heavy work.
@@ -512,6 +546,14 @@ class RuntimeController:
             return {"status": task_mod.FAILED, "detail": f"decay failed: {exc}"}
         try:
             self.store.maybe_maintain(force=True)
+        except Exception:
+            pass
+        # Bring the affect accumulator current on disk too. The read paths only
+        # age a copy, so without this a state that is never touched again sits
+        # frozen at its last-written magnitude and the display looks stuck. This
+        # is the explicit maintenance step; it is a no-op when nothing moved.
+        try:
+            self.store.fold_affect_decay()
         except Exception:
             pass
         return {"status": task_mod.COMPLETED, "detail": f"decayed={sum(applied.values())}"}
@@ -1028,6 +1070,21 @@ class RuntimeController:
             return fmt()
         return "Reader: diagnostics unavailable."
 
+    @staticmethod
+    def _human_age(seconds: Any) -> str:
+        """A coarse, human-readable age ("3m", "2h", "1d") for a duration."""
+        try:
+            total = int(max(0, float(seconds)))
+        except (TypeError, ValueError):
+            return "?"
+        if total < 60:
+            return f"{total}s"
+        if total < 3600:
+            return f"{total // 60}m"
+        if total < 86400:
+            return f"{total // 3600}h"
+        return f"{total // 86400}d"
+
     def discord_report(self, discord: Any) -> str:
         if discord is None:
             return "Discord: not configured"
@@ -1038,6 +1095,25 @@ class RuntimeController:
         lines.append(f"  last proactive send: {diag.get('last_proactive_at') or 'never'}")
         lines.append(f"  inbound delivered={diag['inbound_delivered']} "
                      f"failed={diag['inbound_failed']}")
+        # Incoming-message lifecycle: what she has actually received and what is
+        # still waiting. Read-only; the values come from the inbox's snapshot.
+        lines.append(f"  last message received: {diag.get('last_received_at') or 'never'}")
+        lines.append(f"  last message processed: {diag.get('last_processed_at') or 'never'}")
+        pending = diag.get("pending_messages") or 0
+        age = diag.get("oldest_pending_age_seconds")
+        pending_line = f"  pending messages: {pending}"
+        if pending and age is not None:
+            pending_line += f" (oldest {self._human_age(age)} old)"
+        lines.append(pending_line)
+        deferred = (diag.get("inbox") or {}).get("deferred", 0)
+        if deferred:
+            lines.append(f"  deferred messages: {deferred}")
+        if diag.get("reconcile_needed"):
+            lines.append("  history reconciliation: RUNNING (recovering missed messages)")
+        elif diag.get("last_reconcile_at"):
+            lines.append(f"  history reconciliation: last ran {diag['last_reconcile_at']}")
+        if diag.get("last_reconcile_error"):
+            lines.append(f"  reconciliation error: {diag['last_reconcile_error']}")
         d = diag.get("deliveries") or {}
         lines.append(f"  proactive deliveries tracked={d.get('tracked', 0)} "
                      f"delivered={d.get('delivered', 0)} failed={d.get('failed', 0)}")
