@@ -48,6 +48,7 @@ from typing import Any, Callable, Dict, List, Optional
 import requests
 
 from . import discord_behavior
+from . import memory as memory_mod
 from . import presence as presence_mod
 from . import reply_policy
 from .memory import atomic_save, load_json
@@ -95,6 +96,11 @@ MSG_DEFERRED = "deferred"      # intentionally postponed, with a revisit conditi
 MSG_RESPONDED = "responded"    # a reply was delivered
 MSG_DISMISSED = "dismissed"    # intentionally not answered, with a reason
 MSG_FAILED = "failed"          # processing or delivery failed
+# A reply was generated and delivered, but the turn's memory could not be saved.
+# Distinct from ``responded`` on purpose: the exchange happened, but it is not
+# durable, so the message is left *unresolved* (retryable) rather than marked
+# answered. Re-processing it is safe: memory dedupes an identical statement.
+MSG_UNSAVED = "unsaved"        # reply delivered, but memory was not persisted
 # Terminal states are not retried and may be pruned to bound the file.
 INBOX_TERMINAL = frozenset({MSG_RESPONDED, MSG_DISMISSED})
 # A deferred message is retried at most this many times before it is retired,
@@ -619,6 +625,29 @@ class MessageInbox:
     def state_of(self, message_id: Any) -> Optional[str]:
         return self.get(message_id).get("state")
 
+    def note_replied(self, message_id: Any) -> None:
+        """Mark that a reply to this message was actually delivered.
+
+        Durable, and deliberately separate from the lifecycle *state*: a message
+        whose turn failed to persist stays ``unsaved`` (unresolved, so the turn
+        is retried) but must not have its reply sent a second time when that
+        retry succeeds. This is the duplicate-side-effect guard.
+        """
+        mid = str(message_id or "").strip()
+        if not mid:
+            return
+        with self._lock:
+            record = self._state.get("records", {}).get(mid)
+            if not isinstance(record, dict):
+                return
+            if record.get("replied"):
+                return
+            record["replied"] = True
+            self._persist()
+
+    def was_replied(self, message_id: Any) -> bool:
+        return bool(self.get(message_id).get("replied"))
+
     def unresolved(self) -> List[Dict[str, Any]]:
         """Records that still need attention (received/pending/deferred/failed)."""
         with self._lock:
@@ -635,7 +664,8 @@ class MessageInbox:
             counts[key] = counts.get(key, 0) + 1
         pending = [rec for rec in records
                    if rec.get("state") in (MSG_RECEIVED, MSG_PENDING,
-                                            MSG_DEFERRED, MSG_FAILED)]
+                                            MSG_DEFERRED, MSG_FAILED,
+                                            MSG_UNSAVED)]
         pending.sort(key=lambda rec: str(rec.get("received_at") or ""))
         oldest = pending[0] if pending else None
         oldest_age = None
@@ -768,6 +798,7 @@ class DiscordAdapter:
         self._counters_lock = threading.Lock()
         self._delivered = 0
         self._failed = 0
+        self._persist_failed = 0
         self._consecutive_errors = 0
         # Inbound batch buffer (scratch, session-only; not persisted).
         self._batch: List[Dict[str, Any]] = []
@@ -804,6 +835,12 @@ class DiscordAdapter:
         with self._counters_lock:
             return self._failed
 
+    @property
+    def persist_failed(self) -> int:
+        """Replies delivered whose turn's memory could not be saved."""
+        with self._counters_lock:
+            return self._persist_failed
+
     def stop(self) -> None:
         self._stop.set()
 
@@ -821,6 +858,10 @@ class DiscordAdapter:
     def _inc_failed(self, n: int = 1) -> None:
         with self._counters_lock:
             self._failed += n
+
+    def _inc_persist_failed(self, n: int = 1) -> None:
+        with self._counters_lock:
+            self._persist_failed += n
 
     def _author_allowed(self, author: Dict[str, Any]) -> bool:
         """Whether an author may be answered. Empty allowlist = anyone (non-bot)."""
@@ -1504,6 +1545,12 @@ class DiscordAdapter:
         self.transport.send_typing(reply_channel)
         try:
             result = self.router.handle(combined, source="discord")
+        except memory_mod.TurnPersistenceError as exc:
+            # The reply *was* generated; only the memory write failed. Do not
+            # mislabel it "generation failed" - deliver the reply and record the
+            # honest outcome (a reply went out, but the turn is not durable).
+            return self._deliver_after_persist_failure(exc, batch, source_ids,
+                                                       reply_channel, last)
         except Exception as exc:
             # A generation error is a real failure, not silence: record it so the
             # message can be retried from the inbox rather than lost.
@@ -1517,6 +1564,12 @@ class DiscordAdapter:
             # with a reason), never a fabricated "read and chose not to".
             self._retire_batch(source_ids, MSG_DISMISSED, reason="no reply produced")
             return 0
+        if self._reply_already_delivered(last):
+            # A reply to this message already went out - a retry of a turn whose
+            # memory save failed. This run has now persisted the turn, so do not
+            # duplicate the visible message; just mark it answered.
+            self._retire_batch(source_ids, MSG_RESPONDED)
+            return len(batch)
 
         # Reply-attach only when the response asks for emphasis *and* we are
         # answering one specific message; otherwise send a plain message. A reply
@@ -1575,6 +1628,63 @@ class DiscordAdapter:
                                reason=str(sent.get("error") or "send failed")[:200])
             log.warning("Failed to send Discord reply: %s", sent.get("error"))
         return len(batch)
+
+    def _deliver_after_persist_failure(self, exc: Exception, batch: List[Dict[str, Any]],
+                                       source_ids: List[str], reply_channel: str,
+                                       last: Dict[str, Any]) -> int:
+        """A reply whose generation succeeded but whose memory save failed.
+
+        Policy: deliver the reply (the model really produced it, and the human
+        asked), then record the turn honestly as ``unsaved`` - delivered but not
+        durable - rather than ``responded`` or ``failed``. The messages stay
+        unresolved, so a later reconciliation can retry the turn (idempotent
+        because an identical statement is deduped), and the failure is surfaced
+        through ``last_error``/``persist_failed`` so it is never silent. The
+        persistence failure is deliberately *not* reported as a generation
+        failure.
+        """
+        detail = "; ".join(f"{k}: {v}" for k, v in
+                           sorted((getattr(exc, "failed", None) or {}).items()))
+        self.last_error = "memory not persisted: " + (detail or str(exc))
+        self._inc_persist_failed()
+        log.error("Discord: reply generated but memory was not persisted: %s", exc)
+
+        reply = getattr(exc, "response", "") or ""
+        clean, wants_reply = reply_policy.parse(reply)
+        wants_reply = wants_reply and bool(last.get("id"))
+        if not clean.strip():
+            # Nothing usable to deliver: still leave the messages unresolved so
+            # the turn is retried, rather than falsely marking them answered.
+            self._retire_batch(source_ids, MSG_UNSAVED, reason=self.last_error[:200])
+            return 0
+        reference = last["id"] if wants_reply else None
+        mention = last.get("author_id") if wants_reply else None
+        if wants_reply and mention and "<@" not in clean:
+            clean = f"<@{mention}> {clean}".strip()
+        sent = self._send_reply(reply_channel, clean, reference=reference,
+                                mention_user_id=mention)
+        if sent.get("ok"):
+            self._inc_delivered()
+            self._retire_batch(source_ids, MSG_UNSAVED, reason=self.last_error[:200])
+            # Mark the reply as already delivered for these messages, so a later
+            # retry of the turn does not duplicate the visible message.
+            self._note_reply_delivered(source_ids)
+            if self.record_inbound_delivery and wants_reply:
+                self.deliveries.note_delivered(f"reply:{last['id']}")
+            return len(batch)
+        # The reply could not be delivered either: a genuine delivery failure.
+        self._inc_failed()
+        self._retire_batch(source_ids, MSG_FAILED,
+                           reason=str(sent.get("error") or "send failed")[:200])
+        return 0
+
+    def _note_reply_delivered(self, message_ids: List[str]) -> None:
+        for mid in message_ids:
+            if mid:
+                self.inbox.note_replied(str(mid))
+
+    def _reply_already_delivered(self, last: Dict[str, Any]) -> bool:
+        return self.inbox.was_replied(str(last.get("id") or ""))
 
     def _retire_batch(self, source_ids: List[str], state: str,
                       *, reason: str = "") -> None:
@@ -1705,6 +1815,7 @@ class DiscordAdapter:
             "last_error": self.last_error,
             "inbound_delivered": self.delivered,
             "inbound_failed": self.failed,
+            "inbound_persist_failed": self.persist_failed,
             "consecutive_errors": self._consecutive_errors,
             "last_proactive_at": self.last_proactive_at,
             "deliveries": self.deliveries.summary(),

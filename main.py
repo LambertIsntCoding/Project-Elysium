@@ -23,6 +23,7 @@ from __future__ import annotations
 import atexit
 import contextlib
 import json
+import logging
 import os
 import sys
 import textwrap
@@ -42,6 +43,7 @@ from astra.memory import (
     is_sourced,
     memory_utility,
 )
+from astra import memory as memory_mod
 from astra.orchestrator import CompanionOrchestrator
 from astra import affect
 from astra import inquiry
@@ -57,6 +59,8 @@ from astra import menus as menu_mod
 _COMMAND_HINTS = ("next time", "when i say", "whenever i say", "from now on when")
 
 _EXIT_WORDS = {"exit", "quit", "/exit", "/quit"}
+
+log = logging.getLogger("astra.session")
 
 # How many records of a single type /memories prints before summarising the
 # rest. The store can hold thousands of records; this keeps the overview
@@ -632,36 +636,45 @@ class ChatSession:
         # fully durable when it ends.
         store = self.orchestrator.store
         batch = getattr(store, "turn_batch", None)
-        with (batch() if callable(batch) else contextlib.nullcontext()):
-            # Retrieval is the only real "use" of a memory, so record it now.
-            # This keeps last_used/use_count meaningful, which is what lets decay
-            # and dormancy reflect usage instead of merely age.
-            note_retrieval = getattr(self.orchestrator, "note_retrieval", None)
-            if callable(note_retrieval):
-                note_retrieval(diagnostics)
-            # The relational preference moves only on real events, and only here
-            # on the live path - never inside build_prompt, which is read-only.
-            self._record_relational_event(user_input, response)
-            # The current *condition* also responds to the turn, but separately:
-            # a live affect event updates the temporary accumulator only, never a
-            # durable experience and never the relational state.
-            self._record_affect_event(user_input, response)
-            self._record_turn(user_input, response, consolidate=not response.startswith("[Error"))
-            self._checkpoint()
-            # Working memory is updated on the live path only, and after the
-            # turn, so the conversation's scratch state (topic, goal, references,
-            # threads) reflects what has happened. It is never written through
-            # the memory store, so it cannot become durable memory by accident.
-            conversation = getattr(self.orchestrator, "conversation", None)
-            if conversation is not None and not response.startswith("[Error"):
-                try:
-                    conversation.observe_turn(user_input, response, self.history)
-                except Exception:
-                    pass
-            # Maintenance runs after the turn's memory writes, never during
-            # prompt building (which must stay read-only). It is throttled
-            # internally.
-            self._run_maintenance()
+        try:
+            with (batch() if callable(batch) else contextlib.nullcontext()):
+                # Retrieval is the only real "use" of a memory, so record it now.
+                # This keeps last_used/use_count meaningful, which is what lets decay
+                # and dormancy reflect usage instead of merely age.
+                note_retrieval = getattr(self.orchestrator, "note_retrieval", None)
+                if callable(note_retrieval):
+                    note_retrieval(diagnostics)
+                # The relational preference moves only on real events, and only here
+                # on the live path - never inside build_prompt, which is read-only.
+                self._record_relational_event(user_input, response)
+                # The current *condition* also responds to the turn, but separately:
+                # a live affect event updates the temporary accumulator only, never a
+                # durable experience and never the relational state.
+                self._record_affect_event(user_input, response)
+                self._record_turn(user_input, response, consolidate=not response.startswith("[Error"))
+                self._checkpoint()
+                # Working memory is updated on the live path only, and after the
+                # turn, so the conversation's scratch state (topic, goal, references,
+                # threads) reflects what has happened. It is never written through
+                # the memory store, so it cannot become durable memory by accident.
+                conversation = getattr(self.orchestrator, "conversation", None)
+                if conversation is not None and not response.startswith("[Error"):
+                    try:
+                        conversation.observe_turn(user_input, response, self.history)
+                    except Exception:
+                        pass
+                # Maintenance runs after the turn's memory writes, never during
+                # prompt building (which must stay read-only). It is throttled
+                # internally.
+                self._run_maintenance()
+        except memory_mod.PersistenceError as exc:
+            # The reply *was* generated; only the memory write failed. Report it
+            # as exactly that (never as a model/generation failure) and carry the
+            # generated text so the transport can still deliver it.
+            log.error("Turn reply generated but memory persistence failed: %s", exc)
+            raise memory_mod.TurnPersistenceError(
+                str(exc), failed=getattr(exc, "failed", None), response=response
+            ) from exc
         return response
 
     def _record_relational_event(self, user_input: str, response: str) -> None:
@@ -826,8 +839,11 @@ class ChatSession:
                     job = self._consolidation_queue.popleft()
                 try:
                     self.consolidator(*job)
-                except Exception:  # never let a worker failure kill the thread
-                    pass
+                except Exception as exc:  # never let a worker failure kill the thread
+                    # A persistence failure here is not fatal: the store keeps
+                    # the unwritten keys dirty, so the next checkpoint/flush
+                    # retries and surfaces them. Log it so it is not silent.
+                    log.error("Background consolidation failed: %s", exc)
                 finally:
                     with self._consolidation_lock:
                         self._consolidation_pending -= 1
@@ -1030,8 +1046,10 @@ class ChatSession:
         """Flush the store, then exit the process."""
         try:
             self.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            # A failed final flush must not be silent: report it, then exit
+            # anyway (there is nothing to retry against during shutdown).
+            log.error("Shutdown flush could not persist memory: %s", exc)
         raise SystemExit(0)
 
     # -- slash commands ----------------------------------------------------

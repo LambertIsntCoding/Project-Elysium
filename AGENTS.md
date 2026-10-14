@@ -797,6 +797,65 @@ Measured on the real store (~8k records): live prompt build ~277ms -> ~57ms,
 `record_use` ~130ms -> ~108ms, `add_memory` ~247ms -> ~160ms, idle maintenance
 ~403ms -> ~97ms; a real turn no longer blocks on the extraction model call.
 
+### Atomic writes are serialized, retried, and never silently lost
+
+The runtime once raised, from a `turn_batch` exit on Windows::
+
+    PermissionError: [WinError 5] Access is denied:
+    '...\\self_model.json.<rand>.tmp' -> '...\\self_model.json'
+
+Demonstrated root cause: **concurrent writers on one destination.** A live turn's
+batched flush and the background consolidation thread both called `atomic_save`
+on `self_model.json`, so two `os.replace` calls overlapped on the same path
+(the batch exit did not hold `self._lock`). POSIX `rename` tolerates that;
+Windows `MoveFileEx` raises `WinError 5` for the loser. The fix keeps atomic
+writes and adds four disciplines:
+
+- **Every model write holds the store lock.** `TripleMemoryStore._persist` now
+  takes `self._lock` (RLock) for its whole read-serialize-replace sequence, so a
+  batched turn's flush can never overlap a background consolidation write. The
+  lock is re-entrant, so mutation paths already holding it are unaffected. Do
+  not move `atomic_save` back out of the lock.
+- **A transient replace is retried; a persistent one is surfaced.** The atomic
+  replace goes through `_replace_with_retry` (`REPLACE_MAX_ATTEMPTS`, exponential
+  backoff capped at `REPLACE_BACKOFF_MAX_SECONDS`), because a momentary sharing
+  violation (a concurrent replace, an anti-virus scan, a lingering read handle)
+  is the Windows case. The *original* error is re-raised once attempts are
+  exhausted - retries never conceal a real permission/read-only failure.
+- **Cross-process writers coordinate.** `atomic_save` takes a best-effort
+  advisory lock on a sidecar (`<file>.lock`, `_acquire_file_lock`), never on the
+  destination itself - holding the destination open would block the very
+  `MoveFileEx` being protected. A missing lock (unsupported platform, read-only
+  dir, a peer past `LOCK_ACQUIRE_TIMEOUT`) is not an error: the atomic replace
+  plus its retry still keep each write all-or-nothing. This is what makes the
+  runtime, the read-only inspect console, and a manual `curate_self_model` run
+  safe to point at one store. Thread locks are not enough; do not rely on them
+  alone for cross-process safety.
+- **A failed save is reported, not swallowed, and cleans up after itself.** A
+  write that still fails leaves the failing keys dirty and sets
+  `TripleMemoryStore.last_persist_error`, then raises `PersistenceError` (with
+  `failed={key: error}`). The destination and the previous `.bak` are untouched,
+  and only *this* call's own temp file is removed. `flush()` retries dirty keys
+  on the next checkpoint/shutdown, so a transient failure self-heals rather than
+  discarding the update.
+
+### A persistence failure is not a generation failure
+
+`ChatSession.handle` wraps the turn's memory writes: if the reply was generated
+but the batch exit could not persist it, it raises `TurnPersistenceError` (a
+`PersistenceError` subclass carrying `response`) instead of mislabelling the
+turn. The Discord adapter (`_answer_batch`) catches it *before* the generic
+`except`, **delivers the already-generated reply**, and records the message as
+`MSG_UNSAVED` - delivered but not durable - rather than `responded` (a lie) or
+`failed` (a mislabel). `MSG_UNSAVED` is non-terminal, so the turn stays
+unresolved and is retried by the recovery pass once old enough (memory dedupes
+an identical statement, so a retry cannot double-store); `persist_failed` /
+`last_error` / `diagnostics()["inbound_persist_failed"]` surface it. A genuine
+generation error still sets `last_error = "generation failed: ..."` and records
+`MSG_FAILED`. Keep the two paths distinct; the delivery policy for an unsaved
+reply is deliberate (deliver, because the model really spoke, then flag the
+turn as not saved).
+
 
 
 ## Runtime separation, supervision, and the admin console

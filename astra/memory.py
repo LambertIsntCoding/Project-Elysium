@@ -23,6 +23,7 @@ import re
 import shutil
 import tempfile
 import threading
+import time
 import uuid
 from collections import Counter
 from contextlib import contextmanager
@@ -1228,6 +1229,35 @@ class MemoryNotFoundError(LookupError):
     """Raised when a memory id does not exist in the requested model."""
 
 
+class PersistenceError(OSError):
+    """A memory write could not be made durable.
+
+    Raised after the bounded replace-retry is exhausted, so a caller can tell
+    "the store could not be saved" apart from "the model failed to generate".
+    The failing model keys are carried in ``failed`` and the underlying errors
+    are preserved (never replaced by a generic message).
+    """
+
+    def __init__(self, message: str, *, failed: Optional[Dict[str, str]] = None):
+        super().__init__(message)
+        self.failed: Dict[str, str] = dict(failed or {})
+
+
+class TurnPersistenceError(PersistenceError):
+    """A turn's reply was generated, but its memory could not be saved.
+
+    The reply is real (the model succeeded); only the store write failed. This
+    lets a transport deliver the reply and report honestly that the turn was
+    *not* persisted, instead of mislabelling it a model-generation failure.
+    ``response`` carries the generated text when it is known.
+    """
+
+    def __init__(self, message: str, *, failed: Optional[Dict[str, str]] = None,
+                 response: str = ""):
+        super().__init__(message, failed=failed)
+        self.response = str(response or "")
+
+
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
@@ -1295,6 +1325,131 @@ def _days_since(value: Any, now: Optional[datetime] = None) -> Optional[float]:
 # ---------------------------------------------------------------------
 # Safe file IO
 # ---------------------------------------------------------------------
+# On Windows ``os.replace`` is implemented with ``MoveFileEx``. If two writers
+# replace the *same* destination at the same moment, the loser can get
+# ``PermissionError: [WinError 5] Access is denied`` rather than silently
+# winning/losing the race the way POSIX ``rename`` does. A transient sharing
+# violation (an anti-virus scanner, a backup agent, or a lingering read handle
+# on the destination) produces the same error. Both are transient, so the
+# replace is retried a bounded number of times with backoff; a *persistent*
+# failure (a real permission problem, a read-only volume) exhausts the retries
+# and is raised unchanged, so it is never hidden.
+REPLACE_MAX_ATTEMPTS = 8
+REPLACE_BACKOFF_BASE_SECONDS = 0.02
+REPLACE_BACKOFF_MAX_SECONDS = 0.5
+
+# ``os.replace`` may raise these when the destination is momentarily locked on
+# Windows; ``PermissionError`` is a subclass of ``OSError``, but it is named
+# explicitly so the intent is clear and POSIX ``EACCES``/``EPERM`` are covered.
+_REPLACE_EXC = (PermissionError, FileNotFoundError)
+
+# How long a writer waits for the cross-process advisory lock before giving up
+# and proceeding (the atomic replace plus its own retry still apply). Bounded so
+# a stuck peer can never hang a turn.
+LOCK_ACQUIRE_TIMEOUT = 5.0
+LOCK_POLL_SECONDS = 0.02
+
+# A sidecar (``<file>.lock``) is locked, never the destination itself: holding
+# the destination open would, on Windows, block the very ``MoveFileEx`` we are
+# trying to protect (a sharing violation caused by our own lock).
+LOCK_SUFFIX = ".lock"
+
+try:  # POSIX
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - Windows
+    _fcntl = None
+try:  # Windows
+    import msvcrt as _msvcrt
+except ImportError:  # pragma: no cover - POSIX
+    _msvcrt = None
+
+
+def _lock_fd_nonblocking(fd: int) -> bool:
+    """Try to take the exclusive lock without blocking. True on success."""
+    try:
+        if _fcntl is not None:
+            _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+            return True
+        if _msvcrt is not None:
+            os.lseek(fd, 0, os.SEEK_SET)
+            _msvcrt.locking(fd, _msvcrt.LK_NBLCK, 1)
+            return True
+    except OSError:
+        return False
+    return False
+
+
+def _acquire_file_lock(path: str) -> Optional[int]:
+    """Best-effort advisory lock for one destination file.
+
+    Returns an open file descriptor that must be passed to
+    :func:`_release_file_lock`, or ``None`` when no lock could be taken (an
+    unsupported platform, a read-only directory, a peer holding it past
+    :data:`LOCK_ACQUIRE_TIMEOUT`, ...). A missing lock is never an error: it only
+    means cross-process coordination is unavailable, and the atomic replace plus
+    retry still keep each write all-or-nothing.
+    """
+    lock_path = path + LOCK_SUFFIX
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
+    except OSError:
+        return None
+    if _fcntl is None and _msvcrt is None:
+        return fd  # no locking primitive: keep the fd so the caller is uniform
+    deadline = time.monotonic() + LOCK_ACQUIRE_TIMEOUT
+    while True:
+        if _lock_fd_nonblocking(fd):
+            return fd
+        if time.monotonic() >= deadline:
+            logger.debug("Could not lock %s within %.1fs; proceeding unlocked",
+                         lock_path, LOCK_ACQUIRE_TIMEOUT)
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            return None
+        time.sleep(LOCK_POLL_SECONDS)
+
+
+def _release_file_lock(fd: Optional[int]) -> None:
+    if fd is None:
+        return
+    try:
+        if _fcntl is not None:
+            with contextlib.suppress(OSError):
+                _fcntl.flock(fd, _fcntl.LOCK_UN)
+        elif _msvcrt is not None:
+            try:
+                os.lseek(fd, 0, os.SEEK_SET)
+                _msvcrt.locking(fd, _msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+
+
+def _replace_with_retry(tmp_path: str, filepath: str) -> None:
+    """``os.replace(tmp, dest)`` with bounded retries for a transient lock.
+
+    A concurrent replace, an anti-virus scan, or a lingering read handle can
+    make ``os.replace`` fail with ``PermissionError``/``WinError 5`` on Windows.
+    That is transient, so it is retried with a short backoff. The *original*
+    error is re-raised once the attempts are exhausted (with the last error
+    chained), so a persistent failure is surfaced honestly, not swallowed.
+    """
+    for attempt in range(REPLACE_MAX_ATTEMPTS):
+        try:
+            os.replace(tmp_path, filepath)
+            return
+        except _REPLACE_EXC as exc:
+            if attempt + 1 >= REPLACE_MAX_ATTEMPTS:
+                raise
+            delay = min(REPLACE_BACKOFF_BASE_SECONDS * (2 ** attempt),
+                        REPLACE_BACKOFF_MAX_SECONDS)
+            logger.debug("Transient replace failure for %s (attempt %d/%d): %s",
+                         filepath, attempt + 1, REPLACE_MAX_ATTEMPTS, exc)
+            time.sleep(delay)
+
+
 def atomic_save(filepath: str, data: Any, backup: bool = True,
                 *, compact: bool = True) -> None:
     """
@@ -1305,31 +1460,45 @@ def atomic_save(filepath: str, data: Any, backup: bool = True,
     format is plain JSON (no custom decoder), it is still readable, and it is
     ~30% smaller than ``indent=2``; `compact=False` keeps the pretty form for
     one-off, human-facing dumps.
+
+    Concurrency: two processes that legitimately share a store (the runtime and
+    the read-only inspection console, or a manual ``curate_self_model`` run)
+    can both write. A best-effort advisory lock serializes them where the
+    platform supports it, and the replace is retried so a transient Windows
+    sharing violation does not lose the write. Within one process the store's
+    own lock already serializes writers. The replace itself is atomic, so a
+    reader always sees either the previous file or the complete new one.
     """
     filepath = os.path.abspath(filepath)
     dir_name = os.path.dirname(filepath)
     os.makedirs(dir_name, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=dir_name, prefix=os.path.basename(filepath) + ".", suffix=".tmp", text=True
-    )
+    lock_fd = _acquire_file_lock(filepath)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            if compact:
-                # Serialise first, then write once: ``json.dump`` streams to the
-                # file in many small chunks, which is measurably slower than one
-                # ``write`` of the whole document.
-                f.write(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
-            else:
-                f.write(json.dumps(data, indent=2, ensure_ascii=False))
-            f.flush()
-            os.fsync(f.fileno())
-        if backup and os.path.exists(filepath):
-            shutil.copy2(filepath, filepath + ".bak")
-        os.replace(tmp_path, filepath)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.remove(tmp_path)
-        raise
+        fd, tmp_path = tempfile.mkstemp(
+            dir=dir_name, prefix=os.path.basename(filepath) + ".", suffix=".tmp", text=True
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                if compact:
+                    # Serialise first, then write once: ``json.dump`` streams to
+                    # the file in many small chunks, which is measurably slower
+                    # than one ``write`` of the whole document.
+                    f.write(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+                else:
+                    f.write(json.dumps(data, indent=2, ensure_ascii=False))
+                f.flush()
+                os.fsync(f.fileno())
+            if backup and os.path.exists(filepath):
+                shutil.copy2(filepath, filepath + ".bak")
+            _replace_with_retry(tmp_path, filepath)
+        except BaseException:
+            # Only this call's own temp file is removed; the destination and
+            # every other writer's temp file are never touched.
+            with contextlib.suppress(OSError):
+                os.remove(tmp_path)
+            raise
+    finally:
+        _release_file_lock(lock_fd)
 
 
 def _quarantine(path: str) -> None:
@@ -1788,6 +1957,10 @@ class TripleMemoryStore:
         # persist as they happen, so this is normally empty; it lets an explicit
         # flush() (a checkpoint or a shutdown) guarantee the store is on disk.
         self._dirty: set = set()
+        # The last set of model keys that could not be written ({key: error}),
+        # or None. Set by flush()/the turn-batch exit so a caller can report a
+        # failed save honestly instead of claiming the turn was persisted.
+        self.last_persist_error: Optional[Dict[str, str]] = None
         # A live turn makes several small writes in a row (retrieval use,
         # affect, decay). Each one is an atomic file replace plus an fsync, so
         # writing them separately dominates the turn. Inside a batch the change
@@ -1876,11 +2049,46 @@ class TripleMemoryStore:
             self._batch_keys().add(key)
             self._dirty.add(key)
             return
-        data = self._get_list(key)
-        if key != "journal":
-            data = [compact_record(m) for m in data]
-        atomic_save(self._path(key), data)
-        self._dirty.discard(key)
+        # Take the same lock a mutation does, so a batched turn's flush cannot
+        # replace a model file at the same instant a background consolidation
+        # write does. Without this the two writers overlap ``os.replace`` on the
+        # same destination, which on Windows raises WinError 5 (Access denied)
+        # for one of them even though each write is individually atomic. The
+        # lock is re-entrant, so a caller already holding it (every mutation
+        # path) is unaffected.
+        with self._lock:
+            data = self._get_list(key)
+            if key != "journal":
+                data = [compact_record(m) for m in data]
+            atomic_save(self._path(key), data)
+            self._dirty.discard(key)
+
+    def _flush_keys(self, keys: set) -> None:
+        """Persist each of ``keys``, reporting (and raising on) any failure.
+
+        A key that could not be written stays dirty, so a later
+        :meth:`flush`/checkpoint retries it. The original errors are preserved
+        in :attr:`last_persist_error` and re-raised as a :class:`PersistenceError`
+        so no caller can mistake a failed save for a successful one. Runs under
+        the store lock, so it cannot interleave with a mutation.
+        """
+        failed: Dict[str, str] = {}
+        with self._lock:
+            for key in sorted(keys):
+                try:
+                    if key == "presence":
+                        stamp = getattr(self._batch, "presence", None)
+                        if stamp:
+                            atomic_save(self.presence_file, {"last_present": stamp})
+                        continue
+                    self._persist(key)
+                except Exception as exc:
+                    failed[key] = str(exc)
+                    self._dirty.add(key)
+            self.last_persist_error = failed or None
+        if failed:
+            raise PersistenceError(
+                "could not persist " + ", ".join(sorted(failed)), failed=failed)
 
     @contextmanager
     def turn_batch(self) -> Iterator[None]:
@@ -1892,6 +2100,12 @@ class TripleMemoryStore:
         paying for one write per touched model instead of one per change. Nested
         use is safe; only the outermost batch flushes. A failure still restores
         the per-model state via each ``_transaction``.
+
+        A failure while flushing is *surfaced*: the keys that could not be
+        written are recorded (:attr:`last_persist_error`) and re-raised, so a
+        caller can report that the turn's memory was not saved instead of
+        claiming success. The in-memory state is left intact so a later
+        ``flush``/checkpoint can retry the write.
         """
         self._batch.depth = self._batch_depth() + 1
         try:
@@ -1900,16 +2114,11 @@ class TripleMemoryStore:
             self._batch.depth -= 1
             if self._batch.depth == 0:
                 keys = self._batch_keys()
-                for key in sorted(keys):
-                    if key == "presence":
-                        stamp = getattr(self._batch, "presence", None)
-                        if stamp:
-                            with self._lock:
-                                atomic_save(self.presence_file, {"last_present": stamp})
-                        continue
-                    self._persist(key)
-                keys.clear()
-                self._batch.presence = None
+                try:
+                    self._flush_keys(keys)
+                finally:
+                    keys.clear()
+                    self._batch.presence = None
 
     def _save_model(self, target_model: str) -> None:
         """Immediately persists a specific model upon change."""
@@ -1922,11 +2131,13 @@ class TripleMemoryStore:
         so an explicit checkpoint or a shutdown can guarantee that whatever the
         in-memory store holds is on disk. It takes the same lock as a mutation,
         so it can never interleave with one.
+
+        A write that still fails after the retry is *reported*, not swallowed:
+        the failing keys are kept in :attr:`last_persist_error` and the original
+        error is raised, so the caller knows the memory is not yet durable. Keys
+        that could not be written stay dirty, so the next flush retries them.
         """
-        with self._lock:
-            for key in sorted(self._dirty):
-                self._persist(key)
-            self._dirty.clear()
+        self._flush_keys(set(self._dirty))
 
     @contextmanager
     def _transaction(self, key: str) -> Iterator[None]:
